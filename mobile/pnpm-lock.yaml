@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@clerk/clerk-expo':
         specifier: latest
-        version: 2.19.29(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/react@19.2.14)(bs58@5.0.0)(bufferutil@4.1.0)(expo-auth-session@55.0.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3))(expo-crypto@55.0.8(expo@55.0.4))(expo-secure-store@55.0.8(expo@55.0.4))(expo-web-browser@55.0.9(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)))(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.4))(utf-8-validate@5.0.10)(zod@3.25.76)
+        version: 2.19.29(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/react@19.2.14)(bs58@5.0.0)(bufferutil@4.1.0)(expo-auth-session@55.0.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3))(expo-crypto@55.0.8(expo@55.0.4))(expo-secure-store@55.0.8(expo@55.0.4))(expo-web-browser@14.1.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)))(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.4))(utf-8-validate@5.0.10)(zod@3.25.76)
       '@tanstack/react-query':
         specifier: latest
         version: 5.90.21(react@19.2.4)
@@ -35,6 +35,9 @@ importers:
       expo-status-bar:
         specifier: ~55.0.4
         version: 55.0.4(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)
+      expo-web-browser:
+        specifier: ~14.1.6
+        version: 14.1.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))
       nativewind:
         specifier: latest
         version: 4.2.2(react-native-reanimated@4.2.2(react-native-worklets@0.7.4(@babel/core@7.29.0)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4))(react-native-safe-area-context@5.6.2(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(tailwindcss@3.4.19(yaml@2.8.2))
@@ -2337,6 +2340,12 @@ packages:
       expo: '*'
       expo-font: '*'
       react: '*'
+      react-native: '*'
+
+  expo-web-browser@14.1.6:
+    resolution: {integrity: sha512-/4P8eWqRyfXIMZna3acg320LXNA+P2cwyEVbjDX8vHnWU+UnOtyRKWy3XaAIyMPQ9hVjBNUQTh4MPvtnPRzakw==}
+    peerDependencies:
+      expo: '*'
       react-native: '*'
 
   expo-web-browser@55.0.9:
@@ -4854,7 +4863,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@clerk/clerk-expo@2.19.29(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/react@19.2.14)(bs58@5.0.0)(bufferutil@4.1.0)(expo-auth-session@55.0.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3))(expo-crypto@55.0.8(expo@55.0.4))(expo-secure-store@55.0.8(expo@55.0.4))(expo-web-browser@55.0.9(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)))(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.4))(utf-8-validate@5.0.10)(zod@3.25.76)':
+  '@clerk/clerk-expo@2.19.29(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/react@19.2.14)(bs58@5.0.0)(bufferutil@4.1.0)(expo-auth-session@55.0.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3))(expo-crypto@55.0.8(expo@55.0.4))(expo-secure-store@55.0.8(expo@55.0.4))(expo-web-browser@14.1.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)))(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.4))(utf-8-validate@5.0.10)(zod@3.25.76)':
     dependencies:
       '@clerk/clerk-js': 5.125.3(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/react@19.2.14)(bs58@5.0.0)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.4))(utf-8-validate@5.0.10)(zod@3.25.76)
       '@clerk/clerk-react': 5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -4862,7 +4871,7 @@ snapshots:
       '@clerk/types': 4.101.20(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       base-64: 1.0.0
       expo-auth-session: 55.0.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)
-      expo-web-browser: 55.0.9(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))
+      expo-web-browser: 14.1.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
       react-native: 0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)
@@ -7036,6 +7045,11 @@ snapshots:
       react: 19.2.4
       react-native: 0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)
       sf-symbols-typescript: 2.2.0
+
+  expo-web-browser@14.1.6(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)):
+    dependencies:
+      expo: 55.0.4(@babel/core@7.29.0)(@expo/dom-webview@55.0.3)(@expo/metro-runtime@55.0.6)(bufferutil@4.1.0)(expo-router@55.0.3)(react-dom@19.2.4(react@19.2.4))(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10))(react@19.2.4)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      react-native: 0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)
 
   expo-web-browser@55.0.9(expo@55.0.4)(react-native@0.83.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.4)(utf-8-validate@5.0.10)):
     dependencies:

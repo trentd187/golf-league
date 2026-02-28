@@ -1,0 +1,23 @@
+/* global.css
+   This file is the entry point for Tailwind CSS in the NativeWind setup.
+   It uses three Tailwind directives that tell the Tailwind compiler which
+   layers of generated CSS to inject at build time.
+
+   NativeWind's Metro plugin (configured in metro.config.js) reads this file
+   during the build process to generate the style definitions used by your
+   components' className props.
+
+   You can also add global custom CSS here (e.g., font-face declarations),
+   though React Native support for arbitrary CSS is limited compared to web. */
+
+/* @tailwind base — injects Tailwind's "Preflight" styles: a set of base/reset styles
+   that normalize browser/platform inconsistencies so components render consistently. */
+@tailwind base;
+
+/* @tailwind components — injects any component class utilities (e.g., from plugins
+   or your own @layer components blocks if you add any). */
+@tailwind components;
+
+/* @tailwind utilities — injects all of Tailwind's utility classes (flex, text-xl, bg-green-700, etc.).
+   This is the largest layer and the one you'll use most in className props. */
+@tailwind utilities;

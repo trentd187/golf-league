@@ -1,0 +1,28 @@
+# Go
+backend/server
+backend/server.exe
+backend/*.exe
+
+# Environment
+.env
+**/.env
+
+# Expo / React Native
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/android/
+mobile/ios/
+mobile/*.jks
+mobile/*.keystore
+mobile/*.p8
+mobile/*.p12
+mobile/*.mobileprovision
+mobile/.env.local
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

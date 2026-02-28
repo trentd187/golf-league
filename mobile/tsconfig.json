@@ -1,0 +1,14 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // baseUrl makes "." (the mobile/ directory) the root for module resolution.
+    // This is required for path aliases like @/ to work.
+    "baseUrl": ".",
+    // @/* maps to any file under mobile/ — so @/utils/cache resolves to ./utils/cache.ts
+    "paths": {
+      "@/*": ["./*"]
+    }
+  }
+}
+

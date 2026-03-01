@@ -6,12 +6,21 @@
 //
 // Profile photo flow:
 //   - Tap the avatar → expo-image-picker opens the photo library
-//   - User selects a photo → it's converted to a Blob and uploaded via user.setProfileImage()
+//   - User selects a photo → sent to our backend (PATCH /api/v1/me/profile-image)
+//   - Backend forwards the file to Clerk's Backend API using the secret key
 //   - Clerk stores the image and serves it via user.imageUrl
 //   - Google SSO users already have user.imageUrl set from their Google profile
+//
+// Why we proxy through our backend instead of calling Clerk directly:
+//   - user.setProfileImage() (Clerk SDK): silently fails in React Native because
+//     BlobManager produces untyped Blobs that Clerk's API ignores.
+//   - Clerk's Frontend API (https://<frontendApi>/...): uses browser-cookie auth and
+//     rejects native clients with "Unable to authenticate this browser".
+//   - Our backend receives the image with the normal JWT auth we use everywhere else,
+//     then calls Clerk's Backend API with the secret key (which only lives server-side).
 
 // useUser: Clerk hook — provides the current user object and an isLoaded flag
-// useAuth: Clerk hook — provides signOut()
+// useAuth: Clerk hook — provides getToken() for authenticated API calls, and signOut()
 import { useUser, useAuth } from "@clerk/clerk-expo";
 
 import { useRouter } from "expo-router";
@@ -37,6 +46,9 @@ import {
 import { useState } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
+// API_URL: the base URL of our backend (read from EXPO_PUBLIC_API_URL env var)
+import { API_URL } from "@/constants/api";
+
 // RoleBadge renders a small coloured pill showing the user's permission level.
 // - admin   → green  (full access)
 // - manager → blue   (league/event management)
@@ -58,7 +70,8 @@ function RoleBadge({ role }: { role?: string }) {
 
 export default function ProfileScreen() {
   const { user, isLoaded } = useUser();
-  const { signOut } = useAuth();
+  // getToken: returns the Clerk session JWT — used to authenticate calls to our backend.
+  const { signOut, getToken } = useAuth();
   const router = useRouter();
 
   // --- UI state ---
@@ -101,7 +114,30 @@ export default function ProfileScreen() {
   // Clerk stores the image and makes it available as user.imageUrl (via its CDN).
   // This works for all sign-in methods. Google SSO users already have imageUrl set.
   const handlePickImage = async () => {
-    // Step 1: request permission to read the device's media library.
+    // Step 1: Fetch the Clerk session token BEFORE opening the image picker.
+    //
+    // Why here, not later? When launchImageLibraryAsync() opens the native photo
+    // library, the app transitions to the background. On some versions of Expo Go
+    // and the Clerk Expo SDK, this background/foreground transition causes Clerk to
+    // reset its in-memory session state. If getToken() is called AFTER the picker
+    // closes, Clerk may throw "You are signed out" even though the user is still
+    // authenticated (their user data is cached but the live session object is null).
+    //
+    // Fetching the token up front — while we are definitely in the foreground and
+    // Clerk's session is fully initialised — avoids this race condition.
+    const token = await getToken();
+    if (!token) {
+      // This shouldn't happen for a signed-in user, but guard against it explicitly
+      // so the error message is clear rather than a cryptic network failure.
+      Alert.alert(
+        "Session expired",
+        "Your session has expired. Please sign out and sign back in.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    // Step 2: request permission to read the device's media library.
     // On Android this shows a system prompt; on iOS it uses the system picker which
     // handles permissions internally. We still call requestMediaLibraryPermissionsAsync
     // so the flow is consistent across platforms.
@@ -115,7 +151,7 @@ export default function ProfileScreen() {
       return;
     }
 
-    // Step 2: open the image picker. allowsEditing=true shows a crop UI.
+    // Step 3: open the image picker. allowsEditing=true shows a crop UI.
     // aspect: [1, 1] forces a square crop — correct for a circular avatar.
     const result = await ImagePicker.launchImageLibraryAsync({
       // Pass mediaTypes as a string array — the safest form in expo-image-picker v17.
@@ -138,38 +174,72 @@ export default function ProfileScreen() {
     setLocalPhotoUri(asset.uri);
     setUploadingPhoto(true);
     try {
-      // Step 3: Read the image file as raw binary data.
-      // We use arrayBuffer() rather than blob() because React Native's Blob
-      // implementation doesn't reliably expose file bytes when re-wrapped —
-      // new Blob([existingBlob]) can encode the object reference instead of
-      // the actual bytes, resulting in a corrupt or empty upload that Clerk
-      // silently accepts without throwing. arrayBuffer() gives us the raw bytes
-      // directly, which we can then wrap into a properly-typed Blob.
-      const response = await fetch(asset.uri);
-      const arrayBuffer = await response.arrayBuffer();
-      // asset.mimeType is e.g. "image/jpeg" or "image/png" — provided by the picker.
+      // Step 4: Build a FormData payload using React Native's native file entry format.
+      //
+      // React Native's native networking layer understands { uri, type, name } objects
+      // inside FormData — it reads the file:// URI at the OS level and streams it
+      // directly to the server without going through JavaScript's BlobManager at all.
+      //
+      // This sidesteps every known React Native Blob limitation:
+      //   - fetch(file://).blob() → type:"" (silent Clerk failure)
+      //   - new Blob([arrayBuffer]) → "not supported" crash
+      //   - new Blob([rawBlob], { type }) → doesn't crash, but Clerk still ignores it
+      //
+      // The "as any" cast is required because TypeScript's FormData type definition
+      // only accepts string | Blob — it doesn't know about React Native's extended format.
       const mimeType = asset.mimeType ?? "image/jpeg";
-      // Build the Blob from raw bytes + explicit MIME type. Clerk requires a
-      // non-empty type to process the upload correctly.
-      const blob = new Blob([arrayBuffer], { type: mimeType });
+      const ext = mimeType.split("/")[1] || "jpg"; // "image/jpeg" → "jpg"
 
-      // Step 4: Upload to Clerk. Clerk resizes, optimises, and stores the image.
-      await user?.setProfileImage({ file: blob });
+      const formData = new FormData();
+      formData.append("file", {
+        uri: asset.uri,   // file:// URI — RN native layer reads this directly
+        type: mimeType,   // MIME type — tells Clerk (and the server) what format the file is
+        name: `profile.${ext}`, // filename — required by multipart/form-data spec
+      } as any);
 
-      // Step 5: Force Clerk to re-fetch the user object so user.imageUrl reflects
+      // Step 5: POST the image to our backend, which proxies it to Clerk.
+      //
+      // We can't call Clerk's APIs directly from React Native:
+      //   - Clerk SDK (setProfileImage): silently ignores untyped RN Blobs
+      //   - Clerk Frontend API: cookie-based browser auth, rejects native clients
+      //
+      // Our backend receives this with the normal JWT auth, then forwards to:
+      //   POST https://api.clerk.com/v1/users/{clerkId}/profile_image
+      // using the secret key (which never leaves the server).
+      //
+      // Do NOT set Content-Type manually — React Native sets it automatically to
+      // "multipart/form-data; boundary=..." when the body is FormData.
+      // Setting it manually would omit the boundary string and break parsing.
+      const res = await fetch(`${API_URL}/api/v1/me/profile-image`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        // Our backend forwards Clerk's error JSON directly, so the structure matches.
+        const body = await res.json().catch(() => ({}));
+        const message =
+          body.errors?.[0]?.long_message ??
+          body.errors?.[0]?.message ??
+          body.error ??
+          `Upload failed with status ${res.status}`;
+        throw new Error(message);
+      }
+
+      // Step 6: Force Clerk to re-fetch the user so user.imageUrl reflects
       // the newly uploaded photo. Without this, useUser() may keep serving the
       // stale cached user (Clerk's React Native SDK doesn't always push the update
-      // reactively after setProfileImage).
+      // reactively).
       await user?.reload();
     } catch (err) {
       // If upload failed, clear the local preview so the old avatar is restored
       setLocalPhotoUri(null);
       // Log the full error to the Metro console for debugging
-      console.error("[Profile] setProfileImage failed:", err);
-      // Surface the actual error message so Clerk errors are visible
+      console.error("[Profile] profile image upload failed:", err);
       const message =
-        (err as any)?.errors?.[0]?.longMessage ??
-        (err as any)?.errors?.[0]?.message ??
         (err as Error)?.message ??
         "Could not upload profile photo. Please try again.";
       Alert.alert("Upload failed", message, [{ text: "OK" }]);

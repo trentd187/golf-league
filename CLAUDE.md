@@ -75,7 +75,7 @@ backend/
 ├── cmd/server/main.go         # Entry point only — no business logic
 ├── internal/config/           # Config struct loaded from env vars
 ├── internal/database/         # DB connection + migration runner
-├── internal/handlers/         # HTTP handlers, one file per domain (e.g., leagues.go, rounds.go)
+├── internal/handlers/         # HTTP handlers, one file per domain (e.g., events.go, users.go)
 ├── internal/middleware/       # auth.go (JWT) and roles.go (RBAC)
 ├── internal/models/           # All GORM models in models.go
 ├── internal/services/         # Business logic (to be added — keep handlers thin)
@@ -117,7 +117,7 @@ Apply middleware to routes in this order:
 app.Use(middleware.Auth(cfg))
 
 // 2. Restrict by role (apply per-route or per-group)
-app.Post("/leagues", middleware.RequireRole("admin", "manager"), handlers.CreateLeague)
+app.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent)
 ```
 
 The three roles are: `admin`, `manager`, `user`. See the permissions matrix in the data model documentation or `internal/models/models.go`.
@@ -156,8 +156,8 @@ npm install some-package
 Create a `.tsx` file in the `app/` directory. The file path determines the route:
 
 ```
-app/leagues/index.tsx      →  /leagues
-app/leagues/[id].tsx       →  /leagues/:id
+app/events/[id].tsx        →  /events/:id  (stack screen, no tab bar)
+app/(tabs)/events.tsx      →  /events      (tab screen)
 app/(tabs)/scores.tsx      →  new tab screen
 ```
 
@@ -224,6 +224,44 @@ Use `pnpm add` for pure JS packages:
 pnpm add some-js-library
 ```
 
+### File Upload from React Native (Profile Image Pattern)
+
+React Native's `BlobManager` has fundamental limitations that affect file uploads. These are **React Native core issues**, not Expo-specific, and may or may not be resolved in SDK 55 / React Native 0.77+:
+
+- `fetch(file://).blob()` returns a `Blob` with `type: ""` (empty MIME type)
+- `new Blob([arrayBuffer])` throws "Creating blobs from ArrayBuffer not supported"
+- `new Blob([rawBlob], { type })` re-wraps without crashing, but Clerk's SDK still silently drops the upload
+
+**The correct pattern** for uploading a local file from React Native is to use FormData with React Native's native file entry format. The native networking layer reads the `file://` URI at the OS level and streams it directly, bypassing BlobManager entirely:
+
+```tsx
+const formData = new FormData();
+formData.append("file", {
+  uri: asset.uri,   // file:// URI — RN native layer reads this directly
+  type: mimeType,   // explicit MIME type
+  name: `photo.jpg`,
+} as any); // "as any" because TS FormData types don't include RN's extended format
+
+// Do NOT set Content-Type manually — RN sets multipart/form-data boundary automatically
+await fetch(uploadUrl, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: formData,
+});
+```
+
+This pattern is used in `app/(tabs)/profile.tsx` to upload to our backend (`PATCH /api/v1/me/profile-image`), which proxies to Clerk's Backend API using the secret key.
+
+**Do NOT call Clerk's Frontend API directly from React Native.** It uses browser-cookie auth and will return "Unable to authenticate this browser" for native clients. The correct pattern is:
+- Mobile → our backend (JWT auth) → Clerk Backend API (secret key auth)
+- Handler: `handlers.UpdateProfileImage` in `backend/internal/handlers/users.go`
+
+**Clerk session after background/foreground transitions:** When a native UI (image picker, camera, share sheet, etc.) opens, the app goes to the background. On some versions of Expo Go + Clerk Expo SDK, this resets Clerk's in-memory session state. Calling `getToken()` _after_ the native UI closes may throw "You are signed out" even though the user is still authenticated. Fix: always call `getToken()` **before** opening the native UI, while the app is in the foreground.
+
+**TODO when upgrading to SDK 55:** Test whether `user.setProfileImage()` works correctly with SDK 55 / React Native 0.77+. If blob handling is fixed in the new architecture, we could simplify back to the SDK method. Until confirmed, keep the direct FormData API call approach.
+
+---
+
 ### Known Dependency Quirks (SDK 54)
 
 pnpm's strict resolution requires the following packages to be **direct dependencies** (not just transitive). Without them, either the bundler fails or the wrong version is loaded at runtime:
@@ -236,11 +274,27 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 | `expo-auth-session` | `~7.0.10` | Without this, pnpm resolves clerk's peer to 55.0.6 (SDK 55) → `expo-crypto@55.0.8` → `Cannot find native module 'ExpoCryptoAES'` crash |
 | `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |
 | `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
+| `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
 
 **Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
 
 After any package.json change, run `pnpm start --clear` to flush Metro's cache.
 `npx expo install --fix` resolves correct SDK-54-compatible versions for all expo packages.
+
+### Reusable Components
+
+Shared UI components live in `mobile/components/`. Import them with the `@/` alias:
+```tsx
+import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
+```
+
+**`DateInput`** (`components/DateInput.tsx`) — date field with auto-formatting and native picker:
+- Displays and stores dates in `MM-DD-YY` format in form state
+- Auto-inserts dashes as the user types (no manual dash entry needed)
+- Calendar icon button opens the platform's native date picker (Android: dialog, iOS: bottom-sheet modal)
+- Inline red border + error message when a fully-typed date is invalid
+- Use `apiToDisplay("YYYY-MM-DD")` → `"MM-DD-YY"` when pre-filling from API data
+- Use `displayToApi("MM-DD-YY")` → `"YYYY-MM-DD"` when sending to the API
 
 ### TypeScript Path Aliases
 

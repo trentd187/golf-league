@@ -23,9 +23,11 @@ import { ClerkProvider, ClerkLoaded } from "@clerk/clerk-expo";
 // makes it available to any component via the useQuery/useMutation hooks.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// Slot is Expo Router's outlet component — it renders the currently matched child route.
-// Think of it like a placeholder: whichever screen the user is on gets rendered here.
-import { Slot } from "expo-router";
+// Stack is Expo Router's stack navigator — it manages a stack of screens with native
+// push/pop transitions and an optional header. Using Stack here (rather than Slot)
+// means navigating to a new route (e.g. /events/[id]) pushes it on top of the current
+// screen with a native back-gesture, rather than replacing the whole screen.
+import { Stack } from "expo-router";
 
 // tokenCache persists Clerk's auth tokens securely between app sessions using expo-secure-store.
 // Without this, the user would be signed out every time the app restarts.
@@ -57,10 +59,11 @@ export default function RootLayout() {
         {/* QueryClientProvider makes the React Query cache accessible via hooks
             in any component rendered inside it (the entire app). */}
         <QueryClientProvider client={queryClient}>
-          {/* Slot renders the current route's screen component.
-              This is the core of Expo Router's file-based routing — the router
-              replaces Slot with whichever screen matches the current URL. */}
-          <Slot />
+          {/* Stack renders a native navigation stack. Each route in the app/
+              directory becomes a screen on this stack.
+              headerShown: false — we hide the default stack header on all screens
+              and manage our own custom headers inside each screen component. */}
+          <Stack screenOptions={{ headerShown: false }} />
         </QueryClientProvider>
       </ClerkLoaded>
     </ClerkProvider>

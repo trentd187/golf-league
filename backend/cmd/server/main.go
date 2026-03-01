@@ -75,12 +75,28 @@ func main() {
 	// to every route registered on the returned group — we don't have to repeat it per route.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
 
-	// Event routes
-	// GET  /api/v1/events  — list events the user belongs to (admins see all)
-	//                        optional query param: ?type=league or ?type=tournament
-	// POST /api/v1/events  — create an event (admin and manager only)
-	api.Get("/events", handlers.GetEvents(db))
-	api.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent(db))
+	// --- Event routes ---
+
+	// Collection endpoints
+	api.Get("/events", handlers.GetEvents(db))                                                // list (filtered by membership for non-admins)
+	api.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent(db)) // create (admin/manager only)
+
+	// Single-event endpoints — :id is the event UUID
+	api.Get("/events/:id", handlers.GetEvent(db))      // detail view + members list
+	api.Patch("/events/:id", handlers.UpdateEvent(db)) // partial update (organizers only)
+
+	// Members sub-resource
+	api.Get("/events/:id/members", handlers.GetEventMembers(db))              // list all members
+	api.Post("/events/:id/members", handlers.AddEventMember(db))              // add a member (organizers only)
+	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(db)) // remove a member (organizers only)
+
+	// Rounds sub-resource
+	api.Get("/events/:id/rounds", handlers.GetEventRounds(db))      // list rounds for the event
+	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db)) // schedule a new round (organizers only)
+
+	// --- User routes ---
+	api.Get("/users", handlers.GetUsers(db))                             // all users except the caller (powers the add-member picker)
+	api.Patch("/me/profile-image", handlers.UpdateProfileImage(cfg, db)) // profile photo upload (proxied to Clerk Backend API)
 
 	// Start listening for HTTP connections on the configured port.
 	// ":" + cfg.Port produces a string like ":8080" — listen on all network interfaces.

@@ -40,6 +40,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import Ionicons from "@expo/vector-icons/Ionicons";
 
+// useRouter gives us router.push() to navigate to the event detail screen
+import { useRouter } from "expo-router";
+
 // API_URL is read from the EXPO_PUBLIC_API_URL environment variable
 import { API_URL } from "@/constants/api";
 
@@ -86,10 +89,16 @@ function EventTypeBadge({ type }: { type: EventResponse["event_type"] }) {
   );
 }
 
-// EventCard renders a single event row in the list
-function EventCard({ event }: { event: EventResponse }) {
+// EventCard renders a single event row in the list.
+// onPress navigates to the event detail screen — the card is fully tappable.
+function EventCard({ event, onPress }: { event: EventResponse; onPress: () => void }) {
   return (
-    <View className="bg-white rounded-2xl p-4 mb-3 border border-gray-100">
+    // TouchableOpacity makes the whole card tappable and dims slightly on press
+    <TouchableOpacity
+      className="bg-white rounded-2xl p-4 mb-3 border border-gray-100"
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
       {/* Event name + type badge on the same row */}
       <View className="flex-row items-center justify-between mb-1">
         <Text className="text-gray-900 font-semibold text-base flex-1 mr-2" numberOfLines={1}>
@@ -105,15 +114,18 @@ function EventCard({ event }: { event: EventResponse }) {
         </Text>
       ) : null}
 
-      {/* Footer: creator + member count */}
+      {/* Footer: creator + member count + chevron indicating tappability */}
       <View className="flex-row items-center justify-between mt-1">
         <Text className="text-gray-400 text-xs">Created by {event.creator_name}</Text>
-        <View className="flex-row items-center gap-1">
-          <Ionicons name="people-outline" size={13} color="#9ca3af" />
-          <Text className="text-gray-400 text-xs">{event.member_count}</Text>
+        <View className="flex-row items-center gap-2">
+          <View className="flex-row items-center gap-1">
+            <Ionicons name="people-outline" size={13} color="#9ca3af" />
+            <Text className="text-gray-400 text-xs">{event.member_count}</Text>
+          </View>
+          <Ionicons name="chevron-forward-outline" size={14} color="#d1d5db" />
         </View>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -123,6 +135,9 @@ export default function EventsScreen() {
   // getToken(): async — returns the current Clerk session JWT for Authorization headers
   const { getToken } = useAuth();
   const { user } = useUser();
+
+  // router.push() navigates to a new screen, pushing it onto the navigation stack
+  const router = useRouter();
 
   // queryClient lets us manually invalidate cached data (force a refetch after mutations)
   const queryClient = useQueryClient();
@@ -247,7 +262,13 @@ export default function EventsScreen() {
           <FlatList
             data={events}
             keyExtractor={(item) => item.id}
-            renderItem={({ item }) => <EventCard event={item} />}
+            renderItem={({ item }) => (
+              // Navigate to /events/[id] — matches app/events/[id].tsx
+              <EventCard
+                event={item}
+                onPress={() => router.push(`/events/${item.id}`)}
+              />
+            )}
             showsVerticalScrollIndicator={false}
           />
         ) : (

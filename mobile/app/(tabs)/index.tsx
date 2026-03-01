@@ -1,54 +1,111 @@
 // app/(tabs)/index.tsx
-// The Home screen — the main screen authenticated users land on after signing in.
-// Currently a placeholder that will eventually display leagues, events, and scores.
-// It also provides a sign-out button for development/testing.
+// The Home screen — the first screen authenticated users see after signing in.
+// Shows a personalised greeting using the signed-in user's name from Clerk,
+// and placeholder cards for the main sections of the app (events and rounds).
+// These cards will be replaced with real data once those features are built.
 
-// useAuth provides Clerk authentication utilities — here we use signOut()
-import { useAuth } from "@clerk/clerk-expo";
+// useUser provides the currently signed-in Clerk user object (name, email, avatar, etc.)
+import { useUser } from "@clerk/clerk-expo";
 
-// useRouter provides programmatic navigation (send the user to another screen in code)
+// React Native core components
+// ScrollView: a scrollable container — good practice for home screens as content grows
+import { Text, View, ScrollView, TouchableOpacity } from "react-native";
+
+// Ionicons: icon library bundled with Expo (no install needed)
+import Ionicons from "@expo/vector-icons/Ionicons";
+
+// useRouter allows navigating to other screens programmatically
 import { useRouter } from "expo-router";
 
-// React Native core UI primitives
-import { Text, View, TouchableOpacity } from "react-native";
+// A reusable card component for the home screen sections.
+// Props:
+//   icon:     Ionicons icon name to show on the left of the card header
+//   title:    The card heading (e.g. "Your Leagues")
+//   subtitle: A short description shown below the title
+//   onPress:  Called when the user taps the card (navigates to the relevant tab)
+function HomeCard({
+  icon,
+  title,
+  subtitle,
+  onPress,
+}: {
+  icon: string;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+}) {
+  return (
+    // rounded-2xl: rounded corners | shadow-sm: subtle drop shadow | mb-4: spacing below
+    <TouchableOpacity
+      className="bg-white rounded-2xl p-5 mb-4 border border-gray-100"
+      onPress={onPress}
+      // activeOpacity: how transparent the card becomes when pressed (0 = fully transparent)
+      activeOpacity={0.7}
+    >
+      {/* Card header row: icon + title + chevron */}
+      <View className="flex-row items-center justify-between mb-2">
+        <View className="flex-row items-center gap-3">
+          {/* Icon shown in green-700 to match the brand colour */}
+          <Ionicons name={icon as any} size={22} color="#15803d" />
+          <Text className="text-lg font-semibold text-gray-800">{title}</Text>
+        </View>
+        {/* Chevron arrow indicates the card is tappable */}
+        <Ionicons name="chevron-forward-outline" size={20} color="#9ca3af" />
+      </View>
+
+      {/* Subtitle / placeholder text */}
+      <Text className="text-gray-500 text-sm">{subtitle}</Text>
+    </TouchableOpacity>
+  );
+}
 
 export default function HomeScreen() {
-  // signOut() ends the current Clerk session and clears stored tokens.
-  // After calling it, useAuth().isSignedIn will become false, and index.tsx
-  // (the root redirect screen) will send the user back to /sign-in.
-  const { signOut } = useAuth();
+  // user: the full Clerk user object — contains firstName, lastName, emailAddresses, etc.
+  // isLoaded: false until Clerk has finished fetching the user from its servers
+  const { user, isLoaded } = useUser();
 
-  // router lets us navigate programmatically after sign-out
+  // router: used to navigate to another tab when a card is tapped
   const router = useRouter();
 
-  const handleSignOut = async () => {
-    // Sign the user out of Clerk — this clears the session on both Clerk's servers
-    // and the local secure storage token cache.
-    await signOut();
+  // While Clerk is loading, show nothing to avoid a flash of wrong content
+  if (!isLoaded) return null;
 
-    // After signing out, redirect to the sign-in screen.
-    // replace() is used instead of push() so the user can't press "back" to return
-    // to the home screen without being signed in again.
-    router.replace("/sign-in");
-  };
+  // Build a greeting string using the user's first name if available.
+  // The "??" operator means "use the right side if the left side is null or undefined"
+  const greeting = user?.firstName ? `Welcome back, ${user.firstName}!` : "Welcome back!";
 
   return (
-    // "flex-1" makes the View fill the entire screen height.
-    // "items-center justify-center" centers all children in the middle of the screen.
-    <View className="flex-1 items-center justify-center bg-white gap-4">
-      <Text className="text-2xl font-bold text-green-700">Golf Stuff In Here</Text>
+    // bg-gray-50: a very light gray background that makes the white cards pop
+    <ScrollView className="flex-1 bg-gray-50">
+      <View className="px-5 pt-14 pb-6">
 
-      {/* Placeholder text — this will be replaced with real league/event content */}
-      <Text className="text-gray-500">Leagues and events will appear here.</Text>
+        {/* Page header */}
+        <Text className="text-2xl font-bold text-gray-900 mb-1">{greeting}</Text>
+        <Text className="text-gray-500 text-sm mb-8">Here's what's happening in your events.</Text>
 
-      {/* Sign out button — primarily for development. In a production app this
-          might live in a settings screen or a profile menu instead. */}
-      <TouchableOpacity
-        className="bg-gray-200 rounded-xl px-6 py-3"
-        onPress={handleSignOut}
-      >
-        <Text className="text-gray-700 font-medium">Sign Out</Text>
-      </TouchableOpacity>
-    </View>
+        {/* Section heading */}
+        <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">
+          Quick Access
+        </Text>
+
+        {/* Events card — tapping navigates to the Events tab */}
+        <HomeCard
+          icon="trophy-outline"
+          title="Your Events"
+          subtitle="No active events yet. Join or create one to get started."
+          // "/(tabs)/events" matches the events.tsx filename in this directory
+          onPress={() => router.push("/(tabs)/events")}
+        />
+
+        {/* Rounds card — tapping navigates to the Rounds tab */}
+        <HomeCard
+          icon="flag-outline"
+          title="Recent Rounds"
+          subtitle="No rounds played yet. Start a round from an event to enter scores."
+          onPress={() => router.push("/(tabs)/rounds")}
+        />
+
+      </View>
+    </ScrollView>
   );
 }

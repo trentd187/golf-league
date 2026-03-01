@@ -16,20 +16,38 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- plain VARCHAR because the database itself rejects invalid values.
 
 CREATE TYPE user_role AS ENUM ('admin', 'manager', 'user');
--- league_member_role: a user can be an admin of a specific league without being a global admin
-CREATE TYPE league_member_role AS ENUM ('admin', 'member');
--- event_type: what kind of competition is being run
-CREATE TYPE event_type AS ENUM ('league_season', 'tournament', 'casual');
+
+-- event_type: what kind of competition is being run.
+-- "league"      — an ongoing, multi-round season with accumulated standings.
+-- "tournament"  — a one-off competitive event (1 or more rounds).
+-- "casual"      — informal round with friends; no standings, no points.
+--
+-- Note: there is no separate "leagues" table. An event with type "league" IS the league.
+-- This keeps the hierarchy simple: events contain rounds, regardless of competition type.
+CREATE TYPE event_type AS ENUM ('league', 'tournament', 'casual');
+
 -- event_status: lifecycle state of an event
 CREATE TYPE event_status AS ENUM ('upcoming', 'active', 'completed', 'cancelled');
--- round_status: lifecycle state of a single round within an event
-CREATE TYPE round_status AS ENUM ('scheduled', 'active', 'completed');
--- scoring_format: determines how scores are tallied and a winner is determined
-CREATE TYPE scoring_format AS ENUM ('stroke', 'net_stroke', 'stableford', 'skins', 'match_play', 'scramble', 'best_ball');
+
+-- event_player_role: permission level within a specific event.
+-- "organizer" — can edit the event, invite members, and schedule rounds.
+-- "player"    — participant only; can view the event and enter scores.
+--
+-- This replaces the old league_member_role enum (which had 'admin'/'member').
+CREATE TYPE event_player_role AS ENUM ('organizer', 'player');
+
 -- event_player_status: tracks whether a player has confirmed, withdrawn, or finished an event
 CREATE TYPE event_player_status AS ENUM ('invited', 'registered', 'withdrawn', 'completed');
+
+-- round_status: lifecycle state of a single round within an event
+CREATE TYPE round_status AS ENUM ('scheduled', 'active', 'completed');
+
+-- scoring_format: determines how scores are tallied and a winner is determined
+CREATE TYPE scoring_format AS ENUM ('stroke', 'net_stroke', 'stableford', 'skins', 'match_play', 'scramble', 'best_ball');
+
 -- round_player_status: tracks a player's state within a single round
 CREATE TYPE round_player_status AS ENUM ('registered', 'active', 'withdrawn', 'completed');
+
 -- tee_gender: golf courses rate tees separately by gender due to different distances
 CREATE TYPE tee_gender AS ENUM ('mens', 'womens', 'unisex');
 
@@ -48,40 +66,15 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Leagues
--- A league is an organized group of golfers who compete together.
--- created_by references users(id) — this is a foreign key constraint that ensures
--- the creator must be a valid user. ON DELETE behavior is not set here, so deleting
--- a user who created leagues will fail unless those leagues are deleted first.
-CREATE TABLE leagues (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR NOT NULL,
-    description TEXT,                           -- TEXT allows longer content than VARCHAR
-    created_by UUID NOT NULL REFERENCES users(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- League Members
--- This is a junction/join table implementing a many-to-many relationship:
--- a user can belong to many leagues, and a league has many users.
--- ON DELETE CASCADE means if a league or user is deleted, their membership rows
--- are automatically deleted too — no orphaned records.
-CREATE TABLE league_members (
-    league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role league_member_role NOT NULL DEFAULT 'member',
-    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (league_id, user_id) -- Composite primary key prevents a user from joining the same league twice
-);
-
 -- Courses
 -- A golf course where rounds are played. Hole count is usually 18 but can be 9.
+-- city and state default to '' so the app can auto-create a course from just its name
+-- when an organizer schedules a round. These can be filled in properly later.
 CREATE TABLE courses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR NOT NULL,
-    city VARCHAR NOT NULL,
-    state VARCHAR NOT NULL,
+    city VARCHAR NOT NULL DEFAULT '',   -- Defaults to empty string; fill in later if desired
+    state VARCHAR NOT NULL DEFAULT '',  -- Defaults to empty string; fill in later if desired
     hole_count INT NOT NULL DEFAULT 18,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -95,7 +88,7 @@ CREATE TABLE courses (
 CREATE TABLE tees (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
-    name VARCHAR NOT NULL,             -- e.g., "Blue", "White", "Red"
+    name VARCHAR NOT NULL,             -- e.g., "Blue", "White", "Default"
     gender tee_gender NOT NULL,
     course_rating DECIMAL(4,1) NOT NULL, -- USGA course rating: expected score for a scratch golfer
     slope_rating INT NOT NULL,           -- USGA slope: difficulty for a bogey golfer vs scratch (55–155)
@@ -117,18 +110,17 @@ CREATE TABLE holes (
 );
 
 -- Events
--- An event is a competition (season, tournament, or casual round).
--- league_id is nullable (no REFERENCES constraint is set with NOT NULL) —
--- events can exist independently of a league.
--- ON DELETE SET NULL: if a league is deleted, its events remain but lose their league association.
+-- The top-level container for any golf competition.
+-- An event can be a league (ongoing season), tournament (one-off), or casual round.
+-- There is no separate "leagues" table — event_type = 'league' serves that purpose.
 CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    league_id UUID REFERENCES leagues(id) ON DELETE SET NULL, -- Nullable foreign key
     name VARCHAR NOT NULL,
-    event_type event_type NOT NULL,
+    description TEXT,                              -- Optional longer description
+    event_type event_type NOT NULL,                -- 'league', 'tournament', or 'casual'
     status event_status NOT NULL DEFAULT 'upcoming',
-    start_date DATE NOT NULL,   -- DATE stores just the date, no time component
-    end_date DATE,              -- Nullable: single-day events may not have a distinct end date
+    start_date DATE,                               -- Nullable: some events don't have a fixed start date
+    end_date DATE,                                 -- Nullable: single-day events may not have an end date
     created_by UUID NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -148,7 +140,14 @@ CREATE TABLE event_points_rules (
 );
 
 -- Event Players
--- Tracks which users are participating in an event and their overall results.
+-- Tracks which users belong to / participate in an event and their overall results.
+-- For a "league" event, this is effectively the league membership list.
+-- For a "tournament", this is the registration list.
+--
+-- The role column controls what the player can do within this event:
+--   "organizer" — can edit, invite members, schedule rounds
+--   "player"    — participant only
+--
 -- finish_position, total_gross_score, total_net_score, and total_points are all nullable
 -- because they're only populated once the event is complete.
 -- UNIQUE (event_id, user_id): a player can only be registered once per event.
@@ -156,7 +155,8 @@ CREATE TABLE event_players (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    status event_player_status NOT NULL DEFAULT 'invited',
+    role event_player_role NOT NULL DEFAULT 'player',  -- Permission level within this event
+    status event_player_status NOT NULL DEFAULT 'registered',
     finish_position INT,       -- Nullable: set when event is finalized
     total_gross_score INT,     -- Nullable: sum of gross scores across all rounds
     total_net_score INT,       -- Nullable: sum of net scores (handicap-adjusted)
@@ -169,7 +169,7 @@ CREATE TABLE event_players (
 -- Rounds
 -- A single day/session of golf within an event. Multi-round events (like a 4-round
 -- tournament) have multiple rows here, each with a different round_number.
--- requires_handicap: when true, players need a handicap index to compete.
+-- requires_handicap: when true, players need a handicap index before scores can be entered.
 CREATE TABLE rounds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -179,13 +179,14 @@ CREATE TABLE rounds (
     scheduled_date DATE NOT NULL,
     status round_status NOT NULL DEFAULT 'scheduled',
     scoring_format scoring_format NOT NULL,
-    requires_handicap BOOLEAN NOT NULL DEFAULT TRUE,
+    requires_handicap BOOLEAN NOT NULL DEFAULT FALSE,    -- Default false: handicap not required for casual rounds
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Round Players
 -- Links an event_player to a specific round and tracks their per-round results.
+-- A user must be an event_player before they can be a round_player.
 -- tee_id is nullable so players can use a different tee than the round's default.
 -- handicap_index and course_handicap are captured at the time of the round — a player's
 -- handicap can change over time, so we snapshot it here for historical accuracy.
@@ -285,10 +286,9 @@ CREATE TABLE team_scores (
 -- PostgreSQL would scan every row in the table (a "full table scan") which is slow
 -- on large datasets. We create indexes on foreign key columns and other frequently
 -- queried fields. Primary keys are indexed automatically by PostgreSQL.
-CREATE INDEX idx_league_members_user_id ON league_members(user_id);            -- "Show all leagues for a user"
-CREATE INDEX idx_events_league_id ON events(league_id);                        -- "Show all events for a league"
 CREATE INDEX idx_event_players_event_id ON event_players(event_id);            -- "Show all players in an event"
 CREATE INDEX idx_event_players_user_id ON event_players(user_id);              -- "Show all events a user is in"
+CREATE INDEX idx_event_players_role ON event_players(event_id, role);          -- "Show all organizers of an event"
 CREATE INDEX idx_rounds_event_id ON rounds(event_id);                          -- "Show all rounds for an event"
 CREATE INDEX idx_round_players_round_id ON round_players(round_id);            -- "Show all players in a round"
 CREATE INDEX idx_round_players_event_player_id ON round_players(event_player_id); -- "Find a round_player by event_player"

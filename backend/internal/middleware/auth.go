@@ -5,6 +5,7 @@
 package middleware
 
 import (
+	"fmt"
 	"strings"
 
 	// fiber is the HTTP framework; fiber.Handler is the function signature for middleware
@@ -12,47 +13,55 @@ import (
 	// jwt is used to parse JSON Web Tokens (JWTs) from the Authorization header
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/trentd187/golf-league/internal/config"
+	"github.com/trentd187/golf-league/internal/models"
+	// gorm is our ORM — used here to find or create the user record in Postgres
+	"gorm.io/gorm"
 )
 
-// Claims defines the data we expect to find inside a JWT.
-// JWTs contain a payload (called "claims") — key/value data encoded in the token.
-// jwt.RegisteredClaims provides standard fields like Subject (user ID), ExpiresAt, etc.
-// We embed it and add our own "role" claim to track the user's permission level.
+// Claims defines the data we expect inside a Clerk JWT payload.
+// Clerk's default token includes standard fields (Subject = Clerk user ID, expiry, etc.).
+// We also read custom claims that you add via the Clerk dashboard JWT template:
+//
+//   "role":  "{{user.public_metadata.role}}"   — the user's permission level
+//   "email": "{{user.primary_email_address}}"  — used to populate our users table
+//   "name":  "{{user.full_name}}"              — display name for our users table
+//
+// Without these custom claims in the template, role will be empty (defaults to "user")
+// and email/name will use placeholder values.
 type Claims struct {
-	jwt.RegisteredClaims        // Standard JWT fields (sub, exp, iat, etc.)
-	Role                 string `json:"role"` // Custom claim: the user's role ("admin", "manager", "user")
+	jwt.RegisteredClaims        // Standard JWT fields: Subject (user ID), ExpiresAt, IssuedAt, etc.
+	Role                 string `json:"role"`  // Custom claim: "admin", "manager", or "user"
+	Email                string `json:"email"` // Custom claim: the user's primary email address
+	Name                 string `json:"name"`  // Custom claim: the user's full name
 }
 
-// Auth returns a Fiber middleware handler that validates the JWT on incoming requests.
-// It is a "closure" — a function that returns another function, capturing cfg in its scope.
-// This pattern is used when middleware needs configuration at setup time.
+// Auth returns a Fiber middleware handler that:
+//  1. Validates the JWT from the "Authorization: Bearer <token>" header
+//  2. Finds the matching user in our database (or creates one on first visit)
+//  3. Syncs the user's role from the JWT into the database
+//  4. Stores the user's internal UUID and role in the request context (c.Locals)
+//     so downstream handlers can read them without re-parsing the token
 //
-// How JWT authentication works:
-//  1. The client (mobile app) obtains a signed JWT from Clerk after sign-in
-//  2. Every API request includes that JWT in the "Authorization: Bearer <token>" header
-//  3. This middleware extracts the token, parses it, and puts the user's ID and role
-//     into the request context (c.Locals) so handlers can read them
-func Auth(cfg *config.Config) fiber.Handler {
+// This is a closure — a function that returns another function, capturing cfg and db
+// in its scope so they're available every time a request comes in.
+func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Read the Authorization header value from the incoming HTTP request
-		authHeader := c.Get("Authorization")
+		// --- Step 1: Extract the token from the Authorization header ---
 
-		// The header must exist and start with "Bearer " (the standard prefix for JWTs).
-		// If either condition fails, reject the request immediately with HTTP 401 Unauthorized.
+		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "missing or invalid authorization header",
 			})
 		}
 
-		// Strip the "Bearer " prefix to get just the raw token string
+		// Strip the "Bearer " prefix to get just the raw JWT string
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
-		// TODO: replace with Clerk JWKS verification once Clerk is configured
-		// ParseUnverified parses the JWT without checking the signature.
-		// This is a temporary approach during development — in production the signature
-		// MUST be verified against Clerk's public keys (JWKS) to prevent token forgery.
-		// The &Claims{} argument tells the parser what struct to deserialize the payload into.
+		// --- Step 2: Parse the JWT ---
+		// TODO: replace ParseUnverified with full JWKS signature verification.
+		// ParseUnverified skips signature checking — fine for development but
+		// MUST be replaced before production. Verification prevents token forgery.
 		token, _, err := jwt.NewParser().ParseUnverified(tokenStr, &Claims{})
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -60,8 +69,6 @@ func Auth(cfg *config.Config) fiber.Handler {
 			})
 		}
 
-		// Type-assert the parsed Claims from the interface{} type back to *Claims.
-		// The "ok" boolean is false if the assertion fails (i.e., the token had unexpected structure).
 		claims, ok := token.Claims.(*Claims)
 		if !ok {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -69,15 +76,92 @@ func Auth(cfg *config.Config) fiber.Handler {
 			})
 		}
 
-		// Store the user's ID and role in the request context using c.Locals.
-		// c.Locals is a key-value store scoped to a single request — downstream handlers
-		// and middleware can read these values without re-parsing the token.
-		// claims.Subject is the standard JWT "sub" field, which Clerk sets to the user's ID.
-		c.Locals("userID", claims.Subject)
-		c.Locals("userRole", claims.Role)
+		// claims.Subject is the standard JWT "sub" field — Clerk sets it to the Clerk user ID
+		clerkUserID := claims.Subject
+		if clerkUserID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "token missing subject",
+			})
+		}
 
-		// c.Next() passes control to the next middleware or route handler in the chain.
-		// If we don't call this, the request stops here and no handler runs.
+		// --- Step 3: Find or create the user in our database ---
+		// This is "lazy user sync": the first time a user hits any authenticated endpoint,
+		// we create their record in our database. On subsequent requests we just look them up.
+
+		// Determine the role from the JWT claim, defaulting to "user" if not set
+		// (e.g. if the Clerk JWT template hasn't been configured yet)
+		role := roleFromClaim(claims.Role)
+
+		// Build placeholder email and name in case the JWT template doesn't include them.
+		// These use the Clerk user ID so they're deterministic and unique.
+		// They should be replaced by the real values once the JWT template is set up.
+		email := claims.Email
+		if email == "" {
+			// Placeholder: "user_2abc123@clerk.local" — clearly not real, and unique per user
+			email = fmt.Sprintf("%s@clerk.local", clerkUserID)
+		}
+
+		name := claims.Name
+		if name == "" {
+			name = "User" // Generic fallback display name
+		}
+
+		var user models.User
+
+		// Try to find an existing user by their Clerk ID
+		result := db.Where("clerk_id = ?", clerkUserID).First(&user)
+
+		if result.Error != nil {
+			// User not found — create a new record for them
+			// gorm.ErrRecordNotFound is the expected "not found" error; anything else is a DB problem
+			if result.Error != gorm.ErrRecordNotFound {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "database error",
+				})
+			}
+
+			// Create the user row — GORM will call INSERT and populate user.ID with the new UUID
+			user = models.User{
+				ClerkID:     &clerkUserID,
+				DisplayName: name,
+				Email:       email,
+				Role:        role,
+			}
+			if err := db.Create(&user).Error; err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "failed to create user record",
+				})
+			}
+		} else {
+			// User found — sync their role in case it changed in Clerk
+			// (e.g. admin changed someone's role via the Clerk dashboard)
+			if user.Role != role && claims.Role != "" {
+				db.Model(&user).Update("role", role)
+				user.Role = role
+			}
+		}
+
+		// --- Step 4: Store user info in the request context ---
+		// c.Locals is a key-value store scoped to this single request.
+		// Handlers read "userID" (our internal UUID) and "userRole" from here.
+		c.Locals("userID", user.ID.String())
+		c.Locals("userRole", string(user.Role))
+
+		// Pass control to the next middleware or route handler
 		return c.Next()
+	}
+}
+
+// roleFromClaim converts the raw role string from the JWT into our typed UserRole enum.
+// If the claim is missing or unrecognised, it defaults to "user" (least privileged).
+func roleFromClaim(s string) models.UserRole {
+	switch s {
+	case "admin":
+		return models.UserRoleAdmin
+	case "manager":
+		return models.UserRoleManager
+	default:
+		// Unknown or empty role — default to regular user
+		return models.UserRoleUser
 	}
 }

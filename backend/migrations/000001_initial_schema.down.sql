@@ -20,24 +20,21 @@ DROP TABLE IF EXISTS round_players;  -- References rounds and event_players
 DROP TABLE IF EXISTS rounds;         -- References events, courses, and tees
 DROP TABLE IF EXISTS event_players;  -- References events and users
 DROP TABLE IF EXISTS event_points_rules; -- References events
-DROP TABLE IF EXISTS events;         -- References leagues and users
+DROP TABLE IF EXISTS events;         -- References users
 DROP TABLE IF EXISTS holes;          -- References tees
 DROP TABLE IF EXISTS tees;           -- References courses
 DROP TABLE IF EXISTS courses;
-DROP TABLE IF EXISTS league_members; -- References leagues and users
-DROP TABLE IF EXISTS leagues;        -- References users
 DROP TABLE IF EXISTS users;          -- No outgoing foreign keys — safe to drop last
 
 -- Drop enums
 -- Custom PostgreSQL types must be dropped after all tables that use them are gone.
--- IF NOT EXISTS is used on DROP TABLE above; IF EXISTS is the equivalent for DROP TYPE.
 -- Dropped in reverse creation order (least dependent first).
 DROP TYPE IF EXISTS round_player_status;
 DROP TYPE IF EXISTS event_player_status;
+DROP TYPE IF EXISTS event_player_role;
 DROP TYPE IF EXISTS tee_gender;
 DROP TYPE IF EXISTS scoring_format;
 DROP TYPE IF EXISTS round_status;
 DROP TYPE IF EXISTS event_status;
 DROP TYPE IF EXISTS event_type;
-DROP TYPE IF EXISTS league_member_role;
 DROP TYPE IF EXISTS user_role;

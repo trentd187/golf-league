@@ -1,164 +1,296 @@
 // app/sign-in.tsx
-// The sign-in screen — the first thing unauthenticated users see.
-// It supports two authentication methods:
-//   1. Google OAuth (one-tap sign in with a Google account)
-//   2. Email OTP (passwordless: enter email, receive a one-time code, enter code)
+// The sign-in / sign-up screen — the first screen unauthenticated users see.
 //
-// Both methods are handled by Clerk, which manages the full auth flow including
-// token issuance, session management, and secure storage.
+// Supports four authentication methods:
+//   1. Google OAuth    — one-tap sign in with a Google account
+//   2. Facebook OAuth  — sign in with a Facebook account
+//   3. Apple Sign In   — sign in with an Apple ID (required on iOS when other OAuth is offered)
+//   4. Email OTP       — passwordless: enter email → 6-digit code → done
+//
+// The email flow is "combined" — it handles both new users (sign-up) and
+// returning users (sign-in) from the same screen:
+//   - If the email already exists in Clerk → sign-in OTP flow
+//   - If the email is new                  → sign-up OTP flow (creates account)
+//
+// Error handling:
+//   - Inline red text: form-level issues (wrong code, invalid email format)
+//   - Alert dialog:    unexpected/network errors (has an OK dismiss button)
 
-// useSignIn: hook for email/password and OTP sign-in flows
-// useOAuth: hook for starting a third-party OAuth flow (Google, Apple, etc.)
-import { useSignIn, useOAuth } from "@clerk/clerk-expo";
-
-// useRouter gives programmatic navigation — we use it to redirect after sign-in
+import { useSignIn, useSignUp, useOAuth } from "@clerk/clerk-expo";
 import { useRouter } from "expo-router";
-
-// React Native core UI components
-import { Text, View, TouchableOpacity, TextInput } from "react-native";
-
-// useState is React's built-in hook for local component state
+import {
+  Text,
+  View,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
+  Alert,
+} from "react-native";
 import { useState } from "react";
-
-// expo-web-browser opens the OAuth consent screen in a secure in-app browser.
-// maybeCompleteAuthSession() must be called at the module level — it handles
-// the redirect back from the OAuth provider when the browser session finishes.
 import * as WebBrowser from "expo-web-browser";
 
-// This call is required for OAuth to work on Android and some iOS configurations.
-// It checks if an auth session is pending completion and resolves it.
-// Safe to call unconditionally — it does nothing if there's no pending session.
+// Required for OAuth redirects to complete correctly — safe to call unconditionally
 WebBrowser.maybeCompleteAuthSession();
 
+// authMode tracks which Clerk API to call when the user submits their OTP code
+type AuthMode = "signIn" | "signUp";
+
 export default function SignIn() {
-  // signIn: Clerk's sign-in object with methods to start/complete a sign-in attempt
-  // setActive: activates a Clerk session (marks the user as signed in)
-  // isLoaded: false until Clerk has initialized — always guard calls with this
-  const { signIn, setActive, isLoaded } = useSignIn();
+  // --- Clerk hooks ---
+  const { signIn, setActive: setSignInActive, isLoaded: signInLoaded } = useSignIn();
+  const { signUp, setActive: setSignUpActive, isLoaded: signUpLoaded } = useSignUp();
 
-  // Configure the OAuth flow for Google. "strategy" selects which provider to use.
-  // startGoogleOAuth() opens the Google OAuth consent screen and handles the callback.
-  const { startOAuthFlow: startGoogleOAuth } = useOAuth({ strategy: "oauth_google" });
+  // One hook per OAuth provider — each returns a startOAuthFlow() function
+  const { startOAuthFlow: startGoogleOAuth }   = useOAuth({ strategy: "oauth_google" });
+  const { startOAuthFlow: startFacebookOAuth } = useOAuth({ strategy: "oauth_facebook" });
+  const { startOAuthFlow: startAppleOAuth }    = useOAuth({ strategy: "oauth_apple" });
 
-  // useRouter lets us navigate programmatically (without the user tapping a link)
   const router = useRouter();
 
-  // Local state for the email OTP flow:
-  const [email, setEmail] = useState("");                       // The email address the user types in
-  const [code, setCode] = useState("");                         // The 6-digit OTP code Clerk sends
-  const [pendingVerification, setPendingVerification] = useState(false); // True after OTP is sent; shows the code input
+  // --- State ---
+  const [email, setEmail]                         = useState("");
+  const [code, setCode]                           = useState("");
+  const [pendingVerification, setPendingVerification] = useState(false);
+  const [authMode, setAuthMode]                   = useState<AuthMode>("signIn");
+  const [loading, setLoading]                     = useState(false);
+  const [inlineError, setInlineError]             = useState("");
 
-  // --- Google OAuth handler ---
-  const handleGoogleSignIn = async () => {
+  // --- Helpers ---
+
+  // showErrorAlert: native dialog for unexpected errors — user taps OK to dismiss
+  const showErrorAlert = (message: string) => {
+    Alert.alert("Something went wrong", message, [{ text: "OK" }]);
+  };
+
+  // extractClerkMessage: pulls a human-readable string out of a Clerk error object.
+  // Clerk errors have an "errors" array with longMessage/message on each item.
+  const extractClerkMessage = (err: unknown): string => {
+    const clerkErr = err as { errors?: { longMessage?: string; message?: string }[] };
+    return (
+      clerkErr.errors?.[0]?.longMessage ??
+      clerkErr.errors?.[0]?.message ??
+      "An unexpected error occurred."
+    );
+  };
+
+  // --- Generic OAuth handler ---
+  // handleOAuth accepts any OAuth flow-starter function, making it reusable for
+  // Google, Facebook, and Apple without duplicating the try/catch logic.
+  const handleOAuth = async (
+    startFlow: () => Promise<{ createdSessionId?: string | null; setActive?: ((opts: { session: string }) => Promise<void>) | null }>
+  ) => {
     try {
-      // startGoogleOAuth() opens a WebBrowser session with Google's OAuth page.
-      // When the user grants permission, Google redirects back to the app and
-      // Clerk creates a session, returning createdSessionId.
-      const { createdSessionId, setActive: setActiveSession } = await startGoogleOAuth();
-
+      setLoading(true);
+      const { createdSessionId, setActive: setActiveSession } = await startFlow();
       if (createdSessionId && setActiveSession) {
-        // Activate the session so Clerk considers the user signed in
         await setActiveSession({ session: createdSessionId });
-        // Navigate to the main tab screen — replace() removes sign-in from the history
-        // stack so the user can't navigate "back" to the sign-in screen.
         router.replace("/(tabs)");
       }
     } catch (err) {
-      console.error("Google sign-in error:", err);
+      showErrorAlert(extractClerkMessage(err));
+    } finally {
+      setLoading(false);
     }
   };
 
-  // --- Email OTP: Step 1 — request a one-time code ---
-  const handleSendOtp = async () => {
-    // Always guard Clerk calls with isLoaded to avoid calling before initialization
-    if (!isLoaded) return;
-    try {
-      // signIn.create() starts the sign-in attempt.
-      // identifier is the user's email; strategy "email_code" tells Clerk to send
-      // a one-time passcode to that email rather than requiring a password.
-      await signIn.create({ identifier: email, strategy: "email_code" });
+  // --- Email OTP: Step 1 — send a code ---
+  const handleSendEmail = async () => {
+    if (!signInLoaded || !signUpLoaded) return;
+    setLoading(true);
+    setInlineError("");
 
-      // Switch the UI to show the code-entry form instead of the email form
+    try {
+      // Attempt sign-in first (assumes the email already has a Clerk account)
+      await signIn!.create({ identifier: email, strategy: "email_code" });
+      setAuthMode("signIn");
       setPendingVerification(true);
-    } catch (err) {
-      console.error("OTP send error:", err);
+    } catch (signInErr) {
+      // Check if Clerk says the email doesn't exist yet
+      const clerkErr = signInErr as { errors?: { code?: string }[] };
+      const errCode = clerkErr.errors?.[0]?.code ?? "";
+      const isNewUser =
+        errCode === "form_identifier_not_found" ||
+        errCode === "form_password_incorrect";
+
+      if (isNewUser) {
+        // New user — switch to sign-up flow
+        try {
+          await signUp!.create({ emailAddress: email });
+          await signUp!.prepareEmailAddressVerification({ strategy: "email_code" });
+          setAuthMode("signUp");
+          setPendingVerification(true);
+        } catch (signUpErr) {
+          setInlineError(extractClerkMessage(signUpErr));
+        }
+      } else {
+        showErrorAlert(extractClerkMessage(signInErr));
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
-  // --- Email OTP: Step 2 — verify the code the user received ---
-  const handleVerifyOtp = async () => {
-    if (!isLoaded) return;
-    try {
-      // attemptFirstFactor() submits the code the user entered.
-      // If correct, Clerk returns status: "complete" and a new session.
-      const result = await signIn.attemptFirstFactor({ strategy: "email_code", code });
+  // --- Email OTP: Step 2 — verify the code ---
+  const handleVerifyCode = async () => {
+    if (!signInLoaded || !signUpLoaded) return;
+    setLoading(true);
+    setInlineError("");
 
-      if (result.status === "complete") {
-        // Activate the newly created session so the user is signed in
-        await setActive({ session: result.createdSessionId });
-        router.replace("/(tabs)");
+    try {
+      if (authMode === "signIn") {
+        const result = await signIn!.attemptFirstFactor({ strategy: "email_code", code });
+        if (result.status === "complete") {
+          await setSignInActive!({ session: result.createdSessionId });
+          router.replace("/(tabs)");
+        }
+      } else {
+        const result = await signUp!.attemptEmailAddressVerification({ code });
+        if (result.status === "complete") {
+          await setSignUpActive!({ session: result.createdSessionId });
+          router.replace("/(tabs)");
+        }
       }
     } catch (err) {
-      console.error("OTP verify error:", err);
+      // Wrong code — show as inline error so the user can try again without dismissing a dialog
+      setInlineError(extractClerkMessage(err));
+    } finally {
+      setLoading(false);
     }
   };
 
   // --- UI ---
-  // NativeWind utility classes (className="...") provide Tailwind-style styling.
-  // "flex-1" means this View takes all available space.
-  // "items-center justify-center" centers children horizontally and vertically.
   return (
-    <View className="flex-1 items-center justify-center bg-white p-6 gap-4">
-      <Text className="text-3xl font-bold text-green-700 mb-4">Golf Stuff In Here</Text>
+    <View className="flex-1 items-center justify-center bg-white px-6 gap-3">
 
-      {/* Google sign-in button */}
-      <TouchableOpacity
-        className="w-full bg-blue-600 rounded-xl py-4 items-center"
-        onPress={handleGoogleSignIn}
-      >
-        <Text className="text-white font-semibold text-base">Continue with Google</Text>
-      </TouchableOpacity>
+      {/* Branding */}
+      <Text className="text-3xl font-bold text-green-700 mb-1">Golf Stuff In Here</Text>
+      <Text className="text-gray-500 text-sm mb-3">Sign in or create an account to continue</Text>
 
-      {/* Horizontal divider between OAuth and email OTP sections */}
-      <View className="w-full border-t border-gray-200 my-2" />
+      {/* OAuth buttons — hidden during OTP code entry so the screen stays uncluttered */}
+      {!pendingVerification && (
+        <>
+          {/* Google */}
+          <TouchableOpacity
+            className="w-full bg-blue-600 rounded-xl py-4 items-center justify-center"
+            onPress={() => handleOAuth(startGoogleOAuth)}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text className="text-white font-semibold text-base">Continue with Google</Text>
+            )}
+          </TouchableOpacity>
 
-      {/* Conditional rendering: show email input OR code input based on pendingVerification state */}
+          {/* Facebook — uses Facebook brand blue (#1877F2) */}
+          <TouchableOpacity
+            className="w-full rounded-xl py-4 items-center justify-center"
+            style={{ backgroundColor: "#1877F2" }}
+            onPress={() => handleOAuth(startFacebookOAuth)}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text className="text-white font-semibold text-base">Continue with Facebook</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Apple — black background per Apple's Human Interface Guidelines.
+              Note: Apple requires this button if any other OAuth is offered on iOS. */}
+          <TouchableOpacity
+            className="w-full bg-black rounded-xl py-4 items-center justify-center"
+            onPress={() => handleOAuth(startAppleOAuth)}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text className="text-white font-semibold text-base">Continue with Apple</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Divider */}
+          <View className="w-full flex-row items-center gap-3 my-1">
+            <View className="flex-1 border-t border-gray-200" />
+            <Text className="text-gray-400 text-sm">or</Text>
+            <View className="flex-1 border-t border-gray-200" />
+          </View>
+        </>
+      )}
+
+      {/* Email OTP flow */}
       {!pendingVerification ? (
-        // Step 1: collect the user's email address
+        // Step 1: collect email
         <>
           <TextInput
             className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base"
             placeholder="Email address"
-            autoCapitalize="none"          // Don't auto-capitalize email addresses
-            keyboardType="email-address"   // Shows the @ key and optimized email keyboard
+            autoCapitalize="none"
+            keyboardType="email-address"
             value={email}
-            onChangeText={setEmail}        // Update state on every keystroke
+            onChangeText={setEmail}
+            editable={!loading}
           />
           <TouchableOpacity
-            className="w-full bg-green-700 rounded-xl py-4 items-center"
-            onPress={handleSendOtp}
+            className={`w-full rounded-xl py-4 items-center ${loading ? "bg-green-400" : "bg-green-700"}`}
+            onPress={handleSendEmail}
+            disabled={loading}
           >
-            <Text className="text-white font-semibold text-base">Send One-Time Code</Text>
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text className="text-white font-semibold text-base">Continue with Email</Text>
+            )}
           </TouchableOpacity>
         </>
       ) : (
-        // Step 2: user has received the OTP — collect the 6-digit code
+        // Step 2: enter the OTP code
         <>
+          <Text className="text-gray-600 text-sm text-center">
+            We sent a code to <Text className="font-semibold">{email}</Text>
+          </Text>
+
           <TextInput
-            className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base tracking-widest"
-            placeholder="Enter code"
-            keyboardType="number-pad"  // Numeric keyboard for the digit code
+            className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base tracking-widest text-center"
+            placeholder="000000"
+            keyboardType="number-pad"
+            maxLength={6}
             value={code}
             onChangeText={setCode}
+            editable={!loading}
           />
+
           <TouchableOpacity
-            className="w-full bg-green-700 rounded-xl py-4 items-center"
-            onPress={handleVerifyOtp}
+            className={`w-full rounded-xl py-4 items-center ${loading ? "bg-green-400" : "bg-green-700"}`}
+            onPress={handleVerifyCode}
+            disabled={loading}
           >
-            <Text className="text-white font-semibold text-base">Verify Code</Text>
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text className="text-white font-semibold text-base">Verify Code</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Back link to re-enter a different email */}
+          <TouchableOpacity
+            onPress={() => {
+              setPendingVerification(false);
+              setCode("");
+              setInlineError("");
+            }}
+            disabled={loading}
+          >
+            <Text className="text-gray-500 text-sm underline">Use a different email</Text>
           </TouchableOpacity>
         </>
       )}
+
+      {/* Inline error — for form-level issues like a wrong OTP code */}
+      {inlineError ? (
+        <Text className="text-red-600 text-sm text-center">{inlineError}</Text>
+      ) : null}
     </View>
   );
 }

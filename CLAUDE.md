@@ -21,10 +21,12 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 **Golf Stuff In Here** is a mobile-first golf league and tournament management app.
 - **Backend:** Go + Fiber v2 API server with WebSockets, deployed on AWS ECS via Docker
-- **Mobile:** React Native + Expo (TypeScript), distributed via App Store / Google Play
+- **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
-- **Auth:** Clerk (Google OAuth + Email OTP)
+- **Auth:** Clerk (Google OAuth + Email OTP; sign-in and sign-up share one screen with email OTP fallback to sign-up)
 - **Module path:** `github.com/trentd187/golf-league`
+
+> **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
 
 The user is **learning TypeScript** and has **intermediate Go knowledge**. Always add thorough explanatory comments to every file touched.
 
@@ -188,17 +190,17 @@ import { API_URL } from "@/constants/api";
 
 // Fetching data
 const { data } = useQuery({
-  queryKey: ["leagues"],
-  queryFn: () => fetch(`${API_URL}/api/v1/leagues`).then(r => r.json()),
+  queryKey: ["events"],
+  queryFn: () => fetch(`${API_URL}/api/v1/events`).then(r => r.json()),
 });
 
 // Mutating data
 const mutation = useMutation({
-  mutationFn: (newLeague) =>
-    fetch(`${API_URL}/api/v1/leagues`, {
+  mutationFn: (newEvent) =>
+    fetch(`${API_URL}/api/v1/events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newLeague),
+      body: JSON.stringify(newEvent),
     }).then(r => r.json()),
 });
 ```
@@ -222,6 +224,24 @@ Use `pnpm add` for pure JS packages:
 pnpm add some-js-library
 ```
 
+### Known Dependency Quirks (SDK 54)
+
+pnpm's strict resolution requires the following packages to be **direct dependencies** (not just transitive). Without them, either the bundler fails or the wrong version is loaded at runtime:
+
+| Package | Version | Why direct dep is needed |
+|---|---|---|
+| `@expo/metro-runtime` | `~6.1.2` | expo-router 6.0.23 imports it directly; without it: `Unable to resolve "@expo/metro-runtime/error-overlay"` |
+| `react-native-css-interop` | `latest` | NativeWind peer dep not auto-hoisted |
+| `expo-web-browser` | `~15.0.10` | Clerk OAuth peer dep |
+| `expo-auth-session` | `~7.0.10` | Without this, pnpm resolves clerk's peer to 55.0.6 (SDK 55) → `expo-crypto@55.0.8` → `Cannot find native module 'ExpoCryptoAES'` crash |
+| `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |
+| `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
+
+**Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
+
+After any package.json change, run `pnpm start --clear` to flush Metro's cache.
+`npx expo install --fix` resolves correct SDK-54-compatible versions for all expo packages.
+
 ### TypeScript Path Aliases
 
 The `@/` alias resolves to the `mobile/` root. Use it for all internal imports:
@@ -234,20 +254,32 @@ import { tokenCache } from "../../utils/cache"; // avoid relative paths
 
 ## Data Model
 
-The full data model is in `backend/internal/models/models.go` and `backend/migrations/000001_initial_schema.up.sql`.
+The full data model is documented in `DATA_MODEL.md` (repo root), `backend/internal/models/models.go`,
+and `backend/migrations/000001_initial_schema.up.sql`.
+
+There is **no separate `leagues` table**. An `event` with `event_type = 'league'` IS the league.
+This keeps the hierarchy simple — event → rounds → scores, regardless of competition type.
 
 Key hierarchy:
 ```
 users
-leagues → league_members → users
-events → event_players → users
-       → event_points_rules
-       → rounds → round_players → scores
-                → groups → group_players → round_players
-                → teams → team_members → round_players
-                        → team_scores
+events (type: "league" | "tournament" | "casual")
+  → event_players (role: "organizer" | "player")
+  → event_points_rules
+  → rounds → round_players → scores
+           → groups → group_players → round_players
+           → teams → team_members → round_players
+                   → team_scores
 courses → tees → holes
 ```
+
+**Who can manage a specific event** (edit, invite members, schedule rounds) — two-tier check:
+- `admin` global role → can manage any event (full platform bypass)
+- `manager` global role → only events where `event_players.role = 'organizer'` for that event (i.e., events they created, or where another organizer has explicitly granted them the organizer role)
+- `user` global role → same rule as manager
+
+The creator is auto-added as organizer in the `POST /api/v1/events` transaction.
+This check is implemented in `isEventOrganizer()` in `handlers/events.go` — use it in every handler that modifies an event.
 
 ### Handicap Rule
 

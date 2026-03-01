@@ -3,12 +3,14 @@
 // The struct field tags (the backtick strings like `gorm:"..."`) tell GORM how to handle
 // each field: its column type, constraints, default values, and relationships.
 //
-// The data model represents a golf league platform where:
-//   - Users join Leagues
-//   - Leagues organize Events (seasons, tournaments, casual rounds)
+// The data model represents a golf competition platform where:
+//   - Users join Events (leagues, tournaments, or casual rounds)
 //   - Events contain Rounds played at Courses
 //   - Rounds track Scores per player per hole
 //   - Players can be grouped into Groups (tee times) or Teams
+//
+// There is no separate "league" concept — an Event with type "league" IS the league.
+// This keeps the hierarchy simple: Event → Round → Score, regardless of competition type.
 package models
 
 import (
@@ -29,27 +31,19 @@ import (
 type UserRole string
 
 const (
-	UserRoleAdmin   UserRole = "admin"   // Full access: manage users, leagues, everything
-	UserRoleManager UserRole = "manager" // Can create and manage leagues and events
-	UserRoleUser    UserRole = "user"    // Regular player: can join leagues and record scores
+	UserRoleAdmin   UserRole = "admin"   // Full access: manage users, events, everything
+	UserRoleManager UserRole = "manager" // Can create and manage events
+	UserRoleUser    UserRole = "user"    // Regular player: can join events and record scores
 )
 
-// LeagueMemberRole represents a user's role within a specific league.
-// A user can be a regular "user" globally but an "admin" of one particular league.
-type LeagueMemberRole string
-
-const (
-	LeagueMemberRoleAdmin  LeagueMemberRole = "admin"  // Can manage the league's settings and members
-	LeagueMemberRoleMember LeagueMemberRole = "member" // Regular league participant
-)
-
-// EventType describes what kind of golf event is being organized.
+// EventType describes what kind of golf competition is being organized.
+// There is no separate "league" model — an event with type "league" IS the league.
 type EventType string
 
 const (
-	EventTypeLeagueSeason EventType = "league_season" // A multi-round season with standings
-	EventTypeTournament   EventType = "tournament"    // A competitive one-off tournament
-	EventTypeCasual       EventType = "casual"        // Informal round with friends
+	EventTypeLeague     EventType = "league"     // An ongoing, multi-round season with accumulated standings
+	EventTypeTournament EventType = "tournament" // A competitive one-off event (1 or more rounds)
+	EventTypeCasual     EventType = "casual"     // Informal round with friends; no standings, no points
 )
 
 // EventStatus tracks the lifecycle of an event.
@@ -60,6 +54,27 @@ const (
 	EventStatusActive    EventStatus = "active"    // Event is currently in progress
 	EventStatusCompleted EventStatus = "completed" // Event has finished
 	EventStatusCancelled EventStatus = "cancelled" // Event was cancelled before completion
+)
+
+// EventPlayerRole controls what a user can do within a specific event.
+// This is separate from UserRole (which is a global platform role).
+// An "organizer" of an event can edit it, invite members, and schedule rounds.
+// A "player" can participate but not manage.
+type EventPlayerRole string
+
+const (
+	EventPlayerRoleOrganizer EventPlayerRole = "organizer" // Can manage this event
+	EventPlayerRolePlayer    EventPlayerRole = "player"    // Participant only
+)
+
+// EventPlayerStatus tracks a player's participation state in an event.
+type EventPlayerStatus string
+
+const (
+	EventPlayerStatusInvited    EventPlayerStatus = "invited"    // Invited but hasn't confirmed
+	EventPlayerStatusRegistered EventPlayerStatus = "registered" // Confirmed participation
+	EventPlayerStatusWithdrawn  EventPlayerStatus = "withdrawn"  // Withdrew before or during the event
+	EventPlayerStatusCompleted  EventPlayerStatus = "completed"  // Finished the event
 )
 
 // RoundStatus tracks the lifecycle of a single round within an event.
@@ -85,16 +100,6 @@ const (
 	ScoringFormatBestBall   ScoringFormat = "best_ball"  // Team format: count only the best score per hole
 )
 
-// EventPlayerStatus tracks a player's participation state in an event.
-type EventPlayerStatus string
-
-const (
-	EventPlayerStatusInvited    EventPlayerStatus = "invited"    // Player was invited but hasn't confirmed
-	EventPlayerStatusRegistered EventPlayerStatus = "registered" // Player has confirmed participation
-	EventPlayerStatusWithdrawn  EventPlayerStatus = "withdrawn"  // Player withdrew before or during the event
-	EventPlayerStatusCompleted  EventPlayerStatus = "completed"  // Player finished the event
-)
-
 // RoundPlayerStatus tracks a player's state in a single round.
 type RoundPlayerStatus string
 
@@ -117,100 +122,44 @@ const (
 
 // --- Models ---
 // Each struct below maps to a database table. GORM uses the struct name (snake_cased and
-// pluralized) as the table name by default: User -> users, League -> leagues, etc.
+// pluralized) as the table name by default: User -> users, Event -> events, etc.
 
 // User represents a registered person in the system.
-// Users are created when someone signs in through Clerk for the first time.
+// Users are created automatically the first time a Clerk-authenticated user hits the API.
+// The ClerkID links our internal record to Clerk's identity system.
 type User struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"` // UUID primary key; the DB generates it automatically
-	DisplayName string    `gorm:"not null"`                                        // The name shown in the app (not necessarily their real name)
-	Email       string    `gorm:"uniqueIndex;not null"`                            // Unique email — used for identity; uniqueIndex creates a DB index
+	ClerkID     *string   `gorm:"uniqueIndex:idx_users_clerk_id"`                  // Clerk's user ID (e.g. "user_2abc123"); pointer = nullable for legacy rows
+	DisplayName string    `gorm:"not null"`                                        // The name shown in the app; populated from the Clerk JWT "name" claim
+	Email       string    `gorm:"uniqueIndex;not null"`                            // Unique email; populated from the Clerk JWT "email" claim
 	AvatarURL   *string                                                            // Optional profile picture URL; pointer means it can be NULL in the DB
-	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"`          // Global role; type: references the PostgreSQL enum created in migrations
+	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"`          // Global role; synced from Clerk publicMetadata via the JWT "role" claim
 	CreatedAt   time.Time                                                          // GORM automatically sets this on create
 	UpdatedAt   time.Time                                                          // GORM automatically updates this on every save
 }
 
-// League is an organized group of golfers who compete together over time.
-// A league can run multiple events (seasons, tournaments) throughout the year.
-type League struct {
-	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name        string    `gorm:"not null"`
-	Description *string                                                    // Optional long-form description; pointer = nullable
-	CreatedBy   uuid.UUID `gorm:"type:uuid;not null"`                      // Foreign key: which user created this league
-	Creator     User      `gorm:"foreignKey:CreatedBy"`                    // GORM relationship: preloads the User struct when queried
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
-
-// LeagueMember is a join table linking Users to Leagues.
-// A user can be a member of many leagues; a league has many members.
-// The composite primary key (LeagueID + UserID) ensures a user can only join once.
-type LeagueMember struct {
-	LeagueID uuid.UUID        `gorm:"type:uuid;primaryKey"`             // Part of composite PK
-	UserID   uuid.UUID        `gorm:"type:uuid;primaryKey"`             // Part of composite PK
-	League   League           `gorm:"foreignKey:LeagueID"`              // Relationship to the League record
-	User     User             `gorm:"foreignKey:UserID"`                // Relationship to the User record
-	Role     LeagueMemberRole `gorm:"type:league_member_role;not null;default:'member'"`
-	JoinedAt time.Time        `gorm:"autoCreateTime"`                   // autoCreateTime: GORM sets this automatically when the row is inserted
-}
-
-// Course represents a golf course where rounds are played.
-type Course struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name      string    `gorm:"not null"`
-	City      string    `gorm:"not null"`
-	State     string    `gorm:"not null"`
-	HoleCount int       `gorm:"not null;default:18"` // Most courses have 18 holes; some have 9
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Tees      []Tee `gorm:"foreignKey:CourseID"` // One-to-many: a course has many sets of tees (different distances/ratings)
-}
-
-// Tee represents one set of tee boxes on a course (e.g., "Blue", "White", "Red").
-// Each tee set has its own course rating, slope, and par — used for handicap calculations.
-type Tee struct {
-	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	CourseID     uuid.UUID `gorm:"type:uuid;not null"`
-	Course       Course    `gorm:"foreignKey:CourseID"`
-	Name         string    `gorm:"not null"`                           // e.g., "Blue", "White", "Red", "Gold"
-	Gender       TeeGender `gorm:"type:tee_gender;not null"`
-	CourseRating float64   `gorm:"type:decimal(4,1);not null"` // USGA course rating (e.g., 72.4) — represents the expected score for a scratch golfer
-	SlopeRating  int       `gorm:"not null"`                   // USGA slope rating (55–155) — measures difficulty for bogey golfers relative to scratch
-	Par          int       `gorm:"not null"`                   // Expected score for the full set of holes on these tees
-	Holes        []Hole    `gorm:"foreignKey:TeeID"`           // One-to-many: each tee set has individual hole details
-}
-
-// Hole stores per-hole details for a specific set of tees.
-// Par and StrokeIndex can vary between tee sets on the same course.
-type Hole struct {
-	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	TeeID       uuid.UUID `gorm:"type:uuid;not null"`
-	Tee         Tee       `gorm:"foreignKey:TeeID"`
-	HoleNumber  int       `gorm:"not null"`      // 1–18 (or 1–9 for a 9-hole course)
-	Par         int       `gorm:"not null"`      // Expected strokes for this hole (typically 3, 4, or 5)
-	StrokeIndex int       `gorm:"not null"`      // Handicap allocation: hole 1 = hardest (gets first handicap stroke), 18 = easiest
-	Yardage     *int                              // Distance in yards from this tee box; optional because some courses don't publish yardages
-}
-
-// Event is a golf competition organized within (or outside) a league.
-// It can span multiple rounds (e.g., a 4-round tournament) and tracks
-// overall standings, points, and player registrations.
+// Event is the top-level container for any golf competition.
+// It can be a league (ongoing season), tournament (one-off), or casual round.
+//
+// There is no separate "League" model. An Event with EventType = "league" IS the league.
+// This keeps the data hierarchy clean: Event → Rounds → Scores.
+//
+// Who belongs to an event is tracked via EventPlayer (below).
+// Who can manage an event is controlled by EventPlayer.Role = "organizer".
 type Event struct {
 	ID          uuid.UUID   `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	LeagueID    *uuid.UUID  `gorm:"type:uuid"`                         // Nullable: events can exist outside a league (casual rounds)
-	League      *League     `gorm:"foreignKey:LeagueID"`               // Nullable relationship; *League is a pointer because it's optional
 	Name        string      `gorm:"not null"`
+	Description *string     // Optional long-form description; pointer = nullable
 	EventType   EventType   `gorm:"type:event_type;not null"`
 	Status      EventStatus `gorm:"type:event_status;not null;default:'upcoming'"`
-	StartDate   time.Time   `gorm:"not null"`
-	EndDate     *time.Time                                             // Optional: single-day events may not have a separate end date
-	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`
-	Creator     User        `gorm:"foreignKey:CreatedBy"`
+	StartDate   *time.Time  // Optional start date; pointer = nullable (some events don't have a fixed date)
+	EndDate     *time.Time  // Optional end date; pointer = nullable
+	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`       // Foreign key: which user created this event
+	Creator     User        `gorm:"foreignKey:CreatedBy"`     // GORM relationship: preloads the User struct when queried
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-	PointsRules []EventPointsRule `gorm:"foreignKey:EventID"` // Points awarded per finishing position (e.g., 1st = 10 pts, 2nd = 8 pts)
-	Players     []EventPlayer     `gorm:"foreignKey:EventID"` // Players registered for this event
+	PointsRules []EventPointsRule `gorm:"foreignKey:EventID"` // Points awarded per finishing position
+	Players     []EventPlayer     `gorm:"foreignKey:EventID"` // Players/members registered for this event
 	Rounds      []Round           `gorm:"foreignKey:EventID"` // Individual rounds that make up this event
 }
 
@@ -225,15 +174,23 @@ type EventPointsRule struct {
 	Points         int       `gorm:"not null"`
 }
 
-// EventPlayer links a User to an Event they are participating in.
-// It tracks their overall results across all rounds of the event.
+// EventPlayer links a User to an Event.
+// For a "league" event: this is the membership list (who belongs to the league).
+// For a "tournament": this is the registration list (who is competing).
+//
+// The Role field controls what the user can do within this event:
+//   - EventPlayerRoleOrganizer: can edit the event, invite members, schedule rounds
+//   - EventPlayerRolePlayer: participant only
+//
+// The unique index (idx_event_user) ensures a user can only be an event_player once per event.
 type EventPlayer struct {
 	ID              uuid.UUID         `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	EventID         uuid.UUID         `gorm:"type:uuid;not null;uniqueIndex:idx_event_user"` // Combined unique index with UserID prevents duplicate entries
+	EventID         uuid.UUID         `gorm:"type:uuid;not null;uniqueIndex:idx_event_user"` // Combined unique index with UserID
 	Event           Event             `gorm:"foreignKey:EventID"`
 	UserID          uuid.UUID         `gorm:"type:uuid;not null;uniqueIndex:idx_event_user"`
 	User            User              `gorm:"foreignKey:UserID"`
-	Status          EventPlayerStatus `gorm:"type:event_player_status;not null;default:'invited'"`
+	Role            EventPlayerRole   `gorm:"type:event_player_role;not null;default:'player'"` // Permission level within this event
+	Status          EventPlayerStatus `gorm:"type:event_player_status;not null;default:'registered'"`
 	FinishPosition  *int              // Set once the event is completed; nullable until then
 	TotalGrossScore *int              // Sum of all gross scores across rounds
 	TotalNetScore   *int              // Sum of all net scores (gross minus handicap strokes)
@@ -243,7 +200,7 @@ type EventPlayer struct {
 }
 
 // Round represents a single day/round of play within an Event.
-// An event might have 1 round (casual) or many rounds (season, multi-day tournament).
+// An event might have 1 round (casual) or many rounds (league season, multi-day tournament).
 type Round struct {
 	ID               uuid.UUID     `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	EventID          uuid.UUID     `gorm:"type:uuid;not null"`
@@ -256,12 +213,13 @@ type Round struct {
 	ScheduledDate    time.Time     `gorm:"not null"`
 	Status           RoundStatus   `gorm:"type:round_status;not null;default:'scheduled'"`
 	ScoringFormat    ScoringFormat `gorm:"type:scoring_format;not null"`
-	RequiresHandicap bool          `gorm:"not null;default:true"` // If true, players must have a handicap index to participate
+	RequiresHandicap bool          `gorm:"not null;default:false"` // If true, players must have a handicap index before scores can be entered
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
 // RoundPlayer links an EventPlayer to a specific Round and stores their per-round results.
+// A user must be an EventPlayer before they can be a RoundPlayer.
 // It also records any tee override and handicap info specific to this round.
 type RoundPlayer struct {
 	ID             uuid.UUID         `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
@@ -351,4 +309,42 @@ type TeamScore struct {
 	Enterer    User      `gorm:"foreignKey:EnteredBy"`
 	EnteredAt  time.Time `gorm:"autoCreateTime"`
 	UpdatedAt  time.Time `gorm:"autoUpdateTime"`
+}
+
+// Course represents a golf course where rounds are played.
+type Course struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name      string    `gorm:"not null"`
+	City      string    `gorm:"not null;default:''"` // Defaults to empty string; can be filled in later
+	State     string    `gorm:"not null;default:''"` // Defaults to empty string; can be filled in later
+	HoleCount int       `gorm:"not null;default:18"` // Most courses have 18 holes; some have 9
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Tees      []Tee `gorm:"foreignKey:CourseID"` // One-to-many: a course has many sets of tees (different distances/ratings)
+}
+
+// Tee represents one set of tee boxes on a course (e.g., "Blue", "White", "Red").
+// Each tee set has its own course rating, slope, and par — used for handicap calculations.
+type Tee struct {
+	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	CourseID     uuid.UUID `gorm:"type:uuid;not null"`
+	Course       Course    `gorm:"foreignKey:CourseID"`
+	Name         string    `gorm:"not null"`                           // e.g., "Blue", "White", "Red", "Default"
+	Gender       TeeGender `gorm:"type:tee_gender;not null"`
+	CourseRating float64   `gorm:"type:decimal(4,1);not null"` // USGA course rating (e.g., 72.4) — represents the expected score for a scratch golfer
+	SlopeRating  int       `gorm:"not null"`                   // USGA slope rating (55–155) — measures difficulty for bogey golfers relative to scratch
+	Par          int       `gorm:"not null"`                   // Expected score for the full set of holes on these tees
+	Holes        []Hole    `gorm:"foreignKey:TeeID"`           // One-to-many: each tee set has individual hole details
+}
+
+// Hole stores per-hole details for a specific set of tees.
+// Par and StrokeIndex can vary between tee sets on the same course.
+type Hole struct {
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	TeeID       uuid.UUID `gorm:"type:uuid;not null"`
+	Tee         Tee       `gorm:"foreignKey:TeeID"`
+	HoleNumber  int       `gorm:"not null"`      // 1–18 (or 1–9 for a 9-hole course)
+	Par         int       `gorm:"not null"`      // Expected strokes for this hole (typically 3, 4, or 5)
+	StrokeIndex int       `gorm:"not null"`      // Handicap allocation: hole 1 = hardest (gets first handicap stroke), 18 = easiest
+	Yardage     *int                              // Distance in yards from this tee box; optional because some courses don't publish yardages
 }

@@ -56,6 +56,9 @@ import { API_URL } from "@/constants/api";
 // displayToApi converts MM-DD-YY → YYYY-MM-DD before sending to the backend.
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 // EventResponse matches the JSON shape returned by GET /api/v1/events
@@ -144,24 +147,28 @@ function EventTypeBadge({ type }: { type: EventResponse["event_type"] }) {
 // EventCard renders a single event row in the list.
 // onPress navigates to the event detail screen — the card is fully tappable.
 function EventCard({ event, onPress }: { event: EventResponse; onPress: () => void }) {
+  // Read the active theme so card colors respond to theme switches.
+  const t = useTheme();
+
   return (
-    // TouchableOpacity makes the whole card tappable and dims slightly on press
+    // t.surface: themed card background | t.border: themed card border
     <TouchableOpacity
-      className="bg-white rounded-2xl p-4 mb-3 border border-gray-100"
+      className={`${t.surface} rounded-2xl p-4 mb-3 border ${t.border}`}
       onPress={onPress}
       activeOpacity={0.75}
     >
       {/* Event name + type badge on the same row */}
       <View className="flex-row items-center justify-between mb-1">
-        <Text className="text-gray-900 font-semibold text-base flex-1 mr-2" numberOfLines={1}>
+        <Text className={`font-semibold text-base flex-1 mr-2 ${t.textPrimary}`} numberOfLines={1}>
           {event.name}
         </Text>
+        {/* EventTypeBadge uses categorical colors — not themed */}
         <EventTypeBadge type={event.event_type} />
       </View>
 
       {/* Optional description */}
       {event.description ? (
-        <Text className="text-gray-500 text-sm mb-2" numberOfLines={2}>
+        <Text className={`text-sm mb-2 ${t.textSecondary}`} numberOfLines={2}>
           {event.description}
         </Text>
       ) : null}
@@ -170,8 +177,8 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
           Dates come from the API as YYYY-MM-DD; apiToDisplay converts to MM-DD-YY. */}
       {(event.start_date || event.end_date) && (
         <View className="flex-row items-center gap-1 mb-2">
-          <Ionicons name="calendar-outline" size={12} color="#9ca3af" />
-          <Text className="text-gray-400 text-xs">
+          <Ionicons name="calendar-outline" size={12} color={t.colors.tabBarInactive} />
+          <Text className={`text-xs ${t.textTertiary}`}>
             {event.start_date ? apiToDisplay(event.start_date) : "—"}
             {event.end_date ? ` → ${apiToDisplay(event.end_date)}` : ""}
           </Text>
@@ -180,13 +187,13 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
 
       {/* Footer: creator + member count + chevron indicating tappability */}
       <View className="flex-row items-center justify-between mt-1">
-        <Text className="text-gray-400 text-xs">Created by {event.creator_name}</Text>
+        <Text className={`text-xs ${t.textTertiary}`}>Created by {event.creator_name}</Text>
         <View className="flex-row items-center gap-2">
           <View className="flex-row items-center gap-1">
-            <Ionicons name="people-outline" size={13} color="#9ca3af" />
-            <Text className="text-gray-400 text-xs">{event.member_count}</Text>
+            <Ionicons name="people-outline" size={13} color={t.colors.tabBarInactive} />
+            <Text className={`text-xs ${t.textTertiary}`}>{event.member_count}</Text>
           </View>
-          <Ionicons name="chevron-forward-outline" size={14} color="#d1d5db" />
+          <Ionicons name="chevron-forward-outline" size={14} color={t.colors.tabBarInactive} />
         </View>
       </View>
     </TouchableOpacity>
@@ -202,6 +209,9 @@ export default function EventsScreen() {
 
   // router.push() navigates to a new screen, pushing it onto the navigation stack
   const router = useRouter();
+
+  // t: the active theme — drives background, surface, and text colors throughout this screen
+  const t = useTheme();
 
   // queryClient lets us manually invalidate cached data (force a refetch after mutations)
   const queryClient = useQueryClient();
@@ -424,15 +434,17 @@ export default function EventsScreen() {
 
   // --- Render ---
   return (
-    <View className="flex-1 bg-gray-50">
+    // t.screen: full-page background
+    <View className={`flex-1 ${t.screen}`}>
       <View className="pt-14 flex-1">
 
         {/* ── Page header ────────────────────────────────────────────────────── */}
         <View className="px-5 flex-row items-center justify-between mb-3">
-          <Text className="text-2xl font-bold text-gray-900">Events</Text>
+          <Text className={`text-2xl font-bold ${t.textPrimary}`}>Events</Text>
           {canCreate && (
+            // Create button uses the theme's primary color
             <TouchableOpacity
-              className="bg-green-700 rounded-xl px-4 py-2 flex-row items-center gap-2"
+              className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
               onPress={() => setModalVisible(true)}
             >
               <Ionicons name="add" size={18} color="white" />
@@ -482,13 +494,13 @@ export default function EventsScreen() {
         {/* ── Content: loading / error / list ────────────────────────────────── */}
         {isLoading ? (
           <View className="flex-1 items-center justify-center">
-            <ActivityIndicator size="large" color="#15803d" />
+            <ActivityIndicator size="large" color={t.colors.tabBarActive} />
           </View>
         ) : isError ? (
           <View className="flex-1 items-center justify-center gap-3">
             <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
-            <Text className="text-gray-700 font-semibold">Failed to load events</Text>
-            <TouchableOpacity className="bg-green-700 rounded-xl px-6 py-3" onPress={() => refetch()}>
+            <Text className={`font-semibold ${t.textPrimary}`}>Failed to load events</Text>
+            <TouchableOpacity className={`${t.primaryBg} rounded-xl px-6 py-3`} onPress={() => refetch()}>
               <Text className="text-white font-semibold">Retry</Text>
             </TouchableOpacity>
           </View>
@@ -510,15 +522,15 @@ export default function EventsScreen() {
         ) : (
           // Empty state — different message depending on whether filters are hiding results
           <View className="flex-1 items-center justify-center gap-3 px-8">
-            <Ionicons name="trophy-outline" size={56} color="#15803d" />
+            <Ionicons name="trophy-outline" size={56} color={t.colors.tabBarActive} />
             {hasActiveFilters ? (
               <>
-                <Text className="text-xl font-semibold text-gray-800">No matching events</Text>
-                <Text className="text-gray-500 text-sm text-center">
+                <Text className={`text-xl font-semibold ${t.textPrimary}`}>No matching events</Text>
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
                   No events match the selected filters.
                 </Text>
                 <TouchableOpacity
-                  className="bg-green-700 rounded-xl px-6 py-3"
+                  className={`${t.primaryBg} rounded-xl px-6 py-3`}
                   onPress={clearFilters}
                 >
                   <Text className="text-white font-semibold">Clear Filters</Text>
@@ -526,8 +538,8 @@ export default function EventsScreen() {
               </>
             ) : (
               <>
-                <Text className="text-xl font-semibold text-gray-800">No events yet</Text>
-                <Text className="text-gray-500 text-sm text-center">
+                <Text className={`text-xl font-semibold ${t.textPrimary}`}>No events yet</Text>
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
                   {canCreate
                     ? 'Tap "Create" to set up your first league or tournament.'
                     : "You haven't been added to any events yet."}
@@ -559,14 +571,14 @@ export default function EventsScreen() {
             onPress={() => setFilterModalVisible(false)}
           />
 
-          {/* The filter sheet — anchored to the bottom */}
-          <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl pb-10">
+          {/* The filter sheet — anchored to the bottom, themed surface */}
+          <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-10`}>
 
             {/* Sheet header row */}
-            <View className="flex-row items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
-              <Text className="text-base font-bold text-gray-900">Filter</Text>
+            <View className={`flex-row items-center justify-between px-5 pt-5 pb-3 border-b ${t.divider}`}>
+              <Text className={`text-base font-bold ${t.textPrimary}`}>Filter</Text>
               <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#6b7280" />
+                <Ionicons name="close" size={22} color={t.colors.tabBarInactive} />
               </TouchableOpacity>
             </View>
 
@@ -586,31 +598,32 @@ export default function EventsScreen() {
             </TouchableOpacity>
 
             {/* ── Event Type section ─────────────────────────────────────── */}
-            {/* Section label — same uppercase tracking style used on form labels */}
             <View className="px-5 pt-4 pb-2">
-              <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+              <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
                 Event Type
               </Text>
             </View>
 
             {/* One row per type option.
-                "checkmark-circle" (filled green) = selected.
-                "ellipse-outline" (empty gray)    = unselected. */}
+                "checkmark-circle" (filled with active color) = selected.
+                "ellipse-outline" (empty gray) = unselected. */}
             {TYPE_FILTER_OPTIONS.map((opt) => {
               const selected = typeFilter === opt.value;
               return (
                 <TouchableOpacity
                   key={opt.value}
-                  className="flex-row items-center justify-between px-5 py-3.5 border-b border-gray-50"
+                  className={`flex-row items-center justify-between px-5 py-3.5 border-b ${t.divider}`}
                   onPress={() => setTypeFilter(opt.value)}
                 >
-                  <Text className={`text-sm ${selected ? "text-green-700 font-semibold" : "text-gray-700"}`}>
+                  <Text
+                    className={`text-sm ${selected ? "font-semibold" : ""} ${selected ? t.textPrimary : t.textSecondary}`}
+                  >
                     {opt.label}
                   </Text>
                   <Ionicons
                     name={selected ? "checkmark-circle" : "ellipse-outline"}
                     size={20}
-                    color={selected ? "#15803d" : "#d1d5db"}
+                    color={selected ? t.colors.tabBarActive : t.colors.tabBarInactive}
                   />
                 </TouchableOpacity>
               );
@@ -618,7 +631,7 @@ export default function EventsScreen() {
 
             {/* ── Status section ─────────────────────────────────────────── */}
             <View className="px-5 pt-4 pb-2">
-              <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+              <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
                 Status
               </Text>
             </View>
@@ -628,16 +641,18 @@ export default function EventsScreen() {
               return (
                 <TouchableOpacity
                   key={opt.value}
-                  className="flex-row items-center justify-between px-5 py-3.5 border-b border-gray-50"
+                  className={`flex-row items-center justify-between px-5 py-3.5 border-b ${t.divider}`}
                   onPress={() => setStatusFilter(opt.value)}
                 >
-                  <Text className={`text-sm ${selected ? "text-green-700 font-semibold" : "text-gray-700"}`}>
+                  <Text
+                    className={`text-sm ${selected ? "font-semibold" : ""} ${selected ? t.textPrimary : t.textSecondary}`}
+                  >
                     {opt.label}
                   </Text>
                   <Ionicons
                     name={selected ? "checkmark-circle" : "ellipse-outline"}
                     size={20}
-                    color={selected ? "#15803d" : "#d1d5db"}
+                    color={selected ? t.colors.tabBarActive : t.colors.tabBarInactive}
                   />
                 </TouchableOpacity>
               );
@@ -666,14 +681,14 @@ export default function EventsScreen() {
             onPress={() => setSortModalVisible(false)}
           />
 
-          {/* The sort sheet — anchored to the bottom of the screen */}
-          <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl pb-8">
+          {/* The sort sheet — anchored to the bottom of the screen, themed surface */}
+          <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
 
             {/* Sheet header */}
-            <View className="flex-row items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
-              <Text className="text-base font-bold text-gray-900">Sort By</Text>
+            <View className={`flex-row items-center justify-between px-5 pt-5 pb-3 border-b ${t.divider}`}>
+              <Text className={`text-base font-bold ${t.textPrimary}`}>Sort By</Text>
               <TouchableOpacity onPress={() => setSortModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#6b7280" />
+                <Ionicons name="close" size={22} color={t.colors.tabBarInactive} />
               </TouchableOpacity>
             </View>
 
@@ -683,23 +698,23 @@ export default function EventsScreen() {
               return (
                 <TouchableOpacity
                   key={opt.value}
-                  className="flex-row items-center justify-between px-5 py-4 border-b border-gray-50"
+                  className={`flex-row items-center justify-between px-5 py-4 border-b ${t.divider}`}
                   onPress={() => {
                     setSortKey(opt.value);
                     setSortModalVisible(false);
                   }}
                 >
-                  {/* Selected option is highlighted in green */}
+                  {/* Selected option uses primary text; others use secondary */}
                   <Text
                     className={`text-base ${
-                      selected ? "text-green-700 font-semibold" : "text-gray-700"
+                      selected ? `font-semibold ${t.textPrimary}` : t.textSecondary
                     }`}
                   >
                     {opt.label}
                   </Text>
                   {/* Checkmark next to the active selection */}
                   {selected && (
-                    <Ionicons name="checkmark" size={18} color="#15803d" />
+                    <Ionicons name="checkmark" size={18} color={t.colors.tabBarActive} />
                   )}
                 </TouchableOpacity>
               );
@@ -721,7 +736,7 @@ export default function EventsScreen() {
       >
         {/* KeyboardAvoidingView lifts the form above the keyboard when it opens */}
         <KeyboardAvoidingView
-          className="flex-1 bg-white"
+          className={`flex-1 ${t.surface}`}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <ScrollView>
@@ -729,18 +744,18 @@ export default function EventsScreen() {
 
               {/* Modal header */}
               <View className="flex-row items-center justify-between mb-8">
-                <Text className="text-xl font-bold text-gray-900">Create Event</Text>
+                <Text className={`text-xl font-bold ${t.textPrimary}`}>Create Event</Text>
                 <TouchableOpacity
                   onPress={closeModal}
                   disabled={createEventMutation.isPending}
                 >
-                  <Ionicons name="close" size={24} color="#6b7280" />
+                  <Ionicons name="close" size={24} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
               </View>
 
               {/* Event type selector — three pill buttons: League / Tournament / Casual */}
               <View className="mb-6">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Type <Text className="text-red-500">*</Text>
                 </Text>
                 {/* flex-row with gap — each pill takes equal width via flex-1 */}
@@ -750,18 +765,18 @@ export default function EventsScreen() {
                     return (
                       <TouchableOpacity
                         key={et.value}
-                        // selected: solid green background; unselected: white with gray border
+                        // selected: themed primary background; unselected: surface with input border
                         className={`flex-1 rounded-xl py-3 items-center border ${
                           selected
-                            ? "bg-green-700 border-green-700"
-                            : "bg-white border-gray-300"
+                            ? `${t.primaryBg} border-transparent`
+                            : `${t.surface} ${t.borderInput}`
                         }`}
                         onPress={() => setNewEventType(et.value)}
                         disabled={createEventMutation.isPending}
                       >
                         <Text
                           className={`text-sm font-semibold ${
-                            selected ? "text-white" : "text-gray-600"
+                            selected ? "text-white" : t.textSecondary
                           }`}
                         >
                           {et.label}
@@ -774,11 +789,11 @@ export default function EventsScreen() {
 
               {/* Event name (required) */}
               <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Name <Text className="text-red-500">*</Text>
                 </Text>
                 <TextInput
-                  className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                   placeholder={
                     newEventType === "league"
                       ? "e.g. Saturday Morning League"
@@ -786,6 +801,7 @@ export default function EventsScreen() {
                       ? "e.g. Club Championship 2025"
                       : "e.g. Sunday Scramble"
                   }
+                  placeholderTextColor={t.colors.tabBarInactive}
                   value={newName}
                   onChangeText={setNewName}
                   autoCapitalize="words"
@@ -796,13 +812,14 @@ export default function EventsScreen() {
 
               {/* Description (optional) */}
               <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Description{" "}
-                  <Text className="text-gray-400 normal-case font-normal">(optional)</Text>
+                  <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional)</Text>
                 </Text>
                 <TextInput
-                  className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                   placeholder="A short description..."
+                  placeholderTextColor={t.colors.tabBarInactive}
                   value={newDescription}
                   onChangeText={setNewDescription}
                   multiline
@@ -837,10 +854,10 @@ export default function EventsScreen() {
                 />
               </View>
 
-              {/* Submit button */}
+              {/* Submit button — uses themed primary color */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center ${
-                  createEventMutation.isPending ? "bg-green-400" : "bg-green-700"
+                  createEventMutation.isPending ? t.primaryBgDisabled : t.primaryBg
                 }`}
                 onPress={handleCreate}
                 disabled={createEventMutation.isPending}

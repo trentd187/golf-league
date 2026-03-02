@@ -36,6 +36,9 @@ import DateTimePicker, {
 } from "@react-native-community/datetimepicker";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+
 // ─── Date conversion utilities ────────────────────────────────────────────────
 
 // Convert YYYY-MM-DD (the format the backend stores and returns) to MM-DD-YY (display format).
@@ -146,6 +149,9 @@ export default function DateInput({
   // On iOS this controls our custom Modal.
   const [showPicker, setShowPicker] = useState(false);
 
+  // t: the active theme object — gives us class strings and hex colors
+  const t = useTheme();
+
   // Show a red border + error message only when the user has typed a full date
   // (8 chars = MM-DD-YY) but it isn't valid. We don't show errors for partial input
   // so we don't annoy the user while they're still typing.
@@ -181,13 +187,13 @@ export default function DateInput({
     <View>
       {/* Label row — same style used throughout the app for form field labels */}
       {label && (
-        <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+        <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
           {label}{" "}
           {/* Red asterisk for required fields */}
           {required && <Text className="text-red-500">*</Text>}
           {/* Lighter "(optional)" for optional fields */}
           {optional && (
-            <Text className="text-gray-400 normal-case font-normal">
+            <Text className={`normal-case font-normal ${t.textTertiary}`}>
               (optional)
             </Text>
           )}
@@ -196,15 +202,17 @@ export default function DateInput({
 
       {/* Input row: text field on the left, calendar icon button on the right */}
       <View
-        className={`flex-row items-center border rounded-xl bg-gray-50 ${
-          // Red border when the typed value is invalid; normal gray otherwise
-          showError ? "border-red-400" : "border-gray-300"
+        className={`flex-row items-center border rounded-xl ${t.surfaceSunken} ${
+          // Red border when the typed value is invalid; normal themed border otherwise
+          showError ? "border-red-400" : t.borderInput
         }`}
       >
         {/* Text input — auto-formats to MM-DD-YY as the user types */}
         <TextInput
-          className="flex-1 px-4 py-3 text-base text-gray-900"
+          className={`flex-1 px-4 py-3 text-base ${t.textPrimary}`}
           placeholder="MM-DD-YY"
+          // placeholderTextColor must be a prop (not className) on TextInput
+          placeholderTextColor={t.colors.tabBarInactive}
           value={value}
           onChangeText={handleTextChange}
           // "numeric" keyboard on mobile (digits only) — the auto-formatter strips non-digits
@@ -227,8 +235,8 @@ export default function DateInput({
           <Ionicons
             name="calendar-outline"
             size={20}
-            // Dim the icon when the field is disabled
-            color={disabled ? "#d1d5db" : "#6b7280"}
+            // Dim the icon when the field is disabled; use themed inactive color otherwise
+            color={disabled ? "#d1d5db" : t.colors.tabBarInactive}
           />
         </TouchableOpacity>
       </View>
@@ -274,13 +282,19 @@ export default function DateInput({
               onPress={() => setShowPicker(false)}
             />
 
-            {/* The bottom sheet itself */}
-            <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl pb-8">
+            {/* The bottom sheet itself — themed surface */}
+            <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
               {/* Header row: title on left, "Done" button on right */}
-              <View className="flex-row items-center justify-between px-5 pt-4 pb-2 border-b border-gray-100">
-                <Text className="text-gray-500 font-semibold">Select Date</Text>
+              <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
+                <Text className={`font-semibold ${t.textSecondary}`}>Select Date</Text>
                 <TouchableOpacity onPress={() => setShowPicker(false)}>
-                  <Text className="text-green-700 font-semibold text-base">
+                  {/* "Done" uses the theme's active color (hex) — inline style required
+                      because Text doesn't support a color prop and we need a hex value */}
+                  <Text
+                    className="font-semibold text-base"
+                    // eslint-disable-next-line react-native/no-inline-styles
+                    style={{ color: t.colors.tabBarActive }}
+                  >
                     Done
                   </Text>
                 </TouchableOpacity>

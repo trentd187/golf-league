@@ -180,6 +180,93 @@ Always use NativeWind `className` — never use `StyleSheet.create()` or inline 
 
 Primary brand color is **green-700** (`#15803d`). Secondary actions use gray. Errors use red-600.
 
+### Theme System
+
+The app supports 3 switchable themes (Light, Dark, Grey/neutral) persisted across restarts in SecureStore. **All new screens and components must use theme tokens, not hardcoded color classes.**
+
+**Architecture — three layers:**
+
+| Layer | File | Role |
+|---|---|---|
+| Data | `themes/index.ts` | 4 static theme objects with all Tailwind class strings as literals |
+| State | `stores/themeStore.ts` | Zustand `persist` store; saves only `themeName`, derives full `Theme` object |
+| Consumption | `hooks/useTheme.ts` | `useTheme()` hook used in every screen/component |
+
+**Usage pattern in every screen and component:**
+```tsx
+import { useTheme } from "@/hooks/useTheme";
+
+function MyScreen() {
+  const t = useTheme();
+  return (
+    <View className={`flex-1 ${t.screen}`}>
+      <Text className={t.textPrimary}>Hello</Text>
+    </View>
+  );
+}
+```
+
+**Theme slots (use these, not hardcoded classes):**
+
+| Slot | Purpose |
+|---|---|
+| `t.screen` | Full-page `View` background |
+| `t.surface` | Cards, modals, bottom sheets |
+| `t.surfaceSunken` | `TextInput` background (inset feel) |
+| `t.border` | Card/container border |
+| `t.divider` | `border-b` between list rows |
+| `t.borderInput` | `TextInput` border |
+| `t.textPrimary` | Headings, important text |
+| `t.textSecondary` | Body/supporting text |
+| `t.textTertiary` | Muted hints, form labels, section labels |
+| `t.primaryBg` | Primary action button background |
+| `t.primaryBgDisabled` | Primary button while loading/pending |
+| `t.colors.tabBarActive` | Hex — for `Ionicons color`, `ActivityIndicator color`, inline styles |
+| `t.colors.tabBarInactive` | Hex — for secondary icons, `placeholderTextColor` |
+
+**Tailwind JIT constraint — critical rule:** All Tailwind class strings must exist as **literal text** in scanned source files. `themes/index.ts` holds all the literal class strings and is included in the `tailwind.config.js` content paths. Never construct class names dynamically (e.g., no `` `text-${color}-500` ``). At runtime, components simply pick which pre-scanned string to use.
+
+**`placeholderTextColor` on every `TextInput`:** NativeWind can't control placeholder color via `className`. Always add:
+```tsx
+<TextInput
+  className={`... ${t.textPrimary}`}
+  placeholderTextColor={t.colors.tabBarInactive}
+/>
+```
+
+**`Ionicons` and `ActivityIndicator` always need hex:** Use `color={t.colors.tabBarActive}` or `color={t.colors.tabBarInactive}`.
+
+**Inline style required for themed hex on `Text`:** When a `Text`'s color must be a dynamic hex (e.g., "Done" button in iOS date picker), use:
+```tsx
+// eslint-disable-next-line react-native/no-inline-styles
+<Text style={{ color: t.colors.tabBarActive }}>Done</Text>
+```
+
+**What is NEVER themed (always hardcoded categorical/brand colors):**
+- Event type badge colors (league=blue, tournament=amber, casual=gray)
+- Status chip colors (upcoming=sky, active=green, completed=gray, cancelled=red)
+- Role badge colors (organizer=green-100/green-700)
+- Round status chip colors
+- OAuth buttons (Google/Facebook/Apple brand colors)
+- Sign-out button (always `bg-red-50 border-red-200 text-red-600`)
+- Error text/borders (always `text-red-500` / `border-red-400`)
+- Member initials avatars (always `bg-green-100 text-green-700`)
+- App title "Golf Stuff In Here" (always `text-green-700`)
+- `bg-black/40` modal backdrop overlay
+
+**Theme switching UI** lives in `app/(tabs)/profile.tsx` — a "Theme" section with 4 pill buttons using `THEME_META` from `themes/index.ts` and `useThemeStore` from `stores/themeStore.ts`:
+```tsx
+import { useThemeStore } from "@/stores/themeStore";
+import { THEME_META } from "@/themes";
+
+// IMPORTANT: use two separate calls, not one selector returning an object.
+// A selector like (s) => ({ themeName: s.themeName, setTheme: s.setTheme }) creates
+// a new object on every render, which breaks React 19's useSyncExternalStore caching
+// and causes an infinite re-render loop.
+const themeName = useThemeStore((s) => s.themeName);
+const setTheme  = useThemeStore((s) => s.setTheme);
+```
+
 ### API Calls
 
 Use TanStack Query (`useQuery` / `useMutation`) and the `API_URL` from `constants/api.ts`:
@@ -209,6 +296,7 @@ const mutation = useMutation({
 
 - **Server state** (API data): TanStack Query
 - **Client/UI state** (modals open, form inputs, etc.): Zustand stores in `stores/`
+- **Theme state**: `stores/themeStore.ts` — persisted to SecureStore; access via `useTheme()` hook
 - **Auth state**: Clerk hooks (`useAuth`, `useUser`)
 
 ### Adding a New Expo Package
@@ -296,6 +384,26 @@ import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 - Use `apiToDisplay("YYYY-MM-DD")` → `"MM-DD-YY"` when pre-filling from API data
 - Use `displayToApi("MM-DD-YY")` → `"YYYY-MM-DD"` when sending to the API
 
+**`ModalHeader`** (`components/ModalHeader.tsx`) — standard title + close (✕) row for all modal sheets:
+- Props: `title`, `onClose`, `disabled?` (disables close button while a mutation is pending)
+- Use this in every Modal — do not re-implement the header inline
+
+**`SectionHeader`** (`components/SectionHeader.tsx`) — bold section title with optional "+ Action" button:
+- Props: `title`, `actionLabel`, `onAction`, `showAction` (pass `false` to hide button for non-organizers)
+- Used for "Members", "Rounds", and future sections in detail screens
+
+**`UserSearchList`** (`components/UserSearchList.tsx`) — search box + user list for picking a user to add:
+- Props: `users` (pre-filtered, `undefined` = loading), `search`, `onSearchChange`, `onSelect`, `isPending`, `emptyMessage?`
+- Parent is responsible for fetching users and filtering out already-added IDs
+- Parent owns the `search` state so it can reset it when the modal closes
+- Also exports the `UserSummary` type for typing query data in parent screens
+
+**`badges.tsx`** (`components/badges.tsx`) — categorical badge and chip components (hardcoded colors):
+- `EventTypeBadge` — league (blue), tournament (amber), casual (gray)
+- `StatusChip` — event lifecycle: upcoming (sky), active (green), completed (gray), cancelled (red)
+- `RoleBadge` — "Organizer" pill; renders `null` for players (safe to always include)
+- `RoundStatusChip` — round lifecycle: scheduled (sky), active (green), completed (gray)
+
 ### TypeScript Path Aliases
 
 The `@/` alias resolves to the `mobile/` root. Use it for all internal imports:
@@ -303,6 +411,74 @@ The `@/` alias resolves to the `mobile/` root. Use it for all internal imports:
 import { tokenCache } from "@/utils/cache";   // correct
 import { tokenCache } from "../../utils/cache"; // avoid relative paths
 ```
+
+---
+
+## Mobile Code Quality Rules
+
+These rules prevent recurring issues that make files large and hard to maintain.
+
+### Only destructure what you use from hooks
+
+Unused destructured variables cause TypeScript warnings and mislead future readers.
+```tsx
+// Wrong — refetchRounds is declared but never called anywhere
+const { data: rounds, isLoading: roundsLoading, refetch: refetchRounds } = useQuery(...);
+
+// Correct — only destructure what the component actually uses
+const { data: rounds, isLoading: roundsLoading } = useQuery(...);
+```
+
+### No copy-pasted JSX blocks
+
+If the same JSX block appears more than once in a file, extract it. Two options:
+
+**If it renders independently → extract a component:**
+```tsx
+// Wrong — same pill JSX copy-pasted twice in the same render
+<View className="flex-row gap-2">{FORMATS.slice(0, 2).map(...)}</View>
+<View className="flex-row gap-2">{FORMATS.slice(2).map(...)}</View>
+
+// Correct — single loop using a chunk() helper to create rows
+{chunk(FORMATS, 2).map((row, i) => (
+  <View key={i} className="flex-row gap-2">{row.map(renderPill)}</View>
+))}
+```
+
+**If it's a repeated structural pattern → extract to `components/`** (see below).
+
+### Sub-components that could be needed elsewhere go in `components/`
+
+Do not define UI sub-components at the top of a screen file if they will be (or might be) needed by another screen. File-local components that belong in `components/`:
+- Display atoms used on multiple screens (badges, chips, status labels)
+- Structural patterns repeated across screens (`ModalHeader`, `SectionHeader`)
+- Picker/search patterns that will be reused (`UserSearchList`)
+
+Rule of thumb: if you'd have to copy-paste it when building the next screen, extract it now.
+
+### Cards that lead somewhere must be `TouchableOpacity`
+
+Any card that will eventually navigate to a detail or edit screen must be a `TouchableOpacity` from the start, even if the destination screen doesn't exist yet. Use `router.push()` with the future route so the navigation intention is clear:
+```tsx
+// Correct — tappable with forward-looking route, even before the screen is built
+<TouchableOpacity
+  onPress={() => router.push(`/rounds/${round.id}`)}
+  activeOpacity={0.7}
+>
+  ...round card content...
+</TouchableOpacity>
+```
+Expo Router shows an "Unmatched Route" page in development for routes that don't have a file yet — this is expected and harmless.
+
+### Always use shared components for common patterns
+
+| Pattern | Use |
+|---|---|
+| Modal title + close button | `ModalHeader` from `@/components/ModalHeader` |
+| Section heading + "+ Action" button | `SectionHeader` from `@/components/SectionHeader` |
+| User search + add list | `UserSearchList` from `@/components/UserSearchList` |
+| Status/type/role pills | Named exports from `@/components/badges` |
+| Date input with picker | `DateInput` from `@/components/DateInput` |
 
 ---
 

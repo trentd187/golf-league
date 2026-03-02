@@ -7,6 +7,11 @@
 //   events.tsx   → Events
 //   rounds.tsx   → Rounds
 //   profile.tsx  → Profile
+//
+// Theme integration:
+//   The tab bar uses hex color values (not Tailwind className) because React Navigation's
+//   tabBarActiveTintColor, tabBarInactiveTintColor, and tabBarStyle props require real
+//   JS color strings — not CSS class names. We read these from the active theme object.
 
 // Tabs is Expo Router's built-in bottom tab navigator (built on React Navigation)
 import { Tabs } from "expo-router";
@@ -19,6 +24,12 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 // so TypeScript will catch any invalid icon names at compile time.
 import type { ComponentProps } from "react";
 
+// useThemeStore reads the active theme directly from the Zustand store.
+// We use the store (not useTheme hook) here because we need the `colors` object
+// which contains hex strings — the hook returns the same thing, but being explicit
+// about the selector keeps this file easy to understand.
+import { useThemeStore } from "@/stores/themeStore";
+
 // This type represents any valid Ionicons icon name (e.g. "home", "trophy-outline")
 type IoniconsName = ComponentProps<typeof Ionicons>["name"];
 
@@ -30,14 +41,19 @@ function TabBarIcon({ name, color }: { name: IoniconsName; color: string }) {
 }
 
 export default function TabLayout() {
+  // Read the active theme's color values from the store.
+  // The store re-renders this component whenever setTheme() is called, so the
+  // tab bar colors update immediately when the user switches themes in the Profile screen.
+  const theme = useThemeStore((s) => s.theme);
+
   return (
     <Tabs
       screenOptions={{
-        // Active tab icon and label color — green-700 matches the app brand colour
-        tabBarActiveTintColor: "#15803d",
+        // Active tab icon and label color — sourced from the theme's tabBarActive hex
+        tabBarActiveTintColor: theme.colors.tabBarActive,
 
-        // Inactive tab colour — a neutral gray so active tab stands out
-        tabBarInactiveTintColor: "#9ca3af",
+        // Inactive tab colour — themed neutral tint so the active tab stands out
+        tabBarInactiveTintColor: theme.colors.tabBarInactive,
 
         // Hide the header bar on all tab screens (tabs have their own header or none at all)
         headerShown: false,
@@ -46,8 +62,8 @@ export default function TabLayout() {
         tabBarStyle: {
           // A subtle top border to visually separate the tab bar from the screen content
           borderTopWidth: 1,
-          borderTopColor: "#e5e7eb",   // Tailwind gray-200
-          backgroundColor: "#ffffff",
+          borderTopColor: theme.colors.tabBarBorder,
+          backgroundColor: theme.colors.tabBarBg,
         },
       }}
     >

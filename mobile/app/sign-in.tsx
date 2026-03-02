@@ -29,6 +29,9 @@ import {
 import { useState } from "react";
 import * as WebBrowser from "expo-web-browser";
 
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+
 // Required for OAuth redirects to complete correctly — safe to call unconditionally
 WebBrowser.maybeCompleteAuthSession();
 
@@ -46,6 +49,9 @@ export default function SignIn() {
   const { startOAuthFlow: startAppleOAuth }    = useOAuth({ strategy: "oauth_apple" });
 
   const router = useRouter();
+
+  // t: the active theme object — gives us class strings and hex colors
+  const t = useTheme();
 
   // --- State ---
   const [email, setEmail]                         = useState("");
@@ -160,11 +166,12 @@ export default function SignIn() {
 
   // --- UI ---
   return (
-    <View className="flex-1 items-center justify-center bg-white px-6 gap-3">
+    // t.surface: themed background — sign-in is a centered card-like screen
+    <View className={`flex-1 items-center justify-center ${t.surface} px-6 gap-3`}>
 
-      {/* Branding */}
+      {/* Branding — app title stays green-700 as a fixed brand colour, not themed */}
       <Text className="text-3xl font-bold text-green-700 mb-1">Golf Stuff In Here</Text>
-      <Text className="text-gray-500 text-sm mb-3">Sign in or create an account to continue</Text>
+      <Text className={`text-sm mb-3 ${t.textSecondary}`}>Sign in or create an account to continue</Text>
 
       {/* OAuth buttons — hidden during OTP code entry so the screen stays uncluttered */}
       {!pendingVerification && (
@@ -210,11 +217,11 @@ export default function SignIn() {
             )}
           </TouchableOpacity>
 
-          {/* Divider */}
+          {/* Divider — themed border and "or" text */}
           <View className="w-full flex-row items-center gap-3 my-1">
-            <View className="flex-1 border-t border-gray-200" />
-            <Text className="text-gray-400 text-sm">or</Text>
-            <View className="flex-1 border-t border-gray-200" />
+            <View className={`flex-1 border-t ${t.divider}`} />
+            <Text className={`text-sm ${t.textTertiary}`}>or</Text>
+            <View className={`flex-1 border-t ${t.divider}`} />
           </View>
         </>
       )}
@@ -224,8 +231,9 @@ export default function SignIn() {
         // Step 1: collect email
         <>
           <TextInput
-            className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base"
+            className={`w-full border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.textPrimary}`}
             placeholder="Email address"
+            placeholderTextColor={t.colors.tabBarInactive}
             autoCapitalize="none"
             keyboardType="email-address"
             value={email}
@@ -233,7 +241,7 @@ export default function SignIn() {
             editable={!loading}
           />
           <TouchableOpacity
-            className={`w-full rounded-xl py-4 items-center ${loading ? "bg-green-400" : "bg-green-700"}`}
+            className={`w-full rounded-xl py-4 items-center ${loading ? t.primaryBgDisabled : t.primaryBg}`}
             onPress={handleSendEmail}
             disabled={loading}
           >
@@ -247,13 +255,14 @@ export default function SignIn() {
       ) : (
         // Step 2: enter the OTP code
         <>
-          <Text className="text-gray-600 text-sm text-center">
+          <Text className={`text-sm text-center ${t.textSecondary}`}>
             We sent a code to <Text className="font-semibold">{email}</Text>
           </Text>
 
           <TextInput
-            className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base tracking-widest text-center"
+            className={`w-full border rounded-xl px-4 py-3 text-base tracking-widest text-center ${t.borderInput} ${t.textPrimary}`}
             placeholder="000000"
+            placeholderTextColor={t.colors.tabBarInactive}
             keyboardType="number-pad"
             maxLength={6}
             value={code}
@@ -262,7 +271,7 @@ export default function SignIn() {
           />
 
           <TouchableOpacity
-            className={`w-full rounded-xl py-4 items-center ${loading ? "bg-green-400" : "bg-green-700"}`}
+            className={`w-full rounded-xl py-4 items-center ${loading ? t.primaryBgDisabled : t.primaryBg}`}
             onPress={handleVerifyCode}
             disabled={loading}
           >
@@ -282,7 +291,7 @@ export default function SignIn() {
             }}
             disabled={loading}
           >
-            <Text className="text-gray-500 text-sm underline">Use a different email</Text>
+            <Text className={`text-sm underline ${t.textSecondary}`}>Use a different email</Text>
           </TouchableOpacity>
         </>
       )}

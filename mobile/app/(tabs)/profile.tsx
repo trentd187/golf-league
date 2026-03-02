@@ -2,7 +2,8 @@
 // The Profile screen — shows the signed-in user's information and lets them:
 //   1. Upload or change their profile photo (stored by Clerk, works for all sign-in methods)
 //   2. Edit their first and last name
-//   3. Sign out
+//   3. Switch the app theme (Light, Dark, Colorful, Grey)
+//   4. Sign out
 //
 // Profile photo flow:
 //   - Tap the avatar → expo-image-picker opens the photo library
@@ -49,10 +50,20 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 // API_URL: the base URL of our backend (read from EXPO_PUBLIC_API_URL env var)
 import { API_URL } from "@/constants/api";
 
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+// useThemeStore gives us setTheme() and the current themeName for the picker UI.
+import { useThemeStore } from "@/stores/themeStore";
+// THEME_META contains display info (label + swatch hex color) for each theme.
+import { THEME_META } from "@/themes";
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
 // RoleBadge renders a small coloured pill showing the user's permission level.
 // - admin   → green  (full access)
 // - manager → blue   (league/event management)
 // - user    → gray   (regular player)
+// Role colors are categorical — hardcoded and NOT affected by the theme.
 function RoleBadge({ role }: { role?: string }) {
   const styles: Record<string, { bg: string; text: string; label: string }> = {
     admin:   { bg: "bg-green-100",  text: "text-green-700", label: "Admin" },
@@ -68,11 +79,31 @@ function RoleBadge({ role }: { role?: string }) {
   );
 }
 
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export default function ProfileScreen() {
   const { user, isLoaded } = useUser();
   // getToken: returns the Clerk session JWT — used to authenticate calls to our backend.
   const { signOut, getToken } = useAuth();
   const router = useRouter();
+
+  // t: the active theme — drives background, surface, and text colors throughout this screen.
+  const t = useTheme();
+
+  // themeName: the currently selected theme key (e.g. "dark").
+  // setTheme: switches the theme and persists the choice to SecureStore.
+  //
+  // Why two separate useThemeStore calls instead of one selector returning an object?
+  // A selector like `(s) => ({ themeName: s.themeName, setTheme: s.setTheme })` creates
+  // a NEW object on every render. React 19's useSyncExternalStore (used internally by
+  // Zustand) checks snapshot equality by reference — a new object every time looks like
+  // a change every time, which causes an infinite re-render loop.
+  //
+  // Selecting primitives and stable function references individually avoids this:
+  //   - s.themeName is a string (primitive), compared by value — stable ✓
+  //   - s.setTheme is a function Zustand creates once and keeps the same reference — stable ✓
+  const themeName = useThemeStore((s) => s.themeName);
+  const setTheme = useThemeStore((s) => s.setTheme);
 
   // --- UI state ---
   const [editing, setEditing] = useState(false);
@@ -302,17 +333,18 @@ export default function ProfileScreen() {
 
   // --- UI ---
   return (
+    // t.screen: full-page background
     <KeyboardAvoidingView
-      className="flex-1 bg-gray-50"
+      className={`flex-1 ${t.screen}`}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView>
         <View className="px-5 pt-14 pb-10">
 
-          <Text className="text-2xl font-bold text-gray-900 mb-8">Profile</Text>
+          <Text className={`text-2xl font-bold mb-8 ${t.textPrimary}`}>Profile</Text>
 
           {/* ── Avatar + identity card ────────────────────────────────────────── */}
-          <View className="bg-white rounded-2xl p-5 mb-4 border border-gray-100">
+          <View className={`${t.surface} rounded-2xl p-5 mb-4 border ${t.border}`}>
 
             <View className="flex-row items-center gap-4 mb-4">
 
@@ -347,8 +379,10 @@ export default function ProfileScreen() {
                     />
                   </View>
                 ) : (
-                  // Fallback: green circle with the user's initials
-                  <View className="w-16 h-16 rounded-full bg-green-700 items-center justify-center">
+                  // Fallback: themed primary-color circle with the user's initials
+                  <View
+                    className={`w-16 h-16 rounded-full ${t.primaryBg} items-center justify-center`}
+                  >
                     <Text className="text-white text-xl font-bold">{initials}</Text>
                   </View>
                 )}
@@ -359,35 +393,39 @@ export default function ProfileScreen() {
                     position: "absolute",
                     bottom: 0,
                     right: 0,
-                    // White circle background so the icon is readable over any avatar colour
+                    // Surface-colored circle background so icon is readable over any avatar
                     backgroundColor: "white",
                     borderRadius: 11,
                     width: 22,
                     height: 22,
                     alignItems: "center",
                     justifyContent: "center",
-                    // Light gray border matches the card's border colour
                     borderWidth: 1,
                     borderColor: "#e5e7eb",
                   }}
                 >
                   {uploadingPhoto ? (
                     // Show a spinner while the upload is in progress
-                    <ActivityIndicator size="small" color="#15803d" style={{ transform: [{ scale: 0.6 }] }} />
+                    <ActivityIndicator
+                      size="small"
+                      color={t.colors.tabBarActive}
+                      style={{ transform: [{ scale: 0.6 }] }}
+                    />
                   ) : (
-                    <Ionicons name="camera" size={13} color="#15803d" />
+                    <Ionicons name="camera" size={13} color={t.colors.tabBarActive} />
                   )}
                 </View>
               </TouchableOpacity>
 
               {/* Name, email, and role badge */}
               <View className="flex-1">
-                <Text className="text-gray-900 font-semibold text-lg" numberOfLines={1}>
+                <Text className={`font-semibold text-lg ${t.textPrimary}`} numberOfLines={1}>
                   {displayName}
                 </Text>
-                <Text className="text-gray-500 text-sm mb-1" numberOfLines={1}>
+                <Text className={`text-sm mb-1 ${t.textSecondary}`} numberOfLines={1}>
                   {email}
                 </Text>
+                {/* RoleBadge: categorical colors — not themed */}
                 <RoleBadge role={(user?.publicMetadata as { role?: string })?.role} />
               </View>
 
@@ -397,7 +435,7 @@ export default function ProfileScreen() {
                   <Ionicons
                     name={editing ? "close-outline" : "pencil-outline"}
                     size={22}
-                    color={editing ? "#6b7280" : "#2563eb"}
+                    color={editing ? t.colors.tabBarInactive : "#2563eb"}
                   />
                 </TouchableOpacity>
               )}
@@ -406,15 +444,16 @@ export default function ProfileScreen() {
             {/* ── Edit name form ─────────────────────────────────────────────── */}
             {editing && (
               <View className="gap-3">
-                <View className="border-t border-gray-100 mb-1" />
+                <View className={`border-t ${t.divider} mb-1`} />
 
                 <View>
-                  <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1">
+                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
                     First Name
                   </Text>
                   <TextInput
-                    className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                    className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                     placeholder="First name"
+                    placeholderTextColor={t.colors.tabBarInactive}
                     value={firstName}
                     onChangeText={setFirstName}
                     autoCapitalize="words"
@@ -424,12 +463,13 @@ export default function ProfileScreen() {
                 </View>
 
                 <View>
-                  <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1">
+                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
                     Last Name
                   </Text>
                   <TextInput
-                    className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                    className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                     placeholder="Last name"
+                    placeholderTextColor={t.colors.tabBarInactive}
                     value={lastName}
                     onChangeText={setLastName}
                     autoCapitalize="words"
@@ -439,7 +479,7 @@ export default function ProfileScreen() {
                 </View>
 
                 <TouchableOpacity
-                  className={`rounded-xl py-4 items-center mt-1 ${saving ? "bg-green-400" : "bg-green-700"}`}
+                  className={`rounded-xl py-4 items-center mt-1 ${saving ? t.primaryBgDisabled : t.primaryBg}`}
                   onPress={handleSave}
                   disabled={saving}
                 >
@@ -453,7 +493,64 @@ export default function ProfileScreen() {
             )}
           </View>
 
+          {/* ── Theme picker ──────────────────────────────────────────────────── */}
+          {/* Section label — same style as form labels throughout the app */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
+            Theme
+          </Text>
+
+          {/* Four theme buttons in a horizontal row.
+              Each button shows:
+              - A small color swatch (solid circle, hex color from THEME_META)
+              - The theme label
+              - A checkmark icon when this theme is currently active
+              Selected state: border-2 + surfaceSunken background
+              Unselected state: border + surface background */}
+          <View className="flex-row gap-2 mb-6">
+            {THEME_META.map((meta) => {
+              const isSelected = themeName === meta.name;
+              return (
+                <TouchableOpacity
+                  key={meta.name}
+                  // flex-1: equal width for all four buttons.
+                  // Selected state: thicker border (border-2) + sunken background.
+                  // Unselected: normal border + surface background.
+                  // We split border width and border color into separate class tokens so
+                  // Tailwind JIT can scan both as literals (no dynamic construction).
+                  className={`flex-1 rounded-xl py-3 px-2 items-center gap-1.5 ${
+                    isSelected
+                      ? `border-2 ${t.borderInput} ${t.surfaceSunken}`
+                      : `border ${t.border} ${t.surface}`
+                  }`}
+                  onPress={() => setTheme(meta.name)}
+                >
+                  {/* Color swatch — a small filled circle in the theme's accent color */}
+                  <View
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 10,
+                      backgroundColor: meta.swatch,
+                    }}
+                  />
+                  {/* Theme label — bolder when selected */}
+                  <Text
+                    className={`text-xs ${isSelected ? `font-semibold ${t.textPrimary}` : t.textSecondary}`}
+                    numberOfLines={1}
+                  >
+                    {meta.label}
+                  </Text>
+                  {/* Checkmark shown when this theme is active */}
+                  {isSelected && (
+                    <Ionicons name="checkmark-circle" size={14} color={t.colors.tabBarActive} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
           {/* ── Sign out button ────────────────────────────────────────────────── */}
+          {/* Always red — destructive action, not affected by theme */}
           <TouchableOpacity
             className="bg-red-50 border border-red-200 rounded-2xl py-4 items-center mt-2"
             onPress={handleSignOut}

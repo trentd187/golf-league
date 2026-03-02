@@ -7,7 +7,9 @@
 //   2. Members      — roster list; organizers see an "Add Member" button
 //   3. Rounds       — scheduled/active/completed rounds; organizers see "Schedule Round"
 //
-// Organizer actions (edit, add member, schedule round) open modal sheets.
+// Tapping a round card navigates to /rounds/[id] (the Round detail/edit screen).
+//
+// Organizer actions (edit event, add member, schedule round) open modal sheets.
 //
 // Auth / permission:
 //   - The screen is only reachable by users who are already a member (backend enforces this).
@@ -26,7 +28,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  FlatList,
 } from "react-native";
 
 // useLocalSearchParams: reads dynamic route params from the URL.
@@ -36,11 +37,25 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
+
 // DateInput: our custom date field that supports both typed input (auto-formatted to MM-DD-YY)
 // and a native calendar picker. apiToDisplay/displayToApi handle format conversion.
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
-// --- Types (matching the backend response shapes) ---
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+
+// Shared UI components — imported from components/ so the Round detail screen
+// can reuse the same atoms without duplication. See CLAUDE.md for the convention.
+import { EventTypeBadge, StatusChip, RoleBadge, RoundStatusChip } from "@/components/badges";
+import SectionHeader from "@/components/SectionHeader";
+import ModalHeader from "@/components/ModalHeader";
+// UserSummary is the type for a user summary from GET /api/v1/users.
+// It's exported from UserSearchList so we can type the query data here.
+import UserSearchList, { UserSummary } from "@/components/UserSearchList";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+// These match the backend response shapes for the event detail and rounds endpoints.
 
 type MemberResponse = {
   user_id: string;
@@ -74,13 +89,10 @@ type RoundSummary = {
   round_number: number;
 };
 
-type UserSummary = {
-  id: string;
-  display_name: string;
-  email: string;
-};
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// --- Scoring format options for the Schedule Round form ---
+// SCORING_FORMATS: the four ways scores can be tallied in a round.
+// Rendered as a 2-column pill grid in the Schedule Round form.
 const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "stroke",     label: "Stroke" },
   { value: "net_stroke", label: "Net" },
@@ -88,96 +100,19 @@ const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "scramble",   label: "Scramble" },
 ];
 
-// --- Small reusable sub-components ---
-
-// EventTypeBadge: coloured pill showing "League", "Tournament", or "Casual"
-function EventTypeBadge({ type }: { type: EventDetail["event_type"] }) {
-  const map = {
-    league:     { bg: "bg-blue-100",  text: "text-blue-700" },
-    tournament: { bg: "bg-amber-100", text: "text-amber-700" },
-    casual:     { bg: "bg-gray-100",  text: "text-gray-600" },
-  };
-  const s = map[type];
-  const label = type.charAt(0).toUpperCase() + type.slice(1);
-  return (
-    <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
-      <Text className={`text-xs font-semibold ${s.text}`}>{label}</Text>
-    </View>
-  );
+// chunk: splits an array into sub-arrays of `size` length.
+// Used to render SCORING_FORMATS as two rows of two pills each,
+// without duplicating the pill JSX.
+// Example: chunk([a, b, c, d], 2) → [[a, b], [c, d]]
+function chunk<T>(arr: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    result.push(arr.slice(i, i + size));
+  }
+  return result;
 }
 
-// StatusChip: coloured pill showing the event lifecycle status
-function StatusChip({ status }: { status: string }) {
-  const map: Record<string, { bg: string; text: string }> = {
-    upcoming:  { bg: "bg-sky-100",   text: "text-sky-700" },
-    active:    { bg: "bg-green-100", text: "text-green-700" },
-    completed: { bg: "bg-gray-100",  text: "text-gray-600" },
-    cancelled: { bg: "bg-red-100",   text: "text-red-600" },
-  };
-  const s = map[status] ?? map.upcoming;
-  const label = status.charAt(0).toUpperCase() + status.slice(1);
-  return (
-    <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
-      <Text className={`text-xs font-semibold ${s.text}`}>{label}</Text>
-    </View>
-  );
-}
-
-// RoleBadge: shows "Organizer" badge next to a member's name (hidden for regular players)
-function RoleBadge({ role }: { role: string }) {
-  if (role !== "organizer") return null;
-  return (
-    <View className="rounded-full px-2 py-0.5 bg-green-100">
-      <Text className="text-xs font-semibold text-green-700">Organizer</Text>
-    </View>
-  );
-}
-
-// RoundStatusChip: small coloured label for a round's status
-function RoundStatusChip({ status }: { status: string }) {
-  const map: Record<string, { bg: string; text: string }> = {
-    scheduled: { bg: "bg-sky-100",   text: "text-sky-700" },
-    active:    { bg: "bg-green-100", text: "text-green-700" },
-    completed: { bg: "bg-gray-100",  text: "text-gray-600" },
-  };
-  const s = map[status] ?? map.scheduled;
-  const label = status.charAt(0).toUpperCase() + status.slice(1);
-  return (
-    <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
-      <Text className={`text-xs font-semibold ${s.text}`}>{label}</Text>
-    </View>
-  );
-}
-
-// SectionHeader: consistent heading row used for "Members" and "Rounds" sections
-function SectionHeader({
-  title,
-  actionLabel,
-  onAction,
-  showAction,
-}: {
-  title: string;
-  actionLabel: string;
-  onAction: () => void;
-  showAction: boolean;
-}) {
-  return (
-    <View className="flex-row items-center justify-between mb-3">
-      <Text className="text-base font-bold text-gray-800">{title}</Text>
-      {showAction && (
-        <TouchableOpacity
-          className="bg-green-700 rounded-xl px-3 py-1.5 flex-row items-center gap-1"
-          onPress={onAction}
-        >
-          <Ionicons name="add" size={15} color="white" />
-          <Text className="text-white font-semibold text-xs">{actionLabel}</Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-}
-
-// --- Main screen ---
+// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function EventDetailScreen() {
   // Read the dynamic segment from the URL: /events/[id] → params.id
@@ -187,24 +122,27 @@ export default function EventDetailScreen() {
   const { user } = useUser();
   const queryClient = useQueryClient();
 
+  // t: the active theme — drives background, surface, and text colors throughout this screen.
+  const t = useTheme();
+
   // --- Modal visibility state ---
-  const [editModalVisible, setEditModalVisible]             = useState(false);
-  const [addMemberModalVisible, setAddMemberModalVisible]   = useState(false);
+  const [editModalVisible, setEditModalVisible]                   = useState(false);
+  const [addMemberModalVisible, setAddMemberModalVisible]         = useState(false);
   const [scheduleRoundModalVisible, setScheduleRoundModalVisible] = useState(false);
 
   // --- Edit event form state ---
-  const [editName, setEditName]             = useState("");
+  const [editName, setEditName]               = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [editStartDate, setEditStartDate]   = useState("");
-  const [editEndDate, setEditEndDate]       = useState("");
+  const [editStartDate, setEditStartDate]     = useState("");
+  const [editEndDate, setEditEndDate]         = useState("");
 
-  // --- Add member search state ---
+  // --- Add member search state (owned here so it resets when the modal closes) ---
   const [memberSearch, setMemberSearch] = useState("");
 
   // --- Schedule round form state ---
-  const [courseName, setCourseName]         = useState("");
-  const [roundDate, setRoundDate]           = useState("");
-  const [scoringFormat, setScoringFormat]   = useState("stroke");
+  const [courseName, setCourseName]       = useState("");
+  const [roundDate, setRoundDate]         = useState("");
+  const [scoringFormat, setScoringFormat] = useState("stroke");
 
   // --- Fetch event detail (includes members list) ---
   const {
@@ -222,14 +160,13 @@ export default function EventDetailScreen() {
       if (!res.ok) throw new Error(`Failed to fetch event: ${res.status}`);
       return res.json();
     },
-    enabled: !!id, // only run when id is available (Expo Router might render before params are set)
+    enabled: !!id, // only run when id is available (Expo Router may render before params are set)
   });
 
   // --- Fetch rounds for this event ---
   const {
     data: rounds,
     isLoading: roundsLoading,
-    refetch: refetchRounds,
   } = useQuery<RoundSummary[]>({
     queryKey: ["event", id, "rounds"],
     queryFn: async () => {
@@ -254,7 +191,7 @@ export default function EventDetailScreen() {
       if (!res.ok) throw new Error("Failed to fetch users");
       return res.json();
     },
-    // Only fetch the user list when the Add Member modal is open
+    // Only fetch when the modal is open — avoids an unnecessary API call on screen load.
     enabled: addMemberModalVisible,
   });
 
@@ -265,14 +202,12 @@ export default function EventDetailScreen() {
   const isOrganizer = myMembership?.role === "organizer";
 
   // --- Filter users for the Add Member picker ---
-  // Exclude users who are already members of this event, then apply the search query.
+  // Exclude users who are already members of this event.
+  // UserSearchList will further filter by the search text the user types.
   const existingMemberIds = new Set(event?.members.map((m) => m.user_id) ?? []);
-  const availableUsers = (allUsers ?? []).filter((u) => {
-    if (existingMemberIds.has(u.id)) return false;
-    if (!memberSearch.trim()) return true;
-    const q = memberSearch.toLowerCase();
-    return u.display_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
-  });
+  // allUsers?.filter(...) returns undefined while allUsers is still loading — that's
+  // intentional: UserSearchList shows a spinner when it receives undefined.
+  const availableUsers = allUsers?.filter((u) => !existingMemberIds.has(u.id));
 
   // --- Mutation: update event ---
   const updateEventMutation = useMutation({
@@ -298,7 +233,7 @@ export default function EventDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
-      // Invalidate both the detail query and the events list so everything stays in sync
+      // Invalidate both the detail query and the events list so everything stays in sync.
       queryClient.invalidateQueries({ queryKey: ["event", id] });
       queryClient.invalidateQueries({ queryKey: ["events"] });
       setEditModalVisible(false);
@@ -374,7 +309,7 @@ export default function EventDetailScreen() {
 
   const openEditModal = () => {
     // Pre-fill the form with current values.
-    // Dates come from the API as YYYY-MM-DD — convert them to MM-DD-YY for the DateInput.
+    // Dates come from the API as YYYY-MM-DD — convert to MM-DD-YY for the DateInput.
     setEditName(event?.name ?? "");
     setEditDescription(event?.description ?? "");
     setEditStartDate(apiToDisplay(event?.start_date));
@@ -418,19 +353,19 @@ export default function EventDetailScreen() {
 
   if (eventLoading) {
     return (
-      <View className="flex-1 bg-gray-50 items-center justify-center">
-        <ActivityIndicator size="large" color="#15803d" />
+      <View className={`flex-1 ${t.screen} items-center justify-center`}>
+        <ActivityIndicator size="large" color={t.colors.tabBarActive} />
       </View>
     );
   }
 
   if (eventError || !event) {
     return (
-      <View className="flex-1 bg-gray-50 items-center justify-center gap-3 px-8">
+      <View className={`flex-1 ${t.screen} items-center justify-center gap-3 px-8`}>
         <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
-        <Text className="text-gray-700 font-semibold text-center">Failed to load event</Text>
+        <Text className={`font-semibold text-center ${t.textPrimary}`}>Failed to load event</Text>
         <TouchableOpacity
-          className="bg-green-700 rounded-xl px-6 py-3"
+          className={`${t.primaryBg} rounded-xl px-6 py-3`}
           onPress={() => refetchEvent()}
         >
           <Text className="text-white font-semibold">Retry</Text>
@@ -441,16 +376,17 @@ export default function EventDetailScreen() {
 
   // --- Main render ---
   return (
-    <View className="flex-1 bg-gray-50">
+    // t.screen: full-page background color
+    <View className={`flex-1 ${t.screen}`}>
 
       {/* ── Custom back header ─────────────────────────────────────────────── */}
-      {/* We hide the default Stack header (headerShown: false in _layout) and
-          render our own so we can control its appearance precisely. */}
-      <View className="bg-white border-b border-gray-100 px-4 pt-14 pb-3 flex-row items-center gap-3">
+      {/* We use a custom header instead of the default Stack header so we can
+          control its exact appearance (surface color, divider, edit button). */}
+      <View className={`${t.surface} border-b ${t.divider} px-4 pt-14 pb-3 flex-row items-center gap-3`}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
-          <Ionicons name="chevron-back" size={24} color="#374151" />
+          <Ionicons name="chevron-back" size={24} color={t.colors.tabBarActive} />
         </TouchableOpacity>
-        <Text className="text-lg font-bold text-gray-900 flex-1" numberOfLines={1}>
+        <Text className={`text-lg font-bold flex-1 ${t.textPrimary}`} numberOfLines={1}>
           {event.name}
         </Text>
         {/* Edit button — only shown to organizers */}
@@ -464,37 +400,36 @@ export default function EventDetailScreen() {
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 20 }}>
 
         {/* ── Event info card ────────────────────────────────────────────────── */}
-        <View className="bg-white rounded-2xl p-4 mb-4 border border-gray-100">
+        <View className={`${t.surface} rounded-2xl p-4 mb-4 border ${t.border}`}>
 
-          {/* Type badge + status chip on one row */}
+          {/* Type badge + status chip — both use categorical colors, not theme tokens */}
           <View className="flex-row items-center gap-2 mb-3">
             <EventTypeBadge type={event.event_type} />
             <StatusChip status={event.status} />
           </View>
 
-          {/* Description (if set) */}
+          {/* Description (if the organizer set one) */}
           {event.description ? (
-            <Text className="text-gray-600 text-sm mb-3 leading-5">{event.description}</Text>
+            <Text className={`text-sm mb-3 leading-5 ${t.textSecondary}`}>{event.description}</Text>
           ) : null}
 
-          {/* Date range (if either date is set).
-              apiToDisplay converts "YYYY-MM-DD" → "MM-DD-YY" for display. */}
+          {/* Date range (shown only if at least one date is set) */}
           {(event.start_date || event.end_date) && (
             <View className="flex-row items-center gap-1 mb-2">
-              <Ionicons name="calendar-outline" size={14} color="#9ca3af" />
-              <Text className="text-gray-500 text-xs">
+              <Ionicons name="calendar-outline" size={14} color={t.colors.tabBarInactive} />
+              <Text className={`text-xs ${t.textTertiary}`}>
                 {event.start_date ? apiToDisplay(event.start_date) : "—"}
                 {event.end_date ? ` → ${apiToDisplay(event.end_date)}` : ""}
               </Text>
             </View>
           )}
 
-          {/* Footer: creator + member count */}
+          {/* Footer: creator name + member count */}
           <View className="flex-row items-center justify-between mt-1">
-            <Text className="text-gray-400 text-xs">Created by {event.creator_name}</Text>
+            <Text className={`text-xs ${t.textTertiary}`}>Created by {event.creator_name}</Text>
             <View className="flex-row items-center gap-1">
-              <Ionicons name="people-outline" size={13} color="#9ca3af" />
-              <Text className="text-gray-400 text-xs">{event.member_count} members</Text>
+              <Ionicons name="people-outline" size={13} color={t.colors.tabBarInactive} />
+              <Text className={`text-xs ${t.textTertiary}`}>{event.member_count} members</Text>
             </View>
           </View>
         </View>
@@ -509,34 +444,36 @@ export default function EventDetailScreen() {
           />
 
           {event.members.length === 0 ? (
-            <Text className="text-gray-400 text-sm text-center py-4">No members yet.</Text>
+            <Text className={`text-sm text-center py-4 ${t.textTertiary}`}>No members yet.</Text>
           ) : (
-            <View className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+            // overflow-hidden clips the border-radius on the first and last rows
+            <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
               {event.members.map((member, idx) => (
                 <View
                   key={member.user_id}
                   className={`px-4 py-3 flex-row items-center gap-3 ${
-                    idx < event.members.length - 1 ? "border-b border-gray-100" : ""
+                    // Draw a divider under every row except the last
+                    idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
                 >
-                  {/* Avatar: circle with first initial */}
+                  {/* Initials avatar — green-100/green-700 is categorical, not themed */}
                   <View className="w-9 h-9 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
                     <Text className="text-green-700 font-bold text-sm">
                       {member.display_name.charAt(0).toUpperCase()}
                     </Text>
                   </View>
 
-                  {/* Name + email */}
+                  {/* Name + email — min-w-0 prevents text from overflowing the flex container */}
                   <View className="flex-1 min-w-0">
-                    <Text className="text-gray-800 font-semibold text-sm" numberOfLines={1}>
+                    <Text className={`font-semibold text-sm ${t.textPrimary}`} numberOfLines={1}>
                       {member.display_name}
                     </Text>
-                    <Text className="text-gray-400 text-xs" numberOfLines={1}>
+                    <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
                       {member.email}
                     </Text>
                   </View>
 
-                  {/* Organizer badge (only shown when role = organizer) */}
+                  {/* RoleBadge renders null for "player" — safe to always include */}
                   <RoleBadge role={member.role} />
                 </View>
               ))}
@@ -554,9 +491,9 @@ export default function EventDetailScreen() {
           />
 
           {roundsLoading ? (
-            <ActivityIndicator color="#15803d" />
+            <ActivityIndicator color={t.colors.tabBarActive} />
           ) : !rounds || rounds.length === 0 ? (
-            <Text className="text-gray-400 text-sm text-center py-4">
+            <Text className={`text-sm text-center py-4 ${t.textTertiary}`}>
               {isOrganizer
                 ? 'Tap "Schedule" to add the first round.'
                 : "No rounds scheduled yet."}
@@ -564,13 +501,18 @@ export default function EventDetailScreen() {
           ) : (
             <View className="gap-3">
               {rounds.map((round) => (
-                <View
+                // Round cards are tappable — they navigate to the Round detail/edit screen.
+                // app/rounds/[id].tsx handles group management, tee times, and player assignment.
+                // (That screen is not yet built; Expo Router shows "Unmatched Route" until it exists.)
+                <TouchableOpacity
                   key={round.id}
-                  className="bg-white rounded-2xl p-4 border border-gray-100"
+                  className={`${t.surface} rounded-2xl p-4 border ${t.border}`}
+                  onPress={() => router.push(`/rounds/${round.id}`)}
+                  activeOpacity={0.7}
                 >
-                  {/* Round number + status */}
+                  {/* Round number + status chip — RoundStatusChip is categorical, not themed */}
                   <View className="flex-row items-center justify-between mb-2">
-                    <Text className="text-gray-800 font-bold text-sm">
+                    <Text className={`font-bold text-sm ${t.textPrimary}`}>
                       Round {round.round_number}
                     </Text>
                     <RoundStatusChip status={round.status} />
@@ -578,22 +520,25 @@ export default function EventDetailScreen() {
 
                   {/* Course name */}
                   <View className="flex-row items-center gap-1 mb-1">
-                    <Ionicons name="golf-outline" size={13} color="#9ca3af" />
-                    <Text className="text-gray-600 text-sm">{round.course_name}</Text>
+                    <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+                    <Text className={`text-sm ${t.textSecondary}`}>{round.course_name}</Text>
                   </View>
 
-                  {/* Date + scoring format.
-                      scheduled_date comes from the API as "YYYY-MM-DD" — convert to "MM-DD-YY". */}
+                  {/* Date + scoring format */}
                   <View className="flex-row items-center justify-between">
                     <View className="flex-row items-center gap-1">
-                      <Ionicons name="calendar-outline" size={13} color="#9ca3af" />
-                      <Text className="text-gray-500 text-xs">{apiToDisplay(round.scheduled_date)}</Text>
+                      <Ionicons name="calendar-outline" size={13} color={t.colors.tabBarInactive} />
+                      <Text className={`text-xs ${t.textSecondary}`}>
+                        {apiToDisplay(round.scheduled_date)}
+                      </Text>
                     </View>
-                    <Text className="text-gray-400 text-xs capitalize">
+                    {/* capitalize: CSS text-transform — makes "net_stroke" → "net stroke"
+                        after the .replace("_", " ") call */}
+                    <Text className={`text-xs capitalize ${t.textTertiary}`}>
                       {round.scoring_format.replace("_", " ")}
                     </Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           )}
@@ -611,30 +556,26 @@ export default function EventDetailScreen() {
         onRequestClose={() => setEditModalVisible(false)}
       >
         <KeyboardAvoidingView
-          className="flex-1 bg-white"
+          className={`flex-1 ${t.surface}`}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <ScrollView>
             <View className="px-5 pt-8 pb-10">
 
-              {/* Modal header */}
-              <View className="flex-row items-center justify-between mb-8">
-                <Text className="text-xl font-bold text-gray-900">Edit Event</Text>
-                <TouchableOpacity
-                  onPress={() => setEditModalVisible(false)}
-                  disabled={updateEventMutation.isPending}
-                >
-                  <Ionicons name="close" size={24} color="#6b7280" />
-                </TouchableOpacity>
-              </View>
+              <ModalHeader
+                title="Edit Event"
+                onClose={() => setEditModalVisible(false)}
+                disabled={updateEventMutation.isPending}
+              />
 
               {/* Name */}
               <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Name <Text className="text-red-500">*</Text>
                 </Text>
                 <TextInput
-                  className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholderTextColor={t.colors.tabBarInactive}
                   value={editName}
                   onChangeText={setEditName}
                   autoCapitalize="words"
@@ -645,12 +586,13 @@ export default function EventDetailScreen() {
 
               {/* Description */}
               <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Description{" "}
-                  <Text className="text-gray-400 normal-case font-normal">(optional)</Text>
+                  <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional)</Text>
                 </Text>
                 <TextInput
-                  className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholderTextColor={t.colors.tabBarInactive}
                   value={editDescription}
                   onChangeText={setEditDescription}
                   multiline
@@ -660,7 +602,7 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Start date — DateInput handles auto-formatting and native calendar picker */}
+              {/* Start date — DateInput handles auto-formatting and the native calendar picker */}
               <View className="mb-4">
                 <DateInput
                   label="Start Date"
@@ -687,7 +629,7 @@ export default function EventDetailScreen() {
               {/* Save button */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center ${
-                  updateEventMutation.isPending ? "bg-green-400" : "bg-green-700"
+                  updateEventMutation.isPending ? t.primaryBgDisabled : t.primaryBg
                 }`}
                 onPress={handleSaveEdit}
                 disabled={updateEventMutation.isPending}
@@ -717,86 +659,33 @@ export default function EventDetailScreen() {
           setMemberSearch("");
         }}
       >
-        <View className="flex-1 bg-white">
-          {/* Modal header */}
-          <View className="px-5 pt-8 pb-4">
-            <View className="flex-row items-center justify-between mb-4">
-              <Text className="text-xl font-bold text-gray-900">Add Member</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setAddMemberModalVisible(false);
-                  setMemberSearch("");
-                }}
-              >
-                <Ionicons name="close" size={24} color="#6b7280" />
-              </TouchableOpacity>
-            </View>
+        <View className={`flex-1 ${t.surface}`}>
 
-            {/* Search box */}
-            <View className="flex-row items-center border border-gray-300 rounded-xl px-3 py-2 bg-gray-50">
-              <Ionicons name="search-outline" size={16} color="#9ca3af" />
-              <TextInput
-                className="flex-1 ml-2 text-base text-gray-800"
-                placeholder="Search by name or email..."
-                value={memberSearch}
-                onChangeText={setMemberSearch}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
+          {/* Header area with padding */}
+          <View className="px-5 pt-8 pb-2">
+            <ModalHeader
+              title="Add Member"
+              onClose={() => {
+                setAddMemberModalVisible(false);
+                setMemberSearch("");
+              }}
+            />
           </View>
 
-          {/* User list */}
-          {!allUsers ? (
-            <View className="flex-1 items-center justify-center">
-              <ActivityIndicator size="large" color="#15803d" />
-            </View>
-          ) : availableUsers.length === 0 ? (
-            <View className="flex-1 items-center justify-center px-8">
-              <Text className="text-gray-400 text-sm text-center">
-                {memberSearch
-                  ? "No users match your search."
-                  : "All users are already members of this event."}
-              </Text>
-            </View>
-          ) : (
-            <FlatList
-              data={availableUsers}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  className="flex-row items-center gap-3 py-3 border-b border-gray-100"
-                  onPress={() => addMemberMutation.mutate(item.id)}
-                  disabled={addMemberMutation.isPending}
-                >
-                  {/* Initials avatar */}
-                  <View className="w-10 h-10 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
-                    <Text className="text-green-700 font-bold">
-                      {item.display_name.charAt(0).toUpperCase()}
-                    </Text>
-                  </View>
-
-                  {/* Name + email */}
-                  <View className="flex-1 min-w-0">
-                    <Text className="text-gray-800 font-semibold text-sm" numberOfLines={1}>
-                      {item.display_name}
-                    </Text>
-                    <Text className="text-gray-400 text-xs" numberOfLines={1}>
-                      {item.email}
-                    </Text>
-                  </View>
-
-                  {/* Add indicator */}
-                  {addMemberMutation.isPending ? (
-                    <ActivityIndicator size="small" color="#15803d" />
-                  ) : (
-                    <Ionicons name="add-circle-outline" size={22} color="#15803d" />
-                  )}
-                </TouchableOpacity>
-              )}
+          {/* UserSearchList owns the search box and list.
+              We pass pre-filtered users (non-members only); the component filters by search text.
+              The search state is owned here so we can reset it when the modal closes. */}
+          <View className="flex-1">
+            <UserSearchList
+              users={availableUsers}
+              search={memberSearch}
+              onSearchChange={setMemberSearch}
+              onSelect={(userId) => addMemberMutation.mutate(userId)}
+              isPending={addMemberMutation.isPending}
+              emptyMessage="All users are already members of this event."
             />
-          )}
+          </View>
+
         </View>
       </Modal>
 
@@ -811,39 +700,35 @@ export default function EventDetailScreen() {
         onRequestClose={() => setScheduleRoundModalVisible(false)}
       >
         <KeyboardAvoidingView
-          className="flex-1 bg-white"
+          className={`flex-1 ${t.surface}`}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <ScrollView>
             <View className="px-5 pt-8 pb-10">
 
-              {/* Modal header */}
-              <View className="flex-row items-center justify-between mb-8">
-                <Text className="text-xl font-bold text-gray-900">Schedule Round</Text>
-                <TouchableOpacity
-                  onPress={() => setScheduleRoundModalVisible(false)}
-                  disabled={scheduleRoundMutation.isPending}
-                >
-                  <Ionicons name="close" size={24} color="#6b7280" />
-                </TouchableOpacity>
-              </View>
+              <ModalHeader
+                title="Schedule Round"
+                onClose={() => setScheduleRoundModalVisible(false)}
+                disabled={scheduleRoundMutation.isPending}
+              />
 
               {/* Course name */}
               <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Course Name <Text className="text-red-500">*</Text>
                 </Text>
                 <TextInput
-                  className="border border-gray-300 rounded-xl px-4 py-3 text-base bg-gray-50"
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                   placeholder="e.g. Pine Valley Golf Club"
+                  placeholderTextColor={t.colors.tabBarInactive}
                   value={courseName}
                   onChangeText={setCourseName}
                   autoCapitalize="words"
                   editable={!scheduleRoundMutation.isPending}
                   returnKeyType="next"
                 />
-                {/* Hint: if the course already exists it will be reused */}
-                <Text className="text-gray-400 text-xs mt-1 ml-1">
+                {/* Hint: existing courses are matched by name so no duplicates are created */}
+                <Text className={`text-xs mt-1 ml-1 ${t.textTertiary}`}>
                   Existing courses are matched by name — no duplicates created.
                 </Text>
               </View>
@@ -860,66 +745,49 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Scoring format picker — pill buttons */}
+              {/* Scoring format picker — 2-column pill grid.
+                  chunk(SCORING_FORMATS, 2) → [[Stroke, Net], [Stableford, Scramble]]
+                  We render each inner array as a flex-row, avoiding duplicate JSX. */}
               <View className="mb-8">
-                <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Scoring Format
                 </Text>
-                {/* Two rows of two pills each */}
                 <View className="gap-2">
-                  <View className="flex-row gap-2">
-                    {SCORING_FORMATS.slice(0, 2).map((fmt) => {
-                      const selected = scoringFormat === fmt.value;
-                      return (
-                        <TouchableOpacity
-                          key={fmt.value}
-                          className={`flex-1 rounded-xl py-3 items-center border ${
-                            selected ? "bg-green-700 border-green-700" : "bg-white border-gray-300"
-                          }`}
-                          onPress={() => setScoringFormat(fmt.value)}
-                          disabled={scheduleRoundMutation.isPending}
-                        >
-                          <Text
-                            className={`text-sm font-semibold ${
-                              selected ? "text-white" : "text-gray-600"
+                  {chunk(SCORING_FORMATS, 2).map((row, rowIdx) => (
+                    <View key={rowIdx} className="flex-row gap-2">
+                      {row.map((fmt) => {
+                        const selected = scoringFormat === fmt.value;
+                        return (
+                          <TouchableOpacity
+                            key={fmt.value}
+                            // flex-1: each pill takes equal width within the row
+                            className={`flex-1 rounded-xl py-3 items-center border ${
+                              selected
+                                ? `${t.primaryBg} border-transparent`
+                                : `${t.surface} ${t.borderInput}`
                             }`}
+                            onPress={() => setScoringFormat(fmt.value)}
+                            disabled={scheduleRoundMutation.isPending}
                           >
-                            {fmt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                  <View className="flex-row gap-2">
-                    {SCORING_FORMATS.slice(2).map((fmt) => {
-                      const selected = scoringFormat === fmt.value;
-                      return (
-                        <TouchableOpacity
-                          key={fmt.value}
-                          className={`flex-1 rounded-xl py-3 items-center border ${
-                            selected ? "bg-green-700 border-green-700" : "bg-white border-gray-300"
-                          }`}
-                          onPress={() => setScoringFormat(fmt.value)}
-                          disabled={scheduleRoundMutation.isPending}
-                        >
-                          <Text
-                            className={`text-sm font-semibold ${
-                              selected ? "text-white" : "text-gray-600"
-                            }`}
-                          >
-                            {fmt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                            <Text
+                              className={`text-sm font-semibold ${
+                                selected ? "text-white" : t.textSecondary
+                              }`}
+                            >
+                              {fmt.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
                 </View>
               </View>
 
               {/* Schedule button */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center ${
-                  scheduleRoundMutation.isPending ? "bg-green-400" : "bg-green-700"
+                  scheduleRoundMutation.isPending ? t.primaryBgDisabled : t.primaryBg
                 }`}
                 onPress={handleScheduleRound}
                 disabled={scheduleRoundMutation.isPending}

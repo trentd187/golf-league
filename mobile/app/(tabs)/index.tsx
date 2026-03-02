@@ -17,6 +17,9 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 // useRouter allows navigating to other screens programmatically
 import { useRouter } from "expo-router";
 
+// useTheme gives us the active theme's class strings and hex colors.
+import { useTheme } from "@/hooks/useTheme";
+
 // A reusable card component for the home screen sections.
 // Props:
 //   icon:     Ionicons icon name to show on the left of the card header
@@ -34,27 +37,32 @@ function HomeCard({
   subtitle: string;
   onPress: () => void;
 }) {
+  // Read the active theme so card colors respond to theme switches.
+  // Calling useTheme() here (inside the sub-component) is valid — hooks can be called
+  // in any function component, not just the top-level screen component.
+  const t = useTheme();
+
   return (
-    // rounded-2xl: rounded corners | shadow-sm: subtle drop shadow | mb-4: spacing below
+    // t.surface: themed card background | t.border: themed card border
     <TouchableOpacity
-      className="bg-white rounded-2xl p-5 mb-4 border border-gray-100"
+      className={`${t.surface} rounded-2xl p-5 mb-4 border ${t.border}`}
       onPress={onPress}
-      // activeOpacity: how transparent the card becomes when pressed (0 = fully transparent)
+      // activeOpacity: how transparent the card becomes when pressed
       activeOpacity={0.7}
     >
       {/* Card header row: icon + title + chevron */}
       <View className="flex-row items-center justify-between mb-2">
         <View className="flex-row items-center gap-3">
-          {/* Icon shown in green-700 to match the brand colour */}
-          <Ionicons name={icon as any} size={22} color="#15803d" />
-          <Text className="text-lg font-semibold text-gray-800">{title}</Text>
+          {/* Icon in the theme's primary action color */}
+          <Ionicons name={icon as any} size={22} color={t.colors.tabBarActive} />
+          <Text className={`text-lg font-semibold ${t.textPrimary}`}>{title}</Text>
         </View>
-        {/* Chevron arrow indicates the card is tappable */}
-        <Ionicons name="chevron-forward-outline" size={20} color="#9ca3af" />
+        {/* Chevron arrow indicates the card is tappable — use inactive tint color */}
+        <Ionicons name="chevron-forward-outline" size={20} color={t.colors.tabBarInactive} />
       </View>
 
       {/* Subtitle / placeholder text */}
-      <Text className="text-gray-500 text-sm">{subtitle}</Text>
+      <Text className={`text-sm ${t.textSecondary}`}>{subtitle}</Text>
     </TouchableOpacity>
   );
 }
@@ -67,6 +75,9 @@ export default function HomeScreen() {
   // router: used to navigate to another tab when a card is tapped
   const router = useRouter();
 
+  // t: the active theme — drives screen background and text colors
+  const t = useTheme();
+
   // While Clerk is loading, show nothing to avoid a flash of wrong content
   if (!isLoaded) return null;
 
@@ -75,16 +86,16 @@ export default function HomeScreen() {
   const greeting = user?.firstName ? `Welcome back, ${user.firstName}!` : "Welcome back!";
 
   return (
-    // bg-gray-50: a very light gray background that makes the white cards pop
-    <ScrollView className="flex-1 bg-gray-50">
+    // t.screen: full-page background — slightly offset from t.surface so cards pop
+    <ScrollView className={`flex-1 ${t.screen}`}>
       <View className="px-5 pt-14 pb-6">
 
         {/* Page header */}
-        <Text className="text-2xl font-bold text-gray-900 mb-1">{greeting}</Text>
-        <Text className="text-gray-500 text-sm mb-8">Here's what's happening in your events.</Text>
+        <Text className={`text-2xl font-bold mb-1 ${t.textPrimary}`}>{greeting}</Text>
+        <Text className={`text-sm mb-8 ${t.textSecondary}`}>Here's what's happening in your events.</Text>
 
         {/* Section heading */}
-        <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">
+        <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>
           Quick Access
         </Text>
 

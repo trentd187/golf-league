@@ -16,6 +16,12 @@ module.exports = {
   content: [
     "./app/**/*.{js,jsx,ts,tsx}",        // All files inside the app/ directory (Expo Router screens)
     "./components/**/*.{js,jsx,ts,tsx}", // All reusable components
+    // Theme system — all theme class strings live as literals in these files so the
+    // Tailwind JIT scanner captures them at build time. Without these paths, any
+    // class that only appears in themes/index.ts would be stripped from the bundle.
+    "./themes/**/*.{ts,tsx}",
+    "./stores/**/*.{ts,tsx}",
+    "./hooks/**/*.{ts,tsx}",
   ],
 
   // "presets" is a list of Tailwind config presets to extend from.

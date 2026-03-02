@@ -21,7 +21,13 @@ import { ClerkProvider, ClerkLoaded } from "@clerk/clerk-expo";
 // React Query is a library for managing server state: fetching, caching, synchronizing,
 // and updating data from APIs. QueryClient is the cache instance; QueryClientProvider
 // makes it available to any component via the useQuery/useMutation hooks.
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// focusManager lets us tell React Query what "focus" means in a React Native context
+// (since the browser visibility API it defaults to doesn't exist in RN).
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
+
+// AppState lets us listen to app foreground/background transitions.
+// We use it to tell React Query to refetch stale data when the app comes back to the foreground.
+import { AppState, AppStateStatus } from "react-native";
 
 // Stack is Expo Router's stack navigator — it manages a stack of screens with native
 // push/pop transitions and an optional header. Using Stack here (rather than Slot)
@@ -37,6 +43,30 @@ import { tokenCache } from "@/utils/cache";
 // If it were created inside the component, a new cache would be created on every re-render,
 // throwing away all cached data.
 const queryClient = new QueryClient();
+
+// Configure React Query's focus detection for React Native.
+// By default, React Query uses the browser's "visibilitychange" event to decide when to
+// refetch stale data. That event doesn't exist in React Native, so refetchOnWindowFocus
+// (and related behaviours) would never fire.
+//
+// We replace the built-in listener with one that uses React Native's AppState API:
+//   "active"     = app is in the foreground and interactive → tell RQ focus is true
+//   "background" = app is behind the home screen / another app → tell RQ focus is false
+//   "inactive"   = app is transitioning (iOS only) → we ignore this state
+//
+// setEventListener expects us to call handleFocus(true/false) when focus changes,
+// and to return a cleanup function that removes the listener.
+focusManager.setEventListener((handleFocus) => {
+  const subscription = AppState.addEventListener(
+    "change",
+    (state: AppStateStatus) => {
+      // Only treat "active" as focused; anything else (background/inactive) is not focused.
+      handleFocus(state === "active");
+    }
+  );
+  // Return the cleanup function — called when the app unmounts or the listener is replaced.
+  return () => subscription.remove();
+});
 
 // RootLayout is the default export — Expo Router automatically renders this as the root.
 export default function RootLayout() {

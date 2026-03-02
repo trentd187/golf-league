@@ -11,12 +11,13 @@
 //   - useQuery fetches events from GET /api/v1/events on mount and when invalidated
 //   - useMutation posts to POST /api/v1/events when the create form is submitted
 //   - After a successful create, the query is invalidated so the list refreshes automatically
+//   - Filtering and sorting are done client-side on the cached data (no extra API calls)
 //
 // Auth:
 //   - Every request includes the Clerk JWT in the Authorization header via getToken()
 //   - The create button is only shown to admin and manager users (checked via user.publicMetadata)
 
-import { useState } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   Text,
   View,
@@ -40,13 +41,22 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import Ionicons from "@expo/vector-icons/Ionicons";
 
-// useRouter gives us router.push() to navigate to the event detail screen
-import { useRouter } from "expo-router";
+// useRouter gives us router.push() to navigate to the event detail screen.
+// useFocusEffect runs a callback every time this screen gains focus — we use it to
+// refetch the events list so edits made on the detail screen are immediately visible
+// when the user navigates back. (react-native-screens freezes the tab while a stack
+// screen sits on top, so the background refetch from invalidateQueries may not cause
+// a re-render on its own.)
+import { useRouter, useFocusEffect } from "expo-router";
 
 // API_URL is read from the EXPO_PUBLIC_API_URL environment variable
 import { API_URL } from "@/constants/api";
+// DateInput: auto-formatted MM-DD-YY text field with native calendar picker.
+// apiToDisplay converts YYYY-MM-DD → MM-DD-YY for displaying API dates on cards.
+// displayToApi converts MM-DD-YY → YYYY-MM-DD before sending to the backend.
+import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
-// --- Types ---
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 // EventResponse matches the JSON shape returned by GET /api/v1/events
 type EventResponse = {
@@ -62,25 +72,67 @@ type EventResponse = {
   created_at: string;
 };
 
-// The three event types the user can choose when creating an event
-const EVENT_TYPES: { value: EventResponse["event_type"]; label: string; icon: string }[] = [
-  { value: "league",     label: "League",     icon: "trophy-outline" },
-  { value: "tournament", label: "Tournament", icon: "ribbon-outline" },
-  { value: "casual",     label: "Casual",     icon: "golf-outline" },
+// TypeFilter: which event type to show. "all" shows every type.
+type TypeFilter = "all" | EventResponse["event_type"];
+
+// StatusFilter: which lifecycle status to show. "all" shows every status.
+type StatusFilter = "all" | "upcoming" | "active" | "completed" | "cancelled";
+
+// SortKey: how to order the list.
+type SortKey =
+  | "start_date_asc"   // soonest start date first (default)
+  | "start_date_desc"  // latest start date first
+  | "name_asc"         // alphabetical
+  | "members_desc"     // most members first
+  | "created_desc";    // most recently created first
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+// The three event types available when creating an event
+const EVENT_TYPES: { value: EventResponse["event_type"]; label: string }[] = [
+  { value: "league",     label: "League" },
+  { value: "tournament", label: "Tournament" },
+  { value: "casual",     label: "Casual" },
 ];
 
-// --- Sub-components ---
+// Type filter options shown in the filter bar (includes "All" at the front)
+const TYPE_FILTER_OPTIONS: { value: TypeFilter; label: string }[] = [
+  { value: "all",        label: "All Types" },
+  { value: "league",     label: "League" },
+  { value: "tournament", label: "Tournament" },
+  { value: "casual",     label: "Casual" },
+];
+
+// Status filter options shown in the filter bar
+const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "all",       label: "All Status" },
+  { value: "upcoming",  label: "Upcoming" },
+  { value: "active",    label: "Active" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+// Sort options shown in the sort modal.
+// shortLabel is shown on the sort button; label is shown inside the modal list.
+const SORT_OPTIONS: { value: SortKey; label: string; shortLabel: string }[] = [
+  { value: "start_date_asc",  label: "Start Date (earliest first)", shortLabel: "Date ↑" },
+  { value: "start_date_desc", label: "Start Date (latest first)",   shortLabel: "Date ↓" },
+  { value: "name_asc",        label: "Name (A–Z)",                  shortLabel: "A–Z" },
+  { value: "members_desc",    label: "Most Members",                shortLabel: "Members" },
+  { value: "created_desc",    label: "Newest First",                shortLabel: "Newest" },
+];
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
 // EventTypeBadge renders a small coloured pill showing the event type.
 // This lets users quickly distinguish leagues from tournaments in the list.
 function EventTypeBadge({ type }: { type: EventResponse["event_type"] }) {
-  // Map each type to its background + text colours
   const styles: Record<EventResponse["event_type"], { bg: string; text: string }> = {
     league:     { bg: "bg-blue-100",  text: "text-blue-700" },
     tournament: { bg: "bg-amber-100", text: "text-amber-700" },
     casual:     { bg: "bg-gray-100",  text: "text-gray-600" },
   };
-  const label = type.charAt(0).toUpperCase() + type.slice(1); // "league" → "League"
+  const label = type.charAt(0).toUpperCase() + type.slice(1);
   const s = styles[type];
   return (
     <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
@@ -114,6 +166,18 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
         </Text>
       ) : null}
 
+      {/* Date range — shown when at least one date is set.
+          Dates come from the API as YYYY-MM-DD; apiToDisplay converts to MM-DD-YY. */}
+      {(event.start_date || event.end_date) && (
+        <View className="flex-row items-center gap-1 mb-2">
+          <Ionicons name="calendar-outline" size={12} color="#9ca3af" />
+          <Text className="text-gray-400 text-xs">
+            {event.start_date ? apiToDisplay(event.start_date) : "—"}
+            {event.end_date ? ` → ${apiToDisplay(event.end_date)}` : ""}
+          </Text>
+        </View>
+      )}
+
       {/* Footer: creator + member count + chevron indicating tappability */}
       <View className="flex-row items-center justify-between mt-1">
         <Text className="text-gray-400 text-xs">Created by {event.creator_name}</Text>
@@ -129,7 +193,7 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
   );
 }
 
-// --- Main screen ---
+// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function EventsScreen() {
   // getToken(): async — returns the current Clerk session JWT for Authorization headers
@@ -142,12 +206,35 @@ export default function EventsScreen() {
   // queryClient lets us manually invalidate cached data (force a refetch after mutations)
   const queryClient = useQueryClient();
 
+  // --- Filter / sort state ---
+  const [typeFilter,   setTypeFilter]   = useState<TypeFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Default sort: start date ascending (soonest event first)
+  const [sortKey,      setSortKey]      = useState<SortKey>("start_date_asc");
+  // Controls the sort picker bottom sheet
+  const [sortModalVisible,   setSortModalVisible]   = useState(false);
+  // Controls the filter options bottom sheet
+  const [filterModalVisible, setFilterModalVisible] = useState(false);
+
   // --- Create event modal state ---
   const [modalVisible, setModalVisible] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   // newEventType: which type of event the user is creating; defaults to "league"
   const [newEventType, setNewEventType] = useState<EventResponse["event_type"]>("league");
+  // Dates stored in MM-DD-YY display format; converted to YYYY-MM-DD when sent to the API
+  const [newStartDate, setNewStartDate] = useState("");
+  const [newEndDate, setNewEndDate] = useState("");
+
+  // handleStartDateChange: when a start date is chosen, also set the end date to match
+  // if the end date hasn't been filled in yet. This saves a tap for single-day events
+  // or gives a sensible starting point for multi-day ranges.
+  const handleStartDateChange = (value: string) => {
+    setNewStartDate(value);
+    if (!newEndDate) {
+      setNewEndDate(value);
+    }
+  };
 
   // --- Check user's role from Clerk publicMetadata ---
   // publicMetadata is typed as Record<string, unknown> so we cast it.
@@ -170,11 +257,106 @@ export default function EventsScreen() {
     },
   });
 
+  // When this tab gains focus, check whether the events query was explicitly invalidated
+  // (e.g., by updateEventMutation.onSuccess on the detail screen) and refetch only then.
+  //
+  // Why not always refetch on focus?
+  //   react-native-screens freezes the tab while a stack screen is on top. When the user
+  //   navigates back, the frozen component unfreezes but may not have re-rendered with the
+  //   background refetch result. Checking isInvalidated targets exactly that case —
+  //   a mutation happened and we need fresh data — without firing a network request every
+  //   time the user simply switches tabs or navigates back from an unrelated screen.
+  useFocusEffect(
+    useCallback(() => {
+      // getQueryState returns the current cache entry's metadata.
+      // isInvalidated is set to true by invalidateQueries() and reset to false after a
+      // successful refetch, so this fires at most once per invalidation.
+      const state = queryClient.getQueryState(["events"]);
+      if (state?.isInvalidated) {
+        refetch();
+      }
+    }, [queryClient, refetch])
+  );
+
+  // --- Filter + sort logic ---
+  // useMemo recomputes displayedEvents only when the raw data or filter/sort settings change.
+  // All filtering and sorting is client-side — no extra API calls needed.
+  const displayedEvents = useMemo(() => {
+    if (!events) return [];
+
+    // Step 1: Filter by type
+    let result = typeFilter === "all"
+      ? events
+      : events.filter((e) => e.event_type === typeFilter);
+
+    // Step 2: Filter by status
+    if (statusFilter !== "all") {
+      result = result.filter((e) => e.status === statusFilter);
+    }
+
+    // Step 3: Sort. We spread into a new array first because Array.sort() mutates in place,
+    // and we don't want to mutate the cached data from React Query.
+    const sorted = [...result];
+
+    switch (sortKey) {
+      case "start_date_asc":
+        // Soonest date first; events with no start_date go to the end
+        sorted.sort((a, b) => {
+          if (!a.start_date && !b.start_date) return 0;
+          if (!a.start_date) return 1;  // nulls last
+          if (!b.start_date) return -1;
+          return a.start_date.localeCompare(b.start_date);
+        });
+        break;
+
+      case "start_date_desc":
+        // Latest date first; events with no start_date go to the end
+        sorted.sort((a, b) => {
+          if (!a.start_date && !b.start_date) return 0;
+          if (!a.start_date) return 1;  // nulls last even when descending
+          if (!b.start_date) return -1;
+          return b.start_date.localeCompare(a.start_date);
+        });
+        break;
+
+      case "name_asc":
+        // Alphabetical by event name (case-insensitive)
+        sorted.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+
+      case "members_desc":
+        // Most members first
+        sorted.sort((a, b) => b.member_count - a.member_count);
+        break;
+
+      case "created_desc":
+        // Most recently created first.
+        // ISO strings ("2026-03-01T...") compare correctly as strings.
+        sorted.sort((a, b) => b.created_at.localeCompare(a.created_at));
+        break;
+    }
+
+    return sorted;
+  }, [events, typeFilter, statusFilter, sortKey]);
+
+  // Whether any filter is currently active (not "all") — used to show a "Clear" link
+  const hasActiveFilters = typeFilter !== "all" || statusFilter !== "all";
+
+  // The short label for the current sort shown on the sort button
+  const currentSortShortLabel =
+    SORT_OPTIONS.find((o) => o.value === sortKey)?.shortLabel ?? "Sort";
+
   // --- Create event mutation ---
   // useMutation wraps the POST request. On success it invalidates the events query
   // so the list automatically refreshes to include the newly created event.
   const createEventMutation = useMutation({
-    mutationFn: async (data: { name: string; event_type: string; description?: string }) => {
+    mutationFn: async (data: {
+      name: string;
+      event_type: string;
+      description?: string;
+      start_date?: string; // YYYY-MM-DD, or omitted to leave unset
+      end_date?: string;
+    }) => {
       const token = await getToken();
       const res = await fetch(`${API_URL}/api/v1/events`, {
         method: "POST",
@@ -198,6 +380,8 @@ export default function EventsScreen() {
       setNewName("");
       setNewDescription("");
       setNewEventType("league");
+      setNewStartDate("");
+      setNewEndDate("");
     },
     onError: (err: Error) => {
       Alert.alert("Something went wrong", err.message, [{ text: "OK" }]);
@@ -210,11 +394,17 @@ export default function EventsScreen() {
       Alert.alert("Name required", "Please enter a name for the event.", [{ text: "OK" }]);
       return;
     }
+    // Convert dates from MM-DD-YY display format to YYYY-MM-DD for the API.
+    // displayToApi returns "" for empty — we use || undefined to omit the field entirely
+    // rather than sending an empty string, which the backend would try to parse.
+    const startDate = displayToApi(newStartDate.trim()) || undefined;
+    const endDate   = displayToApi(newEndDate.trim())   || undefined;
     createEventMutation.mutate({
       name: trimmedName,
       event_type: newEventType,
-      // Only send description if the user actually typed something
       description: newDescription.trim() || undefined,
+      start_date: startDate,
+      end_date:   endDate,
     });
   };
 
@@ -223,15 +413,22 @@ export default function EventsScreen() {
     setNewName("");
     setNewDescription("");
     setNewEventType("league");
+    setNewStartDate("");
+    setNewEndDate("");
+  };
+
+  const clearFilters = () => {
+    setTypeFilter("all");
+    setStatusFilter("all");
   };
 
   // --- Render ---
   return (
     <View className="flex-1 bg-gray-50">
-      <View className="px-5 pt-14 pb-4 flex-1">
+      <View className="pt-14 flex-1">
 
-        {/* Page header: title + create button */}
-        <View className="flex-row items-center justify-between mb-6">
+        {/* ── Page header ────────────────────────────────────────────────────── */}
+        <View className="px-5 flex-row items-center justify-between mb-3">
           <Text className="text-2xl font-bold text-gray-900">Events</Text>
           {canCreate && (
             <TouchableOpacity
@@ -244,7 +441,45 @@ export default function EventsScreen() {
           )}
         </View>
 
-        {/* Content: loading spinner / error state / empty state / event list */}
+        {/* ── Filter + Sort control bar ───────────────────────────────────────── */}
+        {/* Two compact buttons side by side below the header.
+            Filter opens a bottom-sheet with all filter checkboxes.
+            Sort opens a bottom-sheet with sort order options. */}
+        <View className="px-5 flex-row items-center gap-2 mb-4">
+
+          {/* Filter button — turns green when any filter is active to signal state */}
+          <TouchableOpacity
+            className={`flex-row items-center gap-1.5 border rounded-xl px-3 py-2 ${
+              hasActiveFilters
+                ? "bg-green-50 border-green-300"  // highlighted state when filters are on
+                : "bg-white border-gray-200"       // default state
+            }`}
+            onPress={() => setFilterModalVisible(true)}
+          >
+            {/* funnel icon — standard filter icon in mobile UIs */}
+            <Ionicons
+              name="options-outline"
+              size={14}
+              color={hasActiveFilters ? "#15803d" : "#6b7280"}
+            />
+            <Text className={`text-xs font-semibold ${hasActiveFilters ? "text-green-700" : "text-gray-600"}`}>
+              {/* Bullet after "Filter" when active so the user sees something is on */}
+              Filter{hasActiveFilters ? "  •" : ""}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Sort button — shows the current sort's short label */}
+          <TouchableOpacity
+            className="flex-row items-center gap-1.5 border border-gray-200 rounded-xl px-3 py-2 bg-white"
+            onPress={() => setSortModalVisible(true)}
+          >
+            <Ionicons name="swap-vertical-outline" size={14} color="#6b7280" />
+            <Text className="text-gray-600 text-xs font-semibold">{currentSortShortLabel}</Text>
+          </TouchableOpacity>
+
+        </View>
+
+        {/* ── Content: loading / error / list ────────────────────────────────── */}
         {isLoading ? (
           <View className="flex-1 items-center justify-center">
             <ActivityIndicator size="large" color="#15803d" />
@@ -257,11 +492,12 @@ export default function EventsScreen() {
               <Text className="text-white font-semibold">Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : events && events.length > 0 ? (
+        ) : displayedEvents.length > 0 ? (
           // FlatList only renders visible items — more efficient than ScrollView for long lists
           <FlatList
-            data={events}
+            data={displayedEvents}
             keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
             renderItem={({ item }) => (
               // Navigate to /events/[id] — matches app/events/[id].tsx
               <EventCard
@@ -272,19 +508,210 @@ export default function EventsScreen() {
             showsVerticalScrollIndicator={false}
           />
         ) : (
-          <View className="flex-1 items-center justify-center gap-3">
+          // Empty state — different message depending on whether filters are hiding results
+          <View className="flex-1 items-center justify-center gap-3 px-8">
             <Ionicons name="trophy-outline" size={56} color="#15803d" />
-            <Text className="text-xl font-semibold text-gray-800">No events yet</Text>
-            <Text className="text-gray-500 text-sm text-center">
-              {canCreate
-                ? 'Tap "Create" to set up your first league or tournament.'
-                : "You haven't been added to any events yet."}
-            </Text>
+            {hasActiveFilters ? (
+              <>
+                <Text className="text-xl font-semibold text-gray-800">No matching events</Text>
+                <Text className="text-gray-500 text-sm text-center">
+                  No events match the selected filters.
+                </Text>
+                <TouchableOpacity
+                  className="bg-green-700 rounded-xl px-6 py-3"
+                  onPress={clearFilters}
+                >
+                  <Text className="text-white font-semibold">Clear Filters</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text className="text-xl font-semibold text-gray-800">No events yet</Text>
+                <Text className="text-gray-500 text-sm text-center">
+                  {canCreate
+                    ? 'Tap "Create" to set up your first league or tournament.'
+                    : "You haven't been added to any events yet."}
+                </Text>
+              </>
+            )}
           </View>
         )}
       </View>
 
-      {/* ── Create Event Modal ────────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* ── Filter Modal ───────────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+
+      {/* Same transparent bottom-sheet pattern as the sort modal.
+          Contains two sections (Event Type + Status), each with radio-style rows,
+          plus a "Clear All" row at the top to reset both filters at once. */}
+      <Modal
+        visible={filterModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setFilterModalVisible(false)}
+      >
+        <View className="flex-1">
+          {/* Dim backdrop — tap anywhere outside the sheet to close */}
+          <TouchableOpacity
+            className="absolute inset-0 bg-black/40"
+            activeOpacity={1}
+            onPress={() => setFilterModalVisible(false)}
+          />
+
+          {/* The filter sheet — anchored to the bottom */}
+          <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl pb-10">
+
+            {/* Sheet header row */}
+            <View className="flex-row items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
+              <Text className="text-base font-bold text-gray-900">Filter</Text>
+              <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Clear All row — resets both type and status to "all" */}
+            <TouchableOpacity
+              className="flex-row items-center justify-between px-5 py-3 border-b border-gray-100"
+              onPress={() => {
+                setTypeFilter("all");
+                setStatusFilter("all");
+              }}
+            >
+              <Text className="text-sm font-semibold text-red-500">Clear All</Text>
+              {/* Only show the trash icon when something is actually active */}
+              {hasActiveFilters && (
+                <Ionicons name="trash-outline" size={16} color="#ef4444" />
+              )}
+            </TouchableOpacity>
+
+            {/* ── Event Type section ─────────────────────────────────────── */}
+            {/* Section label — same uppercase tracking style used on form labels */}
+            <View className="px-5 pt-4 pb-2">
+              <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+                Event Type
+              </Text>
+            </View>
+
+            {/* One row per type option.
+                "checkmark-circle" (filled green) = selected.
+                "ellipse-outline" (empty gray)    = unselected. */}
+            {TYPE_FILTER_OPTIONS.map((opt) => {
+              const selected = typeFilter === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  className="flex-row items-center justify-between px-5 py-3.5 border-b border-gray-50"
+                  onPress={() => setTypeFilter(opt.value)}
+                >
+                  <Text className={`text-sm ${selected ? "text-green-700 font-semibold" : "text-gray-700"}`}>
+                    {opt.label}
+                  </Text>
+                  <Ionicons
+                    name={selected ? "checkmark-circle" : "ellipse-outline"}
+                    size={20}
+                    color={selected ? "#15803d" : "#d1d5db"}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+
+            {/* ── Status section ─────────────────────────────────────────── */}
+            <View className="px-5 pt-4 pb-2">
+              <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+                Status
+              </Text>
+            </View>
+
+            {STATUS_FILTER_OPTIONS.map((opt) => {
+              const selected = statusFilter === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  className="flex-row items-center justify-between px-5 py-3.5 border-b border-gray-50"
+                  onPress={() => setStatusFilter(opt.value)}
+                >
+                  <Text className={`text-sm ${selected ? "text-green-700 font-semibold" : "text-gray-700"}`}>
+                    {opt.label}
+                  </Text>
+                  <Ionicons
+                    name={selected ? "checkmark-circle" : "ellipse-outline"}
+                    size={20}
+                    color={selected ? "#15803d" : "#d1d5db"}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+
+          </View>
+        </View>
+      </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* ── Sort Modal ─────────────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+
+      {/* transparent + animationType="slide": bottom sheet slides up over a dim backdrop */}
+      <Modal
+        visible={sortModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSortModalVisible(false)}
+      >
+        <View className="flex-1">
+          {/* Tapping the backdrop dismisses the sheet */}
+          <TouchableOpacity
+            className="absolute inset-0 bg-black/40"
+            activeOpacity={1}
+            onPress={() => setSortModalVisible(false)}
+          />
+
+          {/* The sort sheet — anchored to the bottom of the screen */}
+          <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl pb-8">
+
+            {/* Sheet header */}
+            <View className="flex-row items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
+              <Text className="text-base font-bold text-gray-900">Sort By</Text>
+              <TouchableOpacity onPress={() => setSortModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Sort option rows — tapping one selects it and closes the sheet */}
+            {SORT_OPTIONS.map((opt) => {
+              const selected = sortKey === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  className="flex-row items-center justify-between px-5 py-4 border-b border-gray-50"
+                  onPress={() => {
+                    setSortKey(opt.value);
+                    setSortModalVisible(false);
+                  }}
+                >
+                  {/* Selected option is highlighted in green */}
+                  <Text
+                    className={`text-base ${
+                      selected ? "text-green-700 font-semibold" : "text-gray-700"
+                    }`}
+                  >
+                    {opt.label}
+                  </Text>
+                  {/* Checkmark next to the active selection */}
+                  {selected && (
+                    <Ionicons name="checkmark" size={18} color="#15803d" />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* ── Create Event Modal ─────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+
       {/* animationType="slide" gives the native bottom-sheet feel */}
       <Modal
         visible={modalVisible}
@@ -368,7 +795,7 @@ export default function EventsScreen() {
               </View>
 
               {/* Description (optional) */}
-              <View className="mb-8">
+              <View className="mb-4">
                 <Text className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">
                   Description{" "}
                   <Text className="text-gray-400 normal-case font-normal">(optional)</Text>
@@ -383,6 +810,30 @@ export default function EventsScreen() {
                   // textAlignVertical: ensures text starts at the top of the input on Android
                   textAlignVertical="top"
                   editable={!createEventMutation.isPending}
+                />
+              </View>
+
+              {/* Start date (optional) — setting it auto-fills end date as a convenience */}
+              <View className="mb-4">
+                <DateInput
+                  label="Start Date"
+                  optional
+                  value={newStartDate}
+                  onChange={handleStartDateChange}
+                  disabled={createEventMutation.isPending}
+                  returnKeyType="next"
+                />
+              </View>
+
+              {/* End date (optional) — pre-filled from start date, can be changed */}
+              <View className="mb-8">
+                <DateInput
+                  label="End Date"
+                  optional
+                  value={newEndDate}
+                  onChange={setNewEndDate}
+                  disabled={createEventMutation.isPending}
+                  returnKeyType="done"
                 />
               </View>
 

@@ -133,11 +133,52 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 				})
 			}
 		} else {
-			// User found — sync their role in case it changed in Clerk
-			// (e.g. admin changed someone's role via the Clerk dashboard)
-			if user.Role != role && claims.Role != "" {
-				db.Model(&user).Update("role", role)
-				user.Role = role
+			// User found — sync any profile fields that may have changed in Clerk.
+			// We collect all changed fields into a single Updates() call to avoid
+			// multiple round-trips to the database per request.
+			updates := map[string]interface{}{}
+
+			// Sync role only when the JWT explicitly carries a role claim.
+			// Skipping when claims.Role is empty prevents accidentally demoting a user
+			// whose role was set via the Clerk dashboard but whose JWT template isn't
+			// configured yet (it would come through as "" → default "user").
+			if claims.Role != "" && user.Role != role {
+				updates["role"] = role
+			}
+
+			// Sync display name when Clerk returned a non-empty name AND it differs
+			// from what we have stored. We use claims.Name (the raw JWT value) rather
+			// than the local `name` variable so we never sync the "User" fallback
+			// placeholder over a real name that's already in the database.
+			if claims.Name != "" && user.DisplayName != claims.Name {
+				updates["display_name"] = claims.Name
+			}
+
+			// Sync email when Clerk returns one and it differs from our record.
+			// This handles the case where a user changes their primary email in Clerk.
+			// Similarly, use claims.Email (raw) to avoid syncing the "@clerk.local"
+			// placeholder over a real email already in the database.
+			if claims.Email != "" && user.Email != claims.Email {
+				updates["email"] = claims.Email
+			}
+
+			if len(updates) > 0 {
+				// Updates() with a map uses the map keys as column names.
+				// Only the specified columns are touched — no full-row overwrite.
+				db.Model(&user).Updates(updates)
+
+				// Mirror the changes in the in-memory struct so downstream handlers
+				// in this same request see the freshly-synced values without
+				// needing another database round-trip.
+				if r, ok := updates["role"].(models.UserRole); ok {
+					user.Role = r
+				}
+				if n, ok := updates["display_name"].(string); ok {
+					user.DisplayName = n
+				}
+				if e, ok := updates["email"].(string); ok {
+					user.Email = e
+				}
 			}
 		}
 

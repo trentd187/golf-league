@@ -7,7 +7,7 @@
 //
 // Exports:
 //   EventTypeBadge  — league (blue), tournament (amber), casual (gray)
-//   StatusChip      — event lifecycle: upcoming (sky), active (green), completed (gray), cancelled (red)
+//   StatusChip      — event lifecycle: active (green), completed (gray), cancelled (red)
 //   RoleBadge       — "Organizer" pill; renders null for regular players
 //   RoundStatusChip — round lifecycle: scheduled (sky), active (green), completed (gray)
 
@@ -41,17 +41,17 @@ export function EventTypeBadge({ type }: { type: EventType }) {
 
 // ─── StatusChip ───────────────────────────────────────────────────────────────
 
-// StatusChip: shows an event's lifecycle status — upcoming, active, completed, or cancelled.
-// Falls back to "upcoming" styling for any unrecognised status value.
+// StatusChip: shows an event's lifecycle status — active, completed, or cancelled.
+// Falls back to "active" styling for any unrecognised status value.
+// Note: "upcoming" was removed as a valid status — events start as "active".
 export function StatusChip({ status }: { status: string }) {
   const map: Record<string, { bg: string; text: string }> = {
-    upcoming:  { bg: "bg-sky-100",   text: "text-sky-700" },
     active:    { bg: "bg-green-100", text: "text-green-700" },
     completed: { bg: "bg-gray-100",  text: "text-gray-600" },
     cancelled: { bg: "bg-red-100",   text: "text-red-600" },
   };
-  // ?? is the nullish coalescing operator — falls back to map.upcoming if the key is missing
-  const s = map[status] ?? map.upcoming;
+  // ?? is the nullish coalescing operator — falls back to map.active if the key is missing
+  const s = map[status] ?? map.active;
   const label = status.charAt(0).toUpperCase() + status.slice(1);
   return (
     <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>

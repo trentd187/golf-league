@@ -241,7 +241,8 @@ func CreateEvent(db *gorm.DB) fiber.Handler {
 				Name:        req.Name,
 				Description: req.Description,
 				EventType:   models.EventType(req.EventType),
-				Status:      models.EventStatusUpcoming,
+				// New events start as "active" — "upcoming" was removed from the status enum.
+			Status:      models.EventStatusActive,
 				StartDate:   startDate,
 				EndDate:     endDate,
 				CreatedBy:   userID, // Foreign key pointing to the creator's users.id
@@ -531,15 +532,14 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			event.EndDate = t
 		}
 		if req.Status != nil {
-			// Validate against the known EventStatus values defined in models.go.
-			// We allow any transition — the organizer is responsible for choosing the
-			// right state (e.g. they may want to mark something cancelled or re-open it).
+			// Validate against the three valid EventStatus values.
+			// "upcoming" was removed — only "active", "completed", and "cancelled" are accepted.
 			switch *req.Status {
-			case "upcoming", "active", "completed", "cancelled":
+			case "active", "completed", "cancelled":
 				event.Status = models.EventStatus(*req.Status)
 			default:
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "status must be 'upcoming', 'active', 'completed', or 'cancelled'",
+					"error": "status must be 'active', 'completed', or 'cancelled'",
 				})
 			}
 		}

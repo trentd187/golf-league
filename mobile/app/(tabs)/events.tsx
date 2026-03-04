@@ -79,7 +79,8 @@ type EventResponse = {
 type TypeFilter = "all" | EventResponse["event_type"];
 
 // StatusFilter: which lifecycle status to show. "all" shows every status.
-type StatusFilter = "all" | "upcoming" | "active" | "completed" | "cancelled";
+// "upcoming" was removed — events now start as "active".
+type StatusFilter = "all" | "active" | "completed" | "cancelled";
 
 // SortKey: how to order the list.
 type SortKey =
@@ -106,10 +107,10 @@ const TYPE_FILTER_OPTIONS: { value: TypeFilter; label: string }[] = [
   { value: "casual",     label: "Casual" },
 ];
 
-// Status filter options shown in the filter bar
+// Status filter options shown in the filter bar.
+// "upcoming" was removed — events only have active, completed, and cancelled states.
 const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "all",       label: "All Status" },
-  { value: "upcoming",  label: "Upcoming" },
   { value: "active",    label: "Active" },
   { value: "completed", label: "Completed" },
   { value: "cancelled", label: "Cancelled" },
@@ -218,7 +219,9 @@ export default function EventsScreen() {
 
   // --- Filter / sort state ---
   const [typeFilter,   setTypeFilter]   = useState<TypeFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Default to "active" so the list opens showing only in-progress events.
+  // Completed and cancelled events are one filter tap away when needed.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   // Default sort: start date ascending (soonest event first)
   const [sortKey,      setSortKey]      = useState<SortKey>("start_date_asc");
   // Controls the sort picker bottom sheet
@@ -349,8 +352,9 @@ export default function EventsScreen() {
     return sorted;
   }, [events, typeFilter, statusFilter, sortKey]);
 
-  // Whether any filter is currently active (not "all") — used to show a "Clear" link
-  const hasActiveFilters = typeFilter !== "all" || statusFilter !== "all";
+  // Whether any filter is currently active (not at its default value) — used to show a "Clear" link.
+  // statusFilter defaults to "active", so it only counts as "active" if changed away from that default.
+  const hasActiveFilters = typeFilter !== "all" || statusFilter !== "active";
 
   // The short label for the current sort shown on the sort button
   const currentSortShortLabel =
@@ -427,9 +431,10 @@ export default function EventsScreen() {
     setNewEndDate("");
   };
 
+  // clearFilters resets to defaults: all types, active status only.
   const clearFilters = () => {
     setTypeFilter("all");
-    setStatusFilter("all");
+    setStatusFilter("active");
   };
 
   // --- Render ---
@@ -582,12 +587,12 @@ export default function EventsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Clear All row — resets both type and status to "all" */}
+            {/* Clear All row — resets type to "all" and status back to the default "active" */}
             <TouchableOpacity
               className="flex-row items-center justify-between px-5 py-3 border-b border-gray-100"
               onPress={() => {
                 setTypeFilter("all");
-                setStatusFilter("all");
+                setStatusFilter("active");
               }}
             >
               <Text className="text-sm font-semibold text-red-500">Clear All</Text>

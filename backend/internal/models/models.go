@@ -47,10 +47,11 @@ const (
 )
 
 // EventStatus tracks the lifecycle of an event.
+// There are three states: active (in progress), completed (finished), cancelled (aborted).
+// "upcoming" was removed — new events start as "active" immediately.
 type EventStatus string
 
 const (
-	EventStatusUpcoming  EventStatus = "upcoming"  // Event is scheduled but hasn't started
 	EventStatusActive    EventStatus = "active"    // Event is currently in progress
 	EventStatusCompleted EventStatus = "completed" // Event has finished
 	EventStatusCancelled EventStatus = "cancelled" // Event was cancelled before completion
@@ -151,7 +152,7 @@ type Event struct {
 	Name        string      `gorm:"not null"`
 	Description *string     // Optional long-form description; pointer = nullable
 	EventType   EventType   `gorm:"type:event_type;not null"`
-	Status      EventStatus `gorm:"type:event_status;not null;default:'upcoming'"`
+	Status      EventStatus `gorm:"type:event_status;not null;default:'active'"`
 	StartDate   *time.Time  // Optional start date; pointer = nullable (some events don't have a fixed date)
 	EndDate     *time.Time  // Optional end date; pointer = nullable
 	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`       // Foreign key: which user created this event

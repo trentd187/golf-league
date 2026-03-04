@@ -83,16 +83,24 @@ func main() {
 
 	// Single-event endpoints — :id is the event UUID
 	api.Get("/events/:id", handlers.GetEvent(db))      // detail view + members list
-	api.Patch("/events/:id", handlers.UpdateEvent(db)) // partial update (organizers only)
+	api.Patch("/events/:id", handlers.UpdateEvent(db)) // partial update including status (organizers only)
+	api.Delete("/events/:id", handlers.DeleteEvent(db)) // permanently delete event + all children (organizers only)
 
 	// Members sub-resource
 	api.Get("/events/:id/members", handlers.GetEventMembers(db))              // list all members
 	api.Post("/events/:id/members", handlers.AddEventMember(db))              // add a member (organizers only)
 	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(db)) // remove a member (organizers only)
 
-	// Rounds sub-resource
+	// Rounds sub-resource (scoped to an event)
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(db))      // list rounds for the event
 	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db)) // schedule a new round (organizers only)
+
+	// Round detail and group management (top-level /rounds routes — round IDs are globally unique)
+	api.Get("/rounds/:roundId", handlers.GetRound(db))                                              // round detail with groups + players (any member)
+	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))                                         // edit round name/course/date/format (organizers only)
+	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))                                        // delete round + all children (organizers only)
+	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))               // add player to group (organizers only)
+	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))  // remove player from group (organizers only)
 
 	// --- User routes ---
 	api.Get("/users", handlers.GetUsers(db))                             // all users except the caller (powers the add-member picker)

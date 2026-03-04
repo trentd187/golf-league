@@ -209,6 +209,7 @@ type Round struct {
 	Course           Course        `gorm:"foreignKey:CourseID"`
 	DefaultTeeID     uuid.UUID     `gorm:"type:uuid;not null"`        // The tee set most players use; individuals can override in RoundPlayer
 	DefaultTee       Tee           `gorm:"foreignKey:DefaultTeeID"`
+	Name             string        `gorm:"not null;default:'Round'"`  // Display name; auto-populated to "Round N" on creation, editable after
 	RoundNumber      int           `gorm:"not null;default:1"`        // 1 for first round, 2 for second, etc.
 	ScheduledDate    time.Time     `gorm:"not null"`
 	Status           RoundStatus   `gorm:"type:round_status;not null;default:'scheduled'"`

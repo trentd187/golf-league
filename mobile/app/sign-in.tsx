@@ -25,6 +25,9 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform,
 } from "react-native";
 import { useState } from "react";
 import * as WebBrowser from "expo-web-browser";
@@ -166,8 +169,28 @@ export default function SignIn() {
 
   // --- UI ---
   return (
-    // t.surface: themed background — sign-in is a centered card-like screen
-    <View className={`flex-1 items-center justify-center ${t.surface} px-6 gap-3`}>
+    // Outer View owns the background color — NativeWind's className works reliably
+    // on View but not on KeyboardAvoidingView (its types don't declare className).
+    <View className={`flex-1 ${t.surface}`}>
+
+      {/* KeyboardAvoidingView: when the keyboard opens it shifts the content up
+          so the email field remains visible above the keyboard.
+          behavior="padding" (iOS): adds bottom padding equal to keyboard height.
+          behavior="height" (Android): shrinks the view height instead — Android
+          handles the scroll offset itself. Using style (not className) here to
+          avoid the NativeWind type mismatch on KeyboardAvoidingView. */}
+      <KeyboardAvoidingView
+        // eslint-disable-next-line react-native/no-inline-styles
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        {/* keyboardShouldPersistTaps="handled": lets button presses register while
+            the keyboard is open without first requiring a tap to dismiss it. */}
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingHorizontal: 24 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View className="items-center gap-3 w-full">
 
       {/* Branding — app title stays green-700 as a fixed brand colour, not themed */}
       <Text className="text-3xl font-bold text-green-700 mb-1">Golf Stuff In Here</Text>
@@ -300,6 +323,9 @@ export default function SignIn() {
       {inlineError ? (
         <Text className="text-red-600 text-sm text-center">{inlineError}</Text>
       ) : null}
+    </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }

@@ -510,6 +510,13 @@ courses → tees → holes
 
 The creator is auto-added as organizer in the `POST /api/v1/events` transaction.
 This check is implemented in `isEventOrganizer()` in `handlers/events.go` — use it in every handler that modifies an event.
+A mirrored helper `isRoundOrganizer()` in `handlers/rounds.go` does the same check starting from a round ID.
+
+**Round permissions**: `isRoundOrganizer` returns `(bool, uuid.UUID)` — the UUID is the event ID, used by callers that need it for subsequent queries. Always check for `uuid.Nil` after calling it to detect a missing round.
+
+**`is_organizer` in round detail response**: `GET /api/v1/rounds/:roundId` includes `is_organizer: bool` computed server-side. The mobile `rounds/[id].tsx` screen uses this directly (no separate query needed) to show/hide edit controls.
+
+**Organizer event actions**: Event organizers can cancel (`PATCH /events/:id` with `{ status: "cancelled" }`) or permanently delete (`DELETE /events/:id`) an event. Both routes go through `isEventOrganizer`. Deletion cascades to all rounds, members, and scores via DB constraints.
 
 ### Handicap Rule
 

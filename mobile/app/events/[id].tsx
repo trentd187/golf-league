@@ -42,6 +42,11 @@ import { API_URL } from "@/constants/api";
 // and a native calendar picker. apiToDisplay/displayToApi handle format conversion.
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
+// DateTimePicker is the native time/date picker from @react-native-community/datetimepicker.
+// Already installed as a direct dependency for DateInput — no new package needed.
+// We use it in "time" mode for the tee time pickers in the Schedule Round form.
+import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
+
 // useTheme gives us the active theme's class strings and hex colors.
 import { useTheme } from "@/hooks/useTheme";
 
@@ -82,11 +87,13 @@ type EventDetail = {
 
 type RoundSummary = {
   id: string;
+  name: string;           // display name, e.g. "Round 1" or "Championship Round"
   course_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
   status: string;         // "scheduled" | "active" | "completed"
   scoring_format: string;
   round_number: number;
+  group_count: number;    // number of tee-time groups created for this round
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -110,6 +117,38 @@ function chunk<T>(arr: T[], size: number): T[][] {
     result.push(arr.slice(i, i + size));
   }
   return result;
+}
+
+// ─── Tee time helpers ─────────────────────────────────────────────────────────
+// Tee times are stored internally as "HH:MM" (24-hour) strings — compact and easy
+// to send to the backend. The native picker works with JS Date objects, so we
+// convert back and forth as needed.
+
+// teeTimeToDate converts "HH:MM" to a JS Date (using today's date, only the time matters).
+// Falls back to the current time if the string is missing or unparseable.
+function teeTimeToDate(hhmm: string): Date {
+  const d = new Date();
+  if (!hhmm) return d;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (!isNaN(h) && !isNaN(m)) d.setHours(h, m, 0, 0);
+  return d;
+}
+
+// dateToTeeTime converts a JS Date from the picker to "HH:MM" (24-hour string).
+// padStart(2, "0") ensures single-digit values are zero-padded: 7 → "07".
+function dateToTeeTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// formatTeeTime converts "HH:MM" to a human-readable "h:mm AM/PM" string for display.
+// Example: "07:30" → "7:30 AM",  "13:45" → "1:45 PM"
+function formatTeeTime(hhmm: string): string {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  if (isNaN(h) || isNaN(m)) return hhmm;
+  const ampm = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12; // converts 0 → 12 (midnight) and 12 → 12 (noon)
+  return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -140,9 +179,32 @@ export default function EventDetailScreen() {
   const [memberSearch, setMemberSearch] = useState("");
 
   // --- Schedule round form state ---
+  // roundName: the display name for the new round. Pre-populated with "Round N" when the
+  // modal opens, but the organizer can type any name they like.
+  const [roundName, setRoundName]         = useState("");
   const [courseName, setCourseName]       = useState("");
   const [roundDate, setRoundDate]         = useState("");
   const [scoringFormat, setScoringFormat] = useState("stroke");
+  // groupCount: how many tee-time groups to create with the round (1–8).
+  const [groupCount, setGroupCount]         = useState(1);
+  // groupTeeTimes: one entry per group (index 0 = Group 1, etc.).
+  // Each entry is an HH:MM string like "07:30" or "" if no tee time is set.
+  const [groupTeeTimes, setGroupTeeTimes]   = useState<string[]>([""]);
+
+  // openTeeTimePicker: index of the group whose tee time picker is currently open,
+  // or null when all pickers are closed. Only one can be open at a time.
+  const [openTeeTimePicker, setOpenTeeTimePicker] = useState<number | null>(null);
+
+  // updateGroupCount resizes groupTeeTimes to match the new count,
+  // padding with "" for added groups or truncating when groups are removed.
+  const updateGroupCount = (n: number) => {
+    setGroupCount(n);
+    setGroupTeeTimes((prev) => {
+      const next = [...prev];
+      while (next.length < n) next.push("");
+      return next.slice(0, n);
+    });
+  };
 
   // --- Fetch event detail (includes members list) ---
   const {
@@ -274,9 +336,12 @@ export default function EventDetailScreen() {
   // --- Mutation: schedule round ---
   const scheduleRoundMutation = useMutation({
     mutationFn: async (data: {
+      name: string;           // display name, e.g. "Round 1" or "Championship Round"
       course_name: string;
       scheduled_date: string;
       scoring_format: string;
+      // groups: one entry per tee-time group; tee_time is optional ("HH:MM" or undefined)
+      groups: { tee_time?: string }[];
     }) => {
       const token = await getToken();
       const res = await fetch(`${API_URL}/api/v1/events/${id}/rounds`, {
@@ -296,12 +361,63 @@ export default function EventDetailScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id, "rounds"] });
       setScheduleRoundModalVisible(false);
+      setRoundName("");
       setCourseName("");
       setRoundDate("");
       setScoringFormat("stroke");
+      setGroupCount(1);
+      setGroupTeeTimes([""]);
     },
     onError: (err: Error) => {
       Alert.alert("Could not schedule round", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  // --- Mutation: cancel event (status → "cancelled") ---
+  const cancelEventMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "cancelled" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      // Refresh both the event detail and the events list so the status chip updates everywhere
+      queryClient.invalidateQueries({ queryKey: ["event", id] });
+      queryClient.invalidateQueries({ queryKey: ["events"] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not cancel event", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  // --- Mutation: delete event (permanent) ---
+  const deleteEventMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+    },
+    onSuccess: () => {
+      // Refresh the events list then navigate back — this event no longer exists
+      queryClient.invalidateQueries({ queryKey: ["events"] });
+      router.back();
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not delete event", err.message, [{ text: "OK" }]);
     },
   });
 
@@ -332,7 +448,43 @@ export default function EventDetailScreen() {
     });
   };
 
+  // handleCancelEvent: asks for confirmation then marks the event as cancelled.
+  const handleCancelEvent = () => {
+    Alert.alert(
+      "Cancel event?",
+      "The event will be marked as cancelled. Members will still be able to view it.",
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Cancel Event",
+          style: "destructive",
+          onPress: () => cancelEventMutation.mutate(),
+        },
+      ]
+    );
+  };
+
+  // handleDeleteEvent: asks for extra confirmation then permanently deletes the event.
+  const handleDeleteEvent = () => {
+    Alert.alert(
+      "Delete event?",
+      `"${event?.name}" and all its rounds will be permanently deleted. This cannot be undone.`,
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => deleteEventMutation.mutate(),
+        },
+      ]
+    );
+  };
+
   const handleScheduleRound = () => {
+    if (!roundName.trim()) {
+      Alert.alert("Name required", "Please enter a name for this round.", [{ text: "OK" }]);
+      return;
+    }
     if (!courseName.trim()) {
       Alert.alert("Course name required", "Please enter the golf course name.", [{ text: "OK" }]);
       return;
@@ -342,10 +494,17 @@ export default function EventDetailScreen() {
       return;
     }
     scheduleRoundMutation.mutate({
+      name: roundName.trim(),
       course_name: courseName.trim(),
       // Convert MM-DD-YY → YYYY-MM-DD before sending to the backend
       scheduled_date: displayToApi(roundDate.trim()),
       scoring_format: scoringFormat,
+      // Build one entry per group; omit tee_time entirely if the field is blank
+      // so the backend creates the group with TeeTime = null.
+      groups: Array.from({ length: groupCount }, (_, i) => {
+        const t = groupTeeTimes[i]?.trim();
+        return t ? { tee_time: t } : {};
+      }),
     });
   };
 
@@ -432,6 +591,7 @@ export default function EventDetailScreen() {
               <Text className={`text-xs ${t.textTertiary}`}>{event.member_count} members</Text>
             </View>
           </View>
+
         </View>
 
         {/* ── Members section ────────────────────────────────────────────────── */}
@@ -486,7 +646,13 @@ export default function EventDetailScreen() {
           <SectionHeader
             title="Rounds"
             actionLabel="Schedule"
-            onAction={() => setScheduleRoundModalVisible(true)}
+            onAction={() => {
+              // Pre-populate the round name with "Round N" where N = current count + 1.
+              // rounds?.length is the number of rounds already scheduled for this event.
+              const nextNum = (rounds?.length ?? 0) + 1;
+              setRoundName(`Round ${nextNum}`);
+              setScheduleRoundModalVisible(true);
+            }}
             showAction={isOrganizer}
           />
 
@@ -510,10 +676,10 @@ export default function EventDetailScreen() {
                   onPress={() => router.push(`/rounds/${round.id}`)}
                   activeOpacity={0.7}
                 >
-                  {/* Round number + status chip — RoundStatusChip is categorical, not themed */}
+                  {/* Round name + status chip — RoundStatusChip is categorical, not themed */}
                   <View className="flex-row items-center justify-between mb-2">
                     <Text className={`font-bold text-sm ${t.textPrimary}`}>
-                      Round {round.round_number}
+                      {round.name}
                     </Text>
                     <RoundStatusChip status={round.status} />
                   </View>
@@ -532,10 +698,11 @@ export default function EventDetailScreen() {
                         {apiToDisplay(round.scheduled_date)}
                       </Text>
                     </View>
-                    {/* capitalize: CSS text-transform — makes "net_stroke" → "net stroke"
-                        after the .replace("_", " ") call */}
+                    {/* Show scoring format and group count, e.g. "Stroke · 3 groups" */}
                     <Text className={`text-xs capitalize ${t.textTertiary}`}>
                       {round.scoring_format.replace("_", " ")}
+                      {" · "}
+                      {round.group_count} {round.group_count === 1 ? "group" : "groups"}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -641,6 +808,61 @@ export default function EventDetailScreen() {
                 )}
               </TouchableOpacity>
 
+              {/* ── Danger zone ──────────────────────────────────────────────────
+                  Cancel and Delete live here inside the Edit modal so they are a
+                  deliberate two-tap gesture (open Edit → tap action), preventing
+                  accidental triggers from the main event card view. */}
+              <View className={`mt-6 pt-6 border-t ${t.divider} gap-3`}>
+
+                {/* Cancel Event — marks the event as "cancelled". Event data is
+                    preserved and members can still view it. Disabled (and relabelled)
+                    when the event is already cancelled so it's clear no action is needed. */}
+                <TouchableOpacity
+                  className={`rounded-xl py-4 items-center border ${
+                    event.status === "cancelled"
+                      ? "border-gray-200 bg-gray-50"   // greyed out — already cancelled
+                      : "border-amber-200 bg-amber-50" // amber — active destructive action
+                  }`}
+                  onPress={handleCancelEvent}
+                  disabled={
+                    cancelEventMutation.isPending ||
+                    deleteEventMutation.isPending ||
+                    event.status === "cancelled"
+                  }
+                >
+                  {cancelEventMutation.isPending ? (
+                    <ActivityIndicator color="#d97706" />
+                  ) : (
+                    <Text
+                      className="text-sm font-semibold"
+                      // eslint-disable-next-line react-native/no-inline-styles
+                      style={{
+                        // amber-600 when active; gray-400 when already cancelled
+                        color: event.status === "cancelled" ? "#9ca3af" : "#d97706",
+                      }}
+                    >
+                      {event.status === "cancelled" ? "Event Cancelled" : "Cancel Event"}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+
+                {/* Delete Event — permanently removes the event and ALL its rounds,
+                    members, and scores. This cannot be undone. A confirmation Alert
+                    fires before the mutation is called (in handleDeleteEvent). */}
+                <TouchableOpacity
+                  className="rounded-xl py-4 items-center bg-red-50 border border-red-200"
+                  onPress={handleDeleteEvent}
+                  disabled={cancelEventMutation.isPending || deleteEventMutation.isPending}
+                >
+                  {deleteEventMutation.isPending ? (
+                    <ActivityIndicator color="#dc2626" />
+                  ) : (
+                    <Text className="text-sm font-semibold text-red-600">Delete Event</Text>
+                  )}
+                </TouchableOpacity>
+
+              </View>
+
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -697,7 +919,13 @@ export default function EventDetailScreen() {
         visible={scheduleRoundModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setScheduleRoundModalVisible(false)}
+        onRequestClose={() => {
+          setScheduleRoundModalVisible(false);
+          setRoundName("");
+          setGroupCount(1);
+          setGroupTeeTimes([""]);
+          setOpenTeeTimePicker(null);
+        }}
       >
         <KeyboardAvoidingView
           className={`flex-1 ${t.surface}`}
@@ -708,9 +936,31 @@ export default function EventDetailScreen() {
 
               <ModalHeader
                 title="Schedule Round"
-                onClose={() => setScheduleRoundModalVisible(false)}
+                onClose={() => {
+                  setScheduleRoundModalVisible(false);
+                  setRoundName("");
+                  setGroupCount(1);
+                  setGroupTeeTimes([""]);
+                }}
                 disabled={scheduleRoundMutation.isPending}
               />
+
+              {/* Round name — required; pre-populated with "Round N" but fully editable */}
+              <View className="mb-4">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                  Round Name <Text className="text-red-500">*</Text>
+                </Text>
+                <TextInput
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="e.g. Round 1"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  value={roundName}
+                  onChangeText={setRoundName}
+                  autoCapitalize="words"
+                  editable={!scheduleRoundMutation.isPending}
+                  returnKeyType="next"
+                />
+              </View>
 
               {/* Course name */}
               <View className="mb-4">
@@ -782,6 +1032,176 @@ export default function EventDetailScreen() {
                     </View>
                   ))}
                 </View>
+              </View>
+
+              {/* ── Groups ───────────────────────────────────────────────────── */}
+              {/* Lets the organizer choose how many tee-time groups to create (1–8)
+                  and optionally enter a tee time for each group (HH:MM, 24-hour format).
+                  Players are assigned to groups on the Round detail screen after creation. */}
+              <View className="mb-8">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>
+                  Groups
+                </Text>
+
+                {/* +/- stepper for number of groups */}
+                <View className="flex-row items-center gap-3 mb-4">
+                  <TouchableOpacity
+                    className={`w-10 h-10 rounded-xl border items-center justify-center ${t.borderInput} ${t.surfaceSunken}`}
+                    onPress={() => updateGroupCount(Math.max(1, groupCount - 1))}
+                    disabled={scheduleRoundMutation.isPending}
+                  >
+                    {/* "–" reduces the group count; minimum 1 */}
+                    <Text className={`text-lg font-bold ${t.textPrimary}`}>–</Text>
+                  </TouchableOpacity>
+
+                  <Text className={`text-lg font-bold w-6 text-center ${t.textPrimary}`}>
+                    {groupCount}
+                  </Text>
+
+                  <TouchableOpacity
+                    className={`w-10 h-10 rounded-xl border items-center justify-center ${t.borderInput} ${t.surfaceSunken}`}
+                    onPress={() => updateGroupCount(Math.min(8, groupCount + 1))}
+                    disabled={scheduleRoundMutation.isPending}
+                  >
+                    {/* "+" increases the group count; maximum 8 */}
+                    <Text className={`text-lg font-bold ${t.textPrimary}`}>+</Text>
+                  </TouchableOpacity>
+
+                  <Text className={`text-sm ${t.textSecondary}`}>
+                    {groupCount === 1 ? "group" : "groups"}
+                  </Text>
+                </View>
+
+                {/* One tee time row per group.
+                    Tapping the button opens the native time picker — no text entry.
+                    Array.from generates an array of length groupCount to map over. */}
+                <View className="gap-2">
+                  {Array.from({ length: groupCount }, (_, i) => (
+                    <View key={i} className="flex-row items-center gap-3">
+                      <Text className={`text-sm font-semibold w-16 ${t.textSecondary}`}>
+                        Group {i + 1}
+                      </Text>
+
+                      {/* Tappable tee time button — opens the native time picker.
+                          Shows the formatted time when set, or a greyed placeholder. */}
+                      <TouchableOpacity
+                        className={`flex-1 border rounded-xl px-3 py-2 flex-row items-center justify-between ${t.borderInput} ${t.surfaceSunken}`}
+                        onPress={() => setOpenTeeTimePicker(i)}
+                        disabled={scheduleRoundMutation.isPending}
+                        activeOpacity={0.7}
+                      >
+                        <Text
+                          className={`text-sm ${groupTeeTimes[i] ? t.textPrimary : ""}`}
+                          // Use inline style for the placeholder color hex — can't use className
+                          // because placeholderTextColor only works as a prop on TextInput,
+                          // and here we're using a plain Text inside TouchableOpacity.
+                          // eslint-disable-next-line react-native/no-inline-styles
+                          style={!groupTeeTimes[i] ? { color: t.colors.tabBarInactive } : undefined}
+                        >
+                          {groupTeeTimes[i] ? formatTeeTime(groupTeeTimes[i]) : "Set tee time (optional)"}
+                        </Text>
+                        <Ionicons name="time-outline" size={16} color={t.colors.tabBarInactive} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+
+                {/* ── Native time picker ─────────────────────────────────────────
+                    Android: DateTimePicker shows its own system dialog. We render it
+                    outside the map so there's only one instance. When dismissed or
+                    confirmed, we close the picker and update the relevant group entry.
+
+                    iOS: We use a transparent Modal with a bottom sheet (same pattern
+                    as DateInput). The Modal sits inside the schedule round pageSheet
+                    modal and overlays it correctly on iOS. */}
+
+                {Platform.OS === "android" && openTeeTimePicker !== null && (
+                  <DateTimePicker
+                    value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
+                    mode="time"
+                    // "default" = the Android native time picker dialog
+                    display="default"
+                    // is24Hour={false}: show AM/PM selector (matches how times appear in the app)
+                    is24Hour={false}
+                    onChange={(event: DateTimePickerEvent, date?: Date) => {
+                      // Close the picker first — Android dismisses its own dialog,
+                      // but we need to clear our state flag.
+                      const idx = openTeeTimePicker;
+                      setOpenTeeTimePicker(null);
+                      // event.type === "set" means the user pressed OK (not cancelled).
+                      if (event.type === "set" && date) {
+                        const updated = [...groupTeeTimes];
+                        updated[idx] = dateToTeeTime(date);
+                        setGroupTeeTimes(updated);
+                      }
+                    }}
+                  />
+                )}
+
+                {Platform.OS === "ios" && (
+                  <Modal
+                    visible={openTeeTimePicker !== null}
+                    transparent
+                    animationType="slide"
+                    onRequestClose={() => setOpenTeeTimePicker(null)}
+                  >
+                    {/* Full-screen container — positions the sheet at the bottom */}
+                    <View className="flex-1">
+                      {/* Semi-transparent backdrop: tap anywhere outside the sheet to close */}
+                      <TouchableOpacity
+                        className="absolute inset-0 bg-black/40"
+                        activeOpacity={1}
+                        onPress={() => setOpenTeeTimePicker(null)}
+                      />
+
+                      {/* Bottom sheet */}
+                      <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
+                        {/* Header: label on left, "Done" button on right */}
+                        <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
+                          <Text className={`font-semibold ${t.textSecondary}`}>
+                            {openTeeTimePicker !== null
+                              ? `Group ${openTeeTimePicker + 1} Tee Time`
+                              : "Tee Time"}
+                          </Text>
+                          <TouchableOpacity onPress={() => setOpenTeeTimePicker(null)}>
+                            {/* "Done" uses the theme's active color — inline style required
+                                because Text doesn't accept a color prop */}
+                            <Text
+                              className="font-semibold text-base"
+                              // eslint-disable-next-line react-native/no-inline-styles
+                              style={{ color: t.colors.tabBarActive }}
+                            >
+                              Done
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* iOS spinner-style time picker.
+                            We only render it when openTeeTimePicker is not null
+                            (the outer Modal.visible already guards this, but
+                            the null check also satisfies TypeScript). */}
+                        {openTeeTimePicker !== null && (
+                          <DateTimePicker
+                            value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
+                            mode="time"
+                            display="spinner"
+                            // Update the group's tee time live as the spinner scrolls.
+                            // The user taps "Done" (above) to dismiss.
+                            onChange={(_event: DateTimePickerEvent, date?: Date) => {
+                              if (date && openTeeTimePicker !== null) {
+                                const updated = [...groupTeeTimes];
+                                updated[openTeeTimePicker] = dateToTeeTime(date);
+                                setGroupTeeTimes(updated);
+                              }
+                            }}
+                            // eslint-disable-next-line react-native/no-inline-styles
+                            style={{ height: 200 }}
+                          />
+                        )}
+                      </View>
+                    </View>
+                  </Modal>
+                )}
               </View>
 
               {/* Schedule button */}

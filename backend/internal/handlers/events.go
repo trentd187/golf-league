@@ -39,6 +39,7 @@
 package handlers
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -353,6 +354,9 @@ type UpdateEventRequest struct {
 	Description *string `json:"description"` // Optional description; "" clears it
 	StartDate   *string `json:"start_date"`  // Optional "YYYY-MM-DD"; "" clears it
 	EndDate     *string `json:"end_date"`    // Optional "YYYY-MM-DD"; "" clears it
+	// Status allows organizers to change the event lifecycle state.
+	// Valid values: "upcoming", "active", "completed", "cancelled".
+	Status      *string `json:"status"`
 }
 
 // AddMemberRequest is the JSON body for POST /api/v1/events/:id/members.
@@ -360,21 +364,39 @@ type AddMemberRequest struct {
 	UserID string `json:"user_id"` // UUID of the user to add; must already exist in users table
 }
 
-// ScheduleRoundRequest is the JSON body for POST /api/v1/events/:id/rounds.
-type ScheduleRoundRequest struct {
-	CourseName    string  `json:"course_name"`    // Required: name of the golf course
-	ScheduledDate string  `json:"scheduled_date"` // Required: "YYYY-MM-DD"
-	ScoringFormat *string `json:"scoring_format"` // Optional; defaults to "stroke" if omitted
+// GroupInput describes one tee-time group to create along with a new round.
+// Only the tee time is configurable at scheduling time; players are assigned later
+// via the Round detail screen (POST /api/v1/rounds/:id/groups/:groupId/members).
+type GroupInput struct {
+	// TeeTime is optional. Accepted formats: "15:04" (24-hour, e.g. "07:30") or "3:04 PM".
+	// If omitted or unparseable, the group is created with no scheduled tee time.
+	TeeTime *string `json:"tee_time"`
 }
 
-// RoundSummaryResponse is returned per round in the rounds list.
+// ScheduleRoundRequest is the JSON body for POST /api/v1/events/:id/rounds.
+type ScheduleRoundRequest struct {
+	// Name is the display name for the round. Optional — defaults to "Round N" where N is
+	// the round number (1-based count of existing rounds + 1). Organizers can set a custom
+	// name like "Championship Round" or "Back Nine Special".
+	Name          string       `json:"name"`
+	CourseName    string       `json:"course_name"`    // Required: name of the golf course
+	ScheduledDate string       `json:"scheduled_date"` // Required: "YYYY-MM-DD"
+	ScoringFormat *string      `json:"scoring_format"` // Optional; defaults to "stroke" if omitted
+	// Groups lists the tee-time groups to create with this round (1–8).
+	// An empty slice creates one default group with no tee time.
+	Groups        []GroupInput `json:"groups"`
+}
+
+// RoundSummaryResponse is returned per round in the rounds list and on round creation.
 type RoundSummaryResponse struct {
 	ID            string `json:"id"`             // UUID string
+	Name          string `json:"name"`           // Display name, e.g. "Round 1" or "Championship Round"
 	CourseName    string `json:"course_name"`    // Name of the course
 	ScheduledDate string `json:"scheduled_date"` // "YYYY-MM-DD"
 	Status        string `json:"status"`         // "scheduled", "active", "completed"
 	ScoringFormat string `json:"scoring_format"` // e.g. "stroke", "stableford"
 	RoundNumber   int    `json:"round_number"`   // 1-based index within the event
+	GroupCount    int    `json:"group_count"`    // Number of tee-time groups created for this round
 }
 
 // --- New handlers ---
@@ -507,6 +529,19 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "end_date must be YYYY-MM-DD"})
 			}
 			event.EndDate = t
+		}
+		if req.Status != nil {
+			// Validate against the known EventStatus values defined in models.go.
+			// We allow any transition — the organizer is responsible for choosing the
+			// right state (e.g. they may want to mark something cancelled or re-open it).
+			switch *req.Status {
+			case "upcoming", "active", "completed", "cancelled":
+				event.Status = models.EventStatus(*req.Status)
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "status must be 'upcoming', 'active', 'completed', or 'cancelled'",
+				})
+			}
 		}
 
 		// db.Save() runs an UPDATE for all columns (not just changed ones — GORM doesn't diff)
@@ -698,15 +733,44 @@ func GetEventRounds(db *gorm.DB) fiber.Handler {
 			Order("round_number ASC").
 			Find(&rounds)
 
+		// Build a map of round_id → group count so we can include it in each summary row.
+		// One query across all rounds is more efficient than N individual COUNT queries.
+		roundIDs := make([]string, len(rounds))
+		for i, r := range rounds {
+			roundIDs[i] = r.ID.String()
+		}
+
+		// groupCountRows holds the (round_id, count) pairs returned by the aggregate query.
+		type groupCountRow struct {
+			RoundID string
+			Count   int
+		}
+		var groupCountRows []groupCountRow
+		if len(roundIDs) > 0 {
+			db.Model(&models.Group{}).
+				Select("round_id, COUNT(*) as count").
+				Where("round_id IN ?", roundIDs).
+				Group("round_id").
+				Scan(&groupCountRows)
+		}
+
+		// Convert the slice into a map for O(1) lookup while building the response.
+		groupCountMap := make(map[string]int, len(groupCountRows))
+		for _, row := range groupCountRows {
+			groupCountMap[row.RoundID] = row.Count
+		}
+
 		response := make([]RoundSummaryResponse, 0, len(rounds))
 		for _, r := range rounds {
 			response = append(response, RoundSummaryResponse{
 				ID:            r.ID.String(),
+				Name:          r.Name,
 				CourseName:    r.Course.Name,
 				ScheduledDate: r.ScheduledDate.UTC().Format("2006-01-02"),
 				Status:        string(r.Status),
 				ScoringFormat: string(r.ScoringFormat),
 				RoundNumber:   r.RoundNumber,
+				GroupCount:    groupCountMap[r.ID.String()],
 			})
 		}
 		return c.JSON(response)
@@ -766,6 +830,13 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		// (e.g. course created but round insert fails) are cleanly rolled back.
 		var createdRound models.Round
 		var courseName string
+		// groupInputs is resolved before the transaction so we know the final count
+		// for the response even if the caller sent an empty slice.
+		groupInputs := req.Groups
+		if len(groupInputs) == 0 {
+			// Default: always create at least one group so the round has a roster structure.
+			groupInputs = []GroupInput{{}}
+		}
 
 		txErr := db.Transaction(func(tx *gorm.DB) error {
 			// --- Find or create the course ---
@@ -830,18 +901,67 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 			tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount)
 			nextRoundNumber := int(roundCount) + 1
 
+			// --- Determine the round name ---
+			// Use the name from the request if provided; otherwise default to "Round N".
+			// fmt.Sprintf formats "Round 1", "Round 2", etc. as a sensible default.
+			roundName := req.Name
+			if roundName == "" {
+				roundName = fmt.Sprintf("Round %d", nextRoundNumber)
+			}
+
 			// --- Create the round ---
 			createdRound = models.Round{
 				EventID:          eventID,
 				CourseID:         course.ID,
 				DefaultTeeID:     teeID,
+				Name:             roundName,
 				RoundNumber:      nextRoundNumber,
 				ScheduledDate:    scheduledDate,
 				Status:           models.RoundStatusScheduled,
 				ScoringFormat:    scoringFormat,
 				RequiresHandicap: false,
 			}
-			return tx.Create(&createdRound).Error
+			if err := tx.Create(&createdRound).Error; err != nil {
+				return err
+			}
+
+			// --- Create tee-time groups ---
+			// Groups are created atomically with the round. Players are assigned later via
+			// POST /api/v1/rounds/:id/groups/:groupId/members.
+			for i, g := range groupInputs {
+				group := models.Group{
+					RoundID:      createdRound.ID,
+					GroupNumber:  i + 1,
+					StartingHole: 1, // default; shotgun starts can be configured later
+				}
+
+				// Parse optional tee time. We try 24-hour "15:04" first (e.g. "07:30"),
+				// then 12-hour "3:04 PM" as a fallback (e.g. "7:30 AM").
+				// If neither matches, TeeTime stays nil — no error raised.
+				if g.TeeTime != nil && *g.TeeTime != "" {
+					var parsedTime time.Time
+					var parseErr error
+					parsedTime, parseErr = time.Parse("15:04", *g.TeeTime)
+					if parseErr != nil {
+						parsedTime, parseErr = time.Parse("3:04 PM", *g.TeeTime)
+					}
+					if parseErr == nil {
+						// Combine the round's scheduled date with the parsed hours/minutes
+						// to produce a full TIMESTAMPTZ value for storage.
+						teeTime := time.Date(
+							scheduledDate.Year(), scheduledDate.Month(), scheduledDate.Day(),
+							parsedTime.Hour(), parsedTime.Minute(), 0, 0, time.UTC,
+						)
+						group.TeeTime = &teeTime
+					}
+				}
+
+				if err := tx.Create(&group).Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
 		})
 
 		if txErr != nil {
@@ -850,11 +970,56 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 
 		return c.Status(fiber.StatusCreated).JSON(RoundSummaryResponse{
 			ID:            createdRound.ID.String(),
+			Name:          createdRound.Name,
 			CourseName:    courseName,
 			ScheduledDate: createdRound.ScheduledDate.UTC().Format("2006-01-02"),
 			Status:        string(createdRound.Status),
 			ScoringFormat: string(createdRound.ScoringFormat),
 			RoundNumber:   createdRound.RoundNumber,
+			GroupCount:    len(groupInputs),
 		})
+	}
+}
+
+// DeleteEvent returns a handler for DELETE /api/v1/events/:id.
+// Permanently deletes the event and all its associated data (rounds, members, scores).
+// The cascade deletions are handled by the database's ON DELETE CASCADE constraints:
+//   events → event_players, event_points_rules, rounds
+//   rounds → round_players, groups, teams, scores (and their children)
+// Only organizers of the event (or global admins) may delete it.
+func DeleteEvent(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		eventID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		}
+
+		// Load the event first so we have a concrete record to delete
+		var event models.Event
+		if err := db.First(&event, "id = ?", eventID).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
+		}
+
+		// Only the event's organizer (or a global admin) may delete it
+		if !isEventOrganizer(db, eventID, userID, userRole) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		}
+
+		// db.Delete() runs a soft delete by default if the model has DeletedAt.
+		// Our Event model doesn't have a DeletedAt field, so this is a hard DELETE.
+		// The database's ON DELETE CASCADE constraints remove all child records automatically.
+		if err := db.Delete(&event).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete event"})
+		}
+
+		// 204 No Content — success with no response body
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }

@@ -32,8 +32,10 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
 
 # ---- Stage 2: Runtime ----
-# alpine:latest is a tiny Linux distribution (~5MB). We only copy the compiled binary here.
-FROM alpine:latest
+# alpine:3.21 is a tiny Linux distribution (~5MB). We only copy the compiled binary here.
+# Pinned to a specific version (not "latest") so builds are reproducible — a future "latest"
+# release can't silently change behavior or break the image.
+FROM alpine:3.21
 
 # ca-certificates is needed for making HTTPS requests (e.g., to Clerk's JWKS endpoint).
 # Without this, TLS certificate verification would fail.
@@ -50,7 +52,13 @@ COPY --from=builder /app/migrations ./migrations
 
 # Tell Docker this container listens on port 8080 (matches the default in config.go).
 # This is documentation only — it doesn't actually publish the port (docker run -p does that).
+# On Railway, the actual port is injected via the PORT environment variable.
 EXPOSE 8080
+
+# Tell Docker (and Railway) which signal to send when stopping the container.
+# SIGTERM is the standard "please shut down gracefully" signal. Fiber listens for it
+# and closes open connections before exiting, rather than cutting them off hard.
+STOPSIGNAL SIGTERM
 
 # The command to run when the container starts
 CMD ["./server"]

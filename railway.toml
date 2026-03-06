@@ -1,0 +1,32 @@
+# railway.toml
+# Railway deployment configuration for the Golf League API.
+#
+# This file lives at the repo root. When Railway detects it, it uses these settings
+# instead of trying to auto-detect the project type. Without it, Railway looks for a
+# Dockerfile at the repo root — but ours is in the backend/ subdirectory.
+#
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+# Force a Docker build using the Dockerfile in the backend/ subdirectory.
+# builder = "DOCKERFILE" tells Railway to skip railpack auto-detection.
+builder = "DOCKERFILE"
+
+# Path to the Dockerfile, relative to the repo root.
+dockerfilePath = "backend/Dockerfile"
+
+# The build context directory — all COPY commands in the Dockerfile are relative to this.
+# Setting it to "backend" means COPY go.mod go.sum ./ looks inside backend/, which is correct.
+buildContext = "backend"
+
+[deploy]
+# Railway polls this HTTP endpoint after every deploy to verify the container is healthy.
+# Our GET /health handler (handlers/health.go) returns HTTP 200 with {"status":"ok",...}.
+# If it doesn't return 2xx within healthcheckTimeout seconds, the deploy is marked failed.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+# Restart the container automatically if it exits with a non-zero status code (i.e., crashes).
+# ON_FAILURE means Railway won't restart if we exit cleanly (e.g., on SIGTERM during a redeploy).
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

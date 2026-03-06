@@ -5,6 +5,9 @@
 -- PostgreSQL does not support DROP VALUE on an enum, so we follow the
 -- standard workaround:
 --   1. Create a replacement enum type (without 'upcoming')
+--   1.5 DROP the column DEFAULT before changing its type — PostgreSQL cannot
+--      automatically cast the existing DEFAULT 'upcoming'::event_status to the
+--      new type, so the default must be removed first and then re-applied after.
 --   2. Change the column to use the new type, converting any 'upcoming'
 --      rows to 'active' via a CASE expression
 --   3. Drop the old enum
@@ -14,6 +17,14 @@
 
 -- Step 1: new enum without 'upcoming'
 CREATE TYPE event_status_new AS ENUM ('active', 'completed', 'cancelled');
+
+-- Step 1.5: drop the existing column DEFAULT before changing the column type.
+-- The original default is 'upcoming'::event_status (set in migration 000001).
+-- PostgreSQL refuses to change the column type while the DEFAULT still references
+-- the old enum type — it cannot cast 'upcoming'::event_status to event_status_new
+-- automatically. We drop it here and restore the correct new default after the type change.
+ALTER TABLE events
+    ALTER COLUMN status DROP DEFAULT;
 
 -- Step 2: migrate the column.
 -- Any existing rows where status = 'upcoming' become 'active'.
@@ -27,7 +38,7 @@ ALTER TABLE events
         END
     );
 
--- Update the column DEFAULT to 'active' now that 'upcoming' no longer exists.
+-- Restore the column DEFAULT, now pointing to the new type.
 ALTER TABLE events
     ALTER COLUMN status SET DEFAULT 'active'::event_status_new;
 

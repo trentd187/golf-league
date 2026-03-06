@@ -59,12 +59,16 @@ import { THEME_META } from "@/themes";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-// RoleBadge renders a small coloured pill showing the user's permission level.
-// - admin   → green  (full access)
-// - manager → blue   (league/event management)
+// SystemRoleBadge renders a small coloured pill showing the user's platform-level role.
+// - admin   → green  (full platform access)
+// - manager → blue   (can create/manage leagues and events)
 // - user    → gray   (regular player)
+//
+// This is distinct from the event-level RoleBadge exported by components/badges.tsx,
+// which shows "Organizer" status within a specific event. SystemRoleBadge always renders,
+// while the shared RoleBadge returns null for non-organizers.
 // Role colors are categorical — hardcoded and NOT affected by the theme.
-function RoleBadge({ role }: { role?: string }) {
+function SystemRoleBadge({ role }: { role?: string }) {
   const styles: Record<string, { bg: string; text: string; label: string }> = {
     admin:   { bg: "bg-green-100",  text: "text-green-700", label: "Admin" },
     manager: { bg: "bg-blue-100",   text: "text-blue-700",  label: "Manager" },
@@ -425,8 +429,8 @@ export default function ProfileScreen() {
                 <Text className={`text-sm mb-1 ${t.textSecondary}`} numberOfLines={1}>
                   {email}
                 </Text>
-                {/* RoleBadge: categorical colors — not themed */}
-                <RoleBadge role={(user?.publicMetadata as { role?: string })?.role} />
+                {/* SystemRoleBadge: shows platform-level role (admin/manager/user); categorical colors */}
+                <SystemRoleBadge role={(user?.publicMetadata as { role?: string })?.role} />
               </View>
 
               {/* Edit / Cancel toggle for name editing */}

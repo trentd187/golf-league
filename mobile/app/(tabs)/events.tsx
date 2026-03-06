@@ -58,6 +58,9 @@ import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
 // useTheme gives us the active theme's class strings and hex colors.
 import { useTheme } from "@/hooks/useTheme";
+// EventTypeBadge: coloured pill for league/tournament/casual — defined once in badges.tsx,
+// imported here so we don't duplicate the component or its hardcoded color classes.
+import { EventTypeBadge } from "@/components/badges";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -127,23 +130,6 @@ const SORT_OPTIONS: { value: SortKey; label: string; shortLabel: string }[] = [
 ];
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-
-// EventTypeBadge renders a small coloured pill showing the event type.
-// This lets users quickly distinguish leagues from tournaments in the list.
-function EventTypeBadge({ type }: { type: EventResponse["event_type"] }) {
-  const styles: Record<EventResponse["event_type"], { bg: string; text: string }> = {
-    league:     { bg: "bg-blue-100",  text: "text-blue-700" },
-    tournament: { bg: "bg-amber-100", text: "text-amber-700" },
-    casual:     { bg: "bg-gray-100",  text: "text-gray-600" },
-  };
-  const label = type.charAt(0).toUpperCase() + type.slice(1);
-  const s = styles[type];
-  return (
-    <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
-      <Text className={`text-xs font-semibold ${s.text}`}>{label}</Text>
-    </View>
-  );
-}
 
 // EventCard renders a single event row in the list.
 // onPress navigates to the event detail screen — the card is fully tappable.

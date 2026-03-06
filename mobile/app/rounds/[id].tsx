@@ -54,12 +54,17 @@ import SectionHeader from "@/components/SectionHeader";
 // UserSearchList + UserSummary — reuse the same search+pick component from Add Member flow.
 // UserSummary is { id, display_name, email }.
 import UserSearchList, { UserSummary } from "@/components/UserSearchList";
+// chunk: splits an array into equal-sized sub-arrays — used to render the
+// scoring format pill grid as rows. Shared across screens via utils/array.ts.
+import { chunk } from "@/utils/array";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// SCORING_FORMATS: the four ways scores can be tallied in a round.
+// SCORING_FORMATS: ALL valid scoring formats supported by the backend.
 // Displayed as a 2-column pill grid in the Edit Round form.
-// Note: mirrored from events/[id].tsx — both screens use this list.
+// Note: this list intentionally differs from events/[id].tsx, which shows only
+// a simplified 4-format subset when scheduling a new round. This edit form
+// exposes every option so organizers can change to any format after creation.
 const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "stroke",     label: "Stroke" },
   { value: "net_stroke", label: "Net Stroke" },
@@ -69,17 +74,6 @@ const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "scramble",   label: "Scramble" },
   { value: "best_ball",  label: "Best Ball" },
 ];
-
-// chunk splits an array into sub-arrays of the given size.
-// Used to build 2-column rows for the scoring format pill grid.
-// Example: chunk([1,2,3,4,5], 2) → [[1,2],[3,4],[5]]
-function chunk<T>(arr: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    result.push(arr.slice(i, i + size));
-  }
-  return result;
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

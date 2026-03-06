@@ -58,6 +58,9 @@ import ModalHeader from "@/components/ModalHeader";
 // UserSummary is the type for a user summary from GET /api/v1/users.
 // It's exported from UserSearchList so we can type the query data here.
 import UserSearchList, { UserSummary } from "@/components/UserSearchList";
+// chunk: splits an array into equal-sized sub-arrays — used to render the
+// scoring format pill grid as rows. Shared across screens via utils/array.ts.
+import { chunk } from "@/utils/array";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // These match the backend response shapes for the event detail and rounds endpoints.
@@ -106,18 +109,6 @@ const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "stableford", label: "Stableford" },
   { value: "scramble",   label: "Scramble" },
 ];
-
-// chunk: splits an array into sub-arrays of `size` length.
-// Used to render SCORING_FORMATS as two rows of two pills each,
-// without duplicating the pill JSX.
-// Example: chunk([a, b, c, d], 2) → [[a, b], [c, d]]
-function chunk<T>(arr: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    result.push(arr.slice(i, i + size));
-  }
-  return result;
-}
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 // Tee times are stored internally as "HH:MM" (24-hour) strings — compact and easy

@@ -8,16 +8,10 @@
 # Docs: https://docs.railway.app/reference/config-as-code
 
 [build]
-# Force a Docker build using the Dockerfile in the backend/ subdirectory.
-# builder = "DOCKERFILE" tells Railway to skip railpack auto-detection.
+# Force a Docker build. Railway will look for Dockerfile at the repo root (the default location).
+# The root Dockerfile has COPY paths adjusted for the repo-root build context.
+# See backend/Dockerfile for the local docker-compose equivalent (backend/ context).
 builder = "DOCKERFILE"
-
-# Path to the Dockerfile, relative to the repo root.
-dockerfilePath = "backend/Dockerfile"
-
-# The build context directory — all COPY commands in the Dockerfile are relative to this.
-# Setting it to "backend" means COPY go.mod go.sum ./ looks inside backend/, which is correct.
-buildContext = "backend"
 
 [deploy]
 # Railway polls this HTTP endpoint after every deploy to verify the container is healthy.

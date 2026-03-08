@@ -3,7 +3,7 @@
 //
 // "Categorical" means the color IS the meaning — a green chip always means "active",
 // a red chip always means "cancelled". These must NOT use theme tokens, because
-// swapping them for gray or teal would destroy the visual encoding. See CLAUDE.md.
+// swapping colors would destroy the visual encoding. See CLAUDE.md.
 //
 // Exports:
 //   EventTypeBadge  — league (blue), tournament (amber), casual (gray)
@@ -15,22 +15,15 @@ import { View, Text } from "react-native";
 
 // ─── EventTypeBadge ───────────────────────────────────────────────────────────
 
-// The union of valid event_type values from the backend.
-// Defined here so we don't need to import the full EventDetail type.
 type EventType = "league" | "tournament" | "casual";
 
-// EventTypeBadge: a coloured rounded pill identifying the competition type.
-// Each type has a unique color so users can spot the event category at a glance.
 export function EventTypeBadge({ type }: { type: EventType }) {
-  // Map each type to its background and text color.
-  // These are hardcoded Tailwind classes — the JIT scanner will find them here.
   const map: Record<EventType, { bg: string; text: string }> = {
     league:     { bg: "bg-blue-100",  text: "text-blue-700" },
     tournament: { bg: "bg-amber-100", text: "text-amber-700" },
     casual:     { bg: "bg-gray-100",  text: "text-gray-600" },
   };
   const s = map[type];
-  // Capitalise just the first letter: "league" → "League"
   const label = type.charAt(0).toUpperCase() + type.slice(1);
   return (
     <View className={`self-start rounded-full px-2 py-0.5 ${s.bg}`}>
@@ -41,16 +34,14 @@ export function EventTypeBadge({ type }: { type: EventType }) {
 
 // ─── StatusChip ───────────────────────────────────────────────────────────────
 
-// StatusChip: shows an event's lifecycle status — active, completed, or cancelled.
+// Note: "upcoming" was removed as a valid status — events now start as "active".
 // Falls back to "active" styling for any unrecognised status value.
-// Note: "upcoming" was removed as a valid status — events start as "active".
 export function StatusChip({ status }: { status: string }) {
   const map: Record<string, { bg: string; text: string }> = {
     active:    { bg: "bg-green-100", text: "text-green-700" },
     completed: { bg: "bg-gray-100",  text: "text-gray-600" },
     cancelled: { bg: "bg-red-100",   text: "text-red-600" },
   };
-  // ?? is the nullish coalescing operator — falls back to map.active if the key is missing
   const s = map[status] ?? map.active;
   const label = status.charAt(0).toUpperCase() + status.slice(1);
   return (
@@ -62,8 +53,7 @@ export function StatusChip({ status }: { status: string }) {
 
 // ─── RoleBadge ────────────────────────────────────────────────────────────────
 
-// RoleBadge: renders an "Organizer" pill next to a member's name.
-// Returns null (renders nothing) for regular players — so it's safe to always render it.
+// Returns null for non-organizers — safe to always render regardless of role.
 export function RoleBadge({ role }: { role: string }) {
   if (role !== "organizer") return null;
   return (
@@ -75,8 +65,7 @@ export function RoleBadge({ role }: { role: string }) {
 
 // ─── RoundStatusChip ──────────────────────────────────────────────────────────
 
-// RoundStatusChip: shows a round's lifecycle status — scheduled, active, or completed.
-// Falls back to "scheduled" styling for any unrecognised value.
+// Falls back to "scheduled" styling for any unrecognised status value.
 export function RoundStatusChip({ status }: { status: string }) {
   const map: Record<string, { bg: string; text: string }> = {
     scheduled: { bg: "bg-sky-100",   text: "text-sky-700" },

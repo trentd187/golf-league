@@ -8,7 +8,6 @@
 //   3. Rounds       — scheduled/active/completed rounds; organizers see "Schedule Round"
 //
 // Tapping a round card navigates to /rounds/[id] (the Round detail/edit screen).
-//
 // Organizer actions (edit event, add member, schedule round) open modal sheets.
 //
 // Auth / permission:
@@ -30,40 +29,31 @@ import {
   Platform,
 } from "react-native";
 
-// useLocalSearchParams: reads dynamic route params from the URL.
-// For the route /events/abc-123, { id } = useLocalSearchParams() → id = "abc-123"
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 
-// DateInput: our custom date field that supports both typed input (auto-formatted to MM-DD-YY)
-// and a native calendar picker. apiToDisplay/displayToApi handle format conversion.
+// DateInput: auto-formats typed input to MM-DD-YY and shows a native calendar picker.
+// apiToDisplay/displayToApi handle YYYY-MM-DD ↔ MM-DD-YY conversion.
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
-// DateTimePicker is the native time/date picker from @react-native-community/datetimepicker.
-// Already installed as a direct dependency for DateInput — no new package needed.
-// We use it in "time" mode for the tee time pickers in the Schedule Round form.
+// DateTimePicker is the native time picker from @react-native-community/datetimepicker.
+// Used in "time" mode for tee time entry in the Schedule Round form.
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 
-// useTheme gives us the active theme's class strings and hex colors.
 import { useTheme } from "@/hooks/useTheme";
-
-// Shared UI components — imported from components/ so the Round detail screen
-// can reuse the same atoms without duplication. See CLAUDE.md for the convention.
 import { EventTypeBadge, StatusChip, RoleBadge, RoundStatusChip } from "@/components/badges";
 import SectionHeader from "@/components/SectionHeader";
 import ModalHeader from "@/components/ModalHeader";
-// UserSummary is the type for a user summary from GET /api/v1/users.
-// It's exported from UserSearchList so we can type the query data here.
+// UserSummary is exported from UserSearchList so we can type the query data here.
 import UserSearchList, { UserSummary } from "@/components/UserSearchList";
-// chunk: splits an array into equal-sized sub-arrays — used to render the
-// scoring format pill grid as rows. Shared across screens via utils/array.ts.
+// chunk: splits an array into equal-sized sub-arrays — used to render the scoring format
+// pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-// These match the backend response shapes for the event detail and rounds endpoints.
 
 type MemberResponse = {
   user_id: string;
@@ -90,19 +80,17 @@ type EventDetail = {
 
 type RoundSummary = {
   id: string;
-  name: string;           // display name, e.g. "Round 1" or "Championship Round"
+  name: string;
   course_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
   status: string;         // "scheduled" | "active" | "completed"
   scoring_format: string;
   round_number: number;
-  group_count: number;    // number of tee-time groups created for this round
+  group_count: number;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// SCORING_FORMATS: the four ways scores can be tallied in a round.
-// Rendered as a 2-column pill grid in the Schedule Round form.
 const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "stroke",     label: "Stroke" },
   { value: "net_stroke", label: "Net" },
@@ -111,12 +99,10 @@ const SCORING_FORMATS: { value: string; label: string }[] = [
 ];
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
-// Tee times are stored internally as "HH:MM" (24-hour) strings — compact and easy
-// to send to the backend. The native picker works with JS Date objects, so we
-// convert back and forth as needed.
+// Tee times are stored as "HH:MM" (24-hour) strings internally. The native picker
+// works with Date objects, so we convert back and forth as needed.
 
-// teeTimeToDate converts "HH:MM" to a JS Date (using today's date, only the time matters).
-// Falls back to the current time if the string is missing or unparseable.
+// teeTimeToDate: "HH:MM" → JS Date (today's date, only time matters).
 function teeTimeToDate(hhmm: string): Date {
   const d = new Date();
   if (!hhmm) return d;
@@ -125,34 +111,29 @@ function teeTimeToDate(hhmm: string): Date {
   return d;
 }
 
-// dateToTeeTime converts a JS Date from the picker to "HH:MM" (24-hour string).
-// padStart(2, "0") ensures single-digit values are zero-padded: 7 → "07".
+// dateToTeeTime: Date → "HH:MM". padStart ensures single digits are zero-padded (7 → "07").
 function dateToTeeTime(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-// formatTeeTime converts "HH:MM" to a human-readable "h:mm AM/PM" string for display.
-// Example: "07:30" → "7:30 AM",  "13:45" → "1:45 PM"
+// formatTeeTime: "HH:MM" → "h:mm AM/PM" for display. e.g. "07:30" → "7:30 AM".
 function formatTeeTime(hhmm: string): string {
   if (!hhmm) return "";
   const [h, m] = hhmm.split(":").map(Number);
   if (isNaN(h) || isNaN(m)) return hhmm;
   const ampm = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 || 12; // converts 0 → 12 (midnight) and 12 → 12 (noon)
+  const hour12 = h % 12 || 12; // 0 → 12 (midnight), 12 → 12 (noon)
   return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function EventDetailScreen() {
-  // Read the dynamic segment from the URL: /events/[id] → params.id
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { getToken } = useAuth();
   const { user } = useUser();
   const queryClient = useQueryClient();
-
-  // t: the active theme — drives background, surface, and text colors throughout this screen.
   const t = useTheme();
 
   // --- Modal visibility state ---
@@ -170,24 +151,17 @@ export default function EventDetailScreen() {
   const [memberSearch, setMemberSearch] = useState("");
 
   // --- Schedule round form state ---
-  // roundName: the display name for the new round. Pre-populated with "Round N" when the
-  // modal opens, but the organizer can type any name they like.
   const [roundName, setRoundName]         = useState("");
   const [courseName, setCourseName]       = useState("");
   const [roundDate, setRoundDate]         = useState("");
   const [scoringFormat, setScoringFormat] = useState("stroke");
-  // groupCount: how many tee-time groups to create with the round (1–8).
   const [groupCount, setGroupCount]         = useState(1);
-  // groupTeeTimes: one entry per group (index 0 = Group 1, etc.).
-  // Each entry is an HH:MM string like "07:30" or "" if no tee time is set.
+  // groupTeeTimes: one "HH:MM" string per group ("" = no tee time set).
   const [groupTeeTimes, setGroupTeeTimes]   = useState<string[]>([""]);
-
-  // openTeeTimePicker: index of the group whose tee time picker is currently open,
-  // or null when all pickers are closed. Only one can be open at a time.
+  // openTeeTimePicker: index of the group whose picker is open, or null when closed.
   const [openTeeTimePicker, setOpenTeeTimePicker] = useState<number | null>(null);
 
-  // updateGroupCount resizes groupTeeTimes to match the new count,
-  // padding with "" for added groups or truncating when groups are removed.
+  // updateGroupCount resizes groupTeeTimes to match, padding with "" or truncating.
   const updateGroupCount = (n: number) => {
     setGroupCount(n);
     setGroupTeeTimes((prev) => {
@@ -197,7 +171,8 @@ export default function EventDetailScreen() {
     });
   };
 
-  // --- Fetch event detail (includes members list) ---
+  // --- Queries ---
+
   const {
     data: event,
     isLoading: eventLoading,
@@ -213,10 +188,9 @@ export default function EventDetailScreen() {
       if (!res.ok) throw new Error(`Failed to fetch event: ${res.status}`);
       return res.json();
     },
-    enabled: !!id, // only run when id is available (Expo Router may render before params are set)
+    enabled: !!id, // Expo Router may render before params are populated
   });
 
-  // --- Fetch rounds for this event ---
   const {
     data: rounds,
     isLoading: roundsLoading,
@@ -233,7 +207,6 @@ export default function EventDetailScreen() {
     enabled: !!id,
   });
 
-  // --- Fetch all users (for Add Member picker — only when modal is open) ---
   const { data: allUsers } = useQuery<UserSummary[]>({
     queryKey: ["users"],
     queryFn: async () => {
@@ -244,25 +217,22 @@ export default function EventDetailScreen() {
       if (!res.ok) throw new Error("Failed to fetch users");
       return res.json();
     },
-    // Only fetch when the modal is open — avoids an unnecessary API call on screen load.
-    enabled: addMemberModalVisible,
+    enabled: addMemberModalVisible, // only fetch when the Add Member modal is open
   });
 
-  // --- Determine if the current user is an organizer ---
-  // We match by email because that's what Clerk exposes and what our DB uses as the unique key.
+  // --- Derived values ---
+
+  // Match by email — that's what Clerk exposes and what our DB uses as the unique key.
   const myEmail = user?.primaryEmailAddress?.emailAddress;
   const myMembership = event?.members.find((m) => m.email === myEmail);
   const isOrganizer = myMembership?.role === "organizer";
 
-  // --- Filter users for the Add Member picker ---
-  // Exclude users who are already members of this event.
-  // UserSearchList will further filter by the search text the user types.
   const existingMemberIds = new Set(event?.members.map((m) => m.user_id) ?? []);
-  // allUsers?.filter(...) returns undefined while allUsers is still loading — that's
-  // intentional: UserSearchList shows a spinner when it receives undefined.
+  // Returns undefined while loading — UserSearchList shows a spinner for undefined.
   const availableUsers = allUsers?.filter((u) => !existingMemberIds.has(u.id));
 
-  // --- Mutation: update event ---
+  // --- Mutations ---
+
   const updateEventMutation = useMutation({
     mutationFn: async (data: {
       name?: string;
@@ -286,7 +256,6 @@ export default function EventDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
-      // Invalidate both the detail query and the events list so everything stays in sync.
       queryClient.invalidateQueries({ queryKey: ["event", id] });
       queryClient.invalidateQueries({ queryKey: ["events"] });
       setEditModalVisible(false);
@@ -296,7 +265,6 @@ export default function EventDetailScreen() {
     },
   });
 
-  // --- Mutation: add member ---
   const addMemberMutation = useMutation({
     mutationFn: async (userId: string) => {
       const token = await getToken();
@@ -324,14 +292,12 @@ export default function EventDetailScreen() {
     },
   });
 
-  // --- Mutation: schedule round ---
   const scheduleRoundMutation = useMutation({
     mutationFn: async (data: {
-      name: string;           // display name, e.g. "Round 1" or "Championship Round"
+      name: string;
       course_name: string;
       scheduled_date: string;
       scoring_format: string;
-      // groups: one entry per tee-time group; tee_time is optional ("HH:MM" or undefined)
       groups: { tee_time?: string }[];
     }) => {
       const token = await getToken();
@@ -364,7 +330,6 @@ export default function EventDetailScreen() {
     },
   });
 
-  // --- Mutation: cancel event (status → "cancelled") ---
   const cancelEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
@@ -380,7 +345,6 @@ export default function EventDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
-      // Refresh both the event detail and the events list so the status chip updates everywhere
       queryClient.invalidateQueries({ queryKey: ["event", id] });
       queryClient.invalidateQueries({ queryKey: ["events"] });
     },
@@ -389,7 +353,6 @@ export default function EventDetailScreen() {
     },
   });
 
-  // --- Mutation: delete event (permanent) ---
   const deleteEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
@@ -403,7 +366,6 @@ export default function EventDetailScreen() {
       }
     },
     onSuccess: () => {
-      // Refresh the events list then navigate back — this event no longer exists
       queryClient.invalidateQueries({ queryKey: ["events"] });
       router.back();
     },
@@ -415,8 +377,7 @@ export default function EventDetailScreen() {
   // --- Handlers ---
 
   const openEditModal = () => {
-    // Pre-fill the form with current values.
-    // Dates come from the API as YYYY-MM-DD — convert to MM-DD-YY for the DateInput.
+    // Dates from the API are YYYY-MM-DD — convert to MM-DD-YY for DateInput.
     setEditName(event?.name ?? "");
     setEditDescription(event?.description ?? "");
     setEditStartDate(apiToDisplay(event?.start_date));
@@ -429,8 +390,6 @@ export default function EventDetailScreen() {
       Alert.alert("Name required", "Event name cannot be empty.", [{ text: "OK" }]);
       return;
     }
-    // Convert dates from MM-DD-YY display format back to YYYY-MM-DD for the API.
-    // displayToApi returns "" for empty input — the backend treats "" as "clear the field".
     updateEventMutation.mutate({
       name: editName.trim(),
       description: editDescription,
@@ -439,7 +398,6 @@ export default function EventDetailScreen() {
     });
   };
 
-  // handleCancelEvent: asks for confirmation then marks the event as cancelled.
   const handleCancelEvent = () => {
     Alert.alert(
       "Cancel event?",
@@ -455,7 +413,6 @@ export default function EventDetailScreen() {
     );
   };
 
-  // handleDeleteEvent: asks for extra confirmation then permanently deletes the event.
   const handleDeleteEvent = () => {
     Alert.alert(
       "Delete event?",
@@ -487,11 +444,9 @@ export default function EventDetailScreen() {
     scheduleRoundMutation.mutate({
       name: roundName.trim(),
       course_name: courseName.trim(),
-      // Convert MM-DD-YY → YYYY-MM-DD before sending to the backend
       scheduled_date: displayToApi(roundDate.trim()),
       scoring_format: scoringFormat,
-      // Build one entry per group; omit tee_time entirely if the field is blank
-      // so the backend creates the group with TeeTime = null.
+      // Omit tee_time entirely for blank entries so the backend creates the group with TeeTime = null.
       groups: Array.from({ length: groupCount }, (_, i) => {
         const t = groupTeeTimes[i]?.trim();
         return t ? { tee_time: t } : {};
@@ -526,12 +481,9 @@ export default function EventDetailScreen() {
 
   // --- Main render ---
   return (
-    // t.screen: full-page background color
     <View className={`flex-1 ${t.screen}`}>
 
-      {/* ── Custom back header ─────────────────────────────────────────────── */}
-      {/* We use a custom header instead of the default Stack header so we can
-          control its exact appearance (surface color, divider, edit button). */}
+      {/* Custom back header — surface color + edit button for organizers */}
       <View className={`${t.surface} border-b ${t.divider} px-4 pt-14 pb-3 flex-row items-center gap-3`}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={t.colors.tabBarActive} />
@@ -539,7 +491,6 @@ export default function EventDetailScreen() {
         <Text className={`text-lg font-bold flex-1 ${t.textPrimary}`} numberOfLines={1}>
           {event.name}
         </Text>
-        {/* Edit button — only shown to organizers */}
         {isOrganizer && (
           <TouchableOpacity onPress={openEditModal} hitSlop={8}>
             <Ionicons name="pencil-outline" size={20} color="#2563eb" />
@@ -552,18 +503,15 @@ export default function EventDetailScreen() {
         {/* ── Event info card ────────────────────────────────────────────────── */}
         <View className={`${t.surface} rounded-2xl p-4 mb-4 border ${t.border}`}>
 
-          {/* Type badge + status chip — both use categorical colors, not theme tokens */}
           <View className="flex-row items-center gap-2 mb-3">
             <EventTypeBadge type={event.event_type} />
             <StatusChip status={event.status} />
           </View>
 
-          {/* Description (if the organizer set one) */}
           {event.description ? (
             <Text className={`text-sm mb-3 leading-5 ${t.textSecondary}`}>{event.description}</Text>
           ) : null}
 
-          {/* Date range (shown only if at least one date is set) */}
           {(event.start_date || event.end_date) && (
             <View className="flex-row items-center gap-1 mb-2">
               <Ionicons name="calendar-outline" size={14} color={t.colors.tabBarInactive} />
@@ -574,7 +522,6 @@ export default function EventDetailScreen() {
             </View>
           )}
 
-          {/* Footer: creator name + member count */}
           <View className="flex-row items-center justify-between mt-1">
             <Text className={`text-xs ${t.textTertiary}`}>Created by {event.creator_name}</Text>
             <View className="flex-row items-center gap-1">
@@ -603,7 +550,6 @@ export default function EventDetailScreen() {
                 <View
                   key={member.user_id}
                   className={`px-4 py-3 flex-row items-center gap-3 ${
-                    // Draw a divider under every row except the last
                     idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
                 >
@@ -614,7 +560,7 @@ export default function EventDetailScreen() {
                     </Text>
                   </View>
 
-                  {/* Name + email — min-w-0 prevents text from overflowing the flex container */}
+                  {/* min-w-0 prevents text from overflowing the flex container */}
                   <View className="flex-1 min-w-0">
                     <Text className={`font-semibold text-sm ${t.textPrimary}`} numberOfLines={1}>
                       {member.display_name}
@@ -638,8 +584,7 @@ export default function EventDetailScreen() {
             title="Rounds"
             actionLabel="Schedule"
             onAction={() => {
-              // Pre-populate the round name with "Round N" where N = current count + 1.
-              // rounds?.length is the number of rounds already scheduled for this event.
+              // Pre-populate with "Round N" where N = current count + 1
               const nextNum = (rounds?.length ?? 0) + 1;
               setRoundName(`Round ${nextNum}`);
               setScheduleRoundModalVisible(true);
@@ -658,16 +603,12 @@ export default function EventDetailScreen() {
           ) : (
             <View className="gap-3">
               {rounds.map((round) => (
-                // Round cards are tappable — they navigate to the Round detail/edit screen.
-                // app/rounds/[id].tsx handles group management, tee times, and player assignment.
-                // (That screen is not yet built; Expo Router shows "Unmatched Route" until it exists.)
                 <TouchableOpacity
                   key={round.id}
                   className={`${t.surface} rounded-2xl p-4 border ${t.border}`}
                   onPress={() => router.push(`/rounds/${round.id}`)}
                   activeOpacity={0.7}
                 >
-                  {/* Round name + status chip — RoundStatusChip is categorical, not themed */}
                   <View className="flex-row items-center justify-between mb-2">
                     <Text className={`font-bold text-sm ${t.textPrimary}`}>
                       {round.name}
@@ -675,13 +616,11 @@ export default function EventDetailScreen() {
                     <RoundStatusChip status={round.status} />
                   </View>
 
-                  {/* Course name */}
                   <View className="flex-row items-center gap-1 mb-1">
                     <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
                     <Text className={`text-sm ${t.textSecondary}`}>{round.course_name}</Text>
                   </View>
 
-                  {/* Date + scoring format */}
                   <View className="flex-row items-center justify-between">
                     <View className="flex-row items-center gap-1">
                       <Ionicons name="calendar-outline" size={13} color={t.colors.tabBarInactive} />
@@ -689,7 +628,6 @@ export default function EventDetailScreen() {
                         {apiToDisplay(round.scheduled_date)}
                       </Text>
                     </View>
-                    {/* Show scoring format and group count, e.g. "Stroke · 3 groups" */}
                     <Text className={`text-xs capitalize ${t.textTertiary}`}>
                       {round.scoring_format.replace("_", " ")}
                       {" · "}
@@ -703,9 +641,7 @@ export default function EventDetailScreen() {
         </View>
       </ScrollView>
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* ── Edit Event Modal ───────────────────────────────────────────────── */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
 
       <Modal
         visible={editModalVisible}
@@ -726,7 +662,6 @@ export default function EventDetailScreen() {
                 disabled={updateEventMutation.isPending}
               />
 
-              {/* Name */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Name <Text className="text-red-500">*</Text>
@@ -742,7 +677,6 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Description */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Description{" "}
@@ -760,7 +694,6 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Start date — DateInput handles auto-formatting and the native calendar picker */}
               <View className="mb-4">
                 <DateInput
                   label="Start Date"
@@ -772,7 +705,6 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* End date */}
               <View className="mb-8">
                 <DateInput
                   label="End Date"
@@ -784,7 +716,6 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Save button */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center ${
                   updateEventMutation.isPending ? t.primaryBgDisabled : t.primaryBg
@@ -800,19 +731,16 @@ export default function EventDetailScreen() {
               </TouchableOpacity>
 
               {/* ── Danger zone ──────────────────────────────────────────────────
-                  Cancel and Delete live here inside the Edit modal so they are a
-                  deliberate two-tap gesture (open Edit → tap action), preventing
-                  accidental triggers from the main event card view. */}
+                  Cancel and Delete are inside the Edit modal so they require a
+                  deliberate two-tap gesture, preventing accidental triggers. */}
               <View className={`mt-6 pt-6 border-t ${t.divider} gap-3`}>
 
-                {/* Cancel Event — marks the event as "cancelled". Event data is
-                    preserved and members can still view it. Disabled (and relabelled)
-                    when the event is already cancelled so it's clear no action is needed. */}
+                {/* Cancel Event — marks as "cancelled". Greyed out if already cancelled. */}
                 <TouchableOpacity
                   className={`rounded-xl py-4 items-center border ${
                     event.status === "cancelled"
-                      ? "border-gray-200 bg-gray-50"   // greyed out — already cancelled
-                      : "border-amber-200 bg-amber-50" // amber — active destructive action
+                      ? "border-gray-200 bg-gray-50"
+                      : "border-amber-200 bg-amber-50"
                   }`}
                   onPress={handleCancelEvent}
                   disabled={
@@ -828,7 +756,6 @@ export default function EventDetailScreen() {
                       className="text-sm font-semibold"
                       // eslint-disable-next-line react-native/no-inline-styles
                       style={{
-                        // amber-600 when active; gray-400 when already cancelled
                         color: event.status === "cancelled" ? "#9ca3af" : "#d97706",
                       }}
                     >
@@ -837,9 +764,7 @@ export default function EventDetailScreen() {
                   )}
                 </TouchableOpacity>
 
-                {/* Delete Event — permanently removes the event and ALL its rounds,
-                    members, and scores. This cannot be undone. A confirmation Alert
-                    fires before the mutation is called (in handleDeleteEvent). */}
+                {/* Delete Event — permanently removes the event and all its data. */}
                 <TouchableOpacity
                   className="rounded-xl py-4 items-center bg-red-50 border border-red-200"
                   onPress={handleDeleteEvent}
@@ -859,9 +784,7 @@ export default function EventDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* ── Add Member Modal ───────────────────────────────────────────────── */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
 
       <Modal
         visible={addMemberModalVisible}
@@ -873,8 +796,6 @@ export default function EventDetailScreen() {
         }}
       >
         <View className={`flex-1 ${t.surface}`}>
-
-          {/* Header area with padding */}
           <View className="px-5 pt-8 pb-2">
             <ModalHeader
               title="Add Member"
@@ -885,9 +806,9 @@ export default function EventDetailScreen() {
             />
           </View>
 
-          {/* UserSearchList owns the search box and list.
-              We pass pre-filtered users (non-members only); the component filters by search text.
-              The search state is owned here so we can reset it when the modal closes. */}
+          {/* UserSearchList owns the search box + list.
+              We pass pre-filtered users (non-members only).
+              Search state is owned here so it resets when the modal closes. */}
           <View className="flex-1">
             <UserSearchList
               users={availableUsers}
@@ -898,13 +819,10 @@ export default function EventDetailScreen() {
               emptyMessage="All users are already members of this event."
             />
           </View>
-
         </View>
       </Modal>
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* ── Schedule Round Modal ───────────────────────────────────────────── */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
 
       <Modal
         visible={scheduleRoundModalVisible}
@@ -936,7 +854,7 @@ export default function EventDetailScreen() {
                 disabled={scheduleRoundMutation.isPending}
               />
 
-              {/* Round name — required; pre-populated with "Round N" but fully editable */}
+              {/* Round name — required; pre-populated with "Round N" but editable */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Round Name <Text className="text-red-500">*</Text>
@@ -953,7 +871,6 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Course name */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Course Name <Text className="text-red-500">*</Text>
@@ -968,13 +885,11 @@ export default function EventDetailScreen() {
                   editable={!scheduleRoundMutation.isPending}
                   returnKeyType="next"
                 />
-                {/* Hint: existing courses are matched by name so no duplicates are created */}
                 <Text className={`text-xs mt-1 ml-1 ${t.textTertiary}`}>
                   Existing courses are matched by name — no duplicates created.
                 </Text>
               </View>
 
-              {/* Date — DateInput handles auto-formatting and native calendar picker */}
               <View className="mb-6">
                 <DateInput
                   label="Date"
@@ -987,8 +902,7 @@ export default function EventDetailScreen() {
               </View>
 
               {/* Scoring format picker — 2-column pill grid.
-                  chunk(SCORING_FORMATS, 2) → [[Stroke, Net], [Stableford, Scramble]]
-                  We render each inner array as a flex-row, avoiding duplicate JSX. */}
+                  chunk(SCORING_FORMATS, 2) → [[Stroke, Net], [Stableford, Scramble]] */}
               <View className="mb-8">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Scoring Format
@@ -1001,7 +915,6 @@ export default function EventDetailScreen() {
                         return (
                           <TouchableOpacity
                             key={fmt.value}
-                            // flex-1: each pill takes equal width within the row
                             className={`flex-1 rounded-xl py-3 items-center border ${
                               selected
                                 ? `${t.primaryBg} border-transparent`
@@ -1026,22 +939,20 @@ export default function EventDetailScreen() {
               </View>
 
               {/* ── Groups ───────────────────────────────────────────────────── */}
-              {/* Lets the organizer choose how many tee-time groups to create (1–8)
-                  and optionally enter a tee time for each group (HH:MM, 24-hour format).
-                  Players are assigned to groups on the Round detail screen after creation. */}
+              {/* Choose how many tee-time groups to create (1–8) and optionally
+                  set a tee time for each. Players are assigned on the Round detail screen. */}
               <View className="mb-8">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>
                   Groups
                 </Text>
 
-                {/* +/- stepper for number of groups */}
+                {/* +/- stepper */}
                 <View className="flex-row items-center gap-3 mb-4">
                   <TouchableOpacity
                     className={`w-10 h-10 rounded-xl border items-center justify-center ${t.borderInput} ${t.surfaceSunken}`}
                     onPress={() => updateGroupCount(Math.max(1, groupCount - 1))}
                     disabled={scheduleRoundMutation.isPending}
                   >
-                    {/* "–" reduces the group count; minimum 1 */}
                     <Text className={`text-lg font-bold ${t.textPrimary}`}>–</Text>
                   </TouchableOpacity>
 
@@ -1054,7 +965,6 @@ export default function EventDetailScreen() {
                     onPress={() => updateGroupCount(Math.min(8, groupCount + 1))}
                     disabled={scheduleRoundMutation.isPending}
                   >
-                    {/* "+" increases the group count; maximum 8 */}
                     <Text className={`text-lg font-bold ${t.textPrimary}`}>+</Text>
                   </TouchableOpacity>
 
@@ -1063,9 +973,7 @@ export default function EventDetailScreen() {
                   </Text>
                 </View>
 
-                {/* One tee time row per group.
-                    Tapping the button opens the native time picker — no text entry.
-                    Array.from generates an array of length groupCount to map over. */}
+                {/* One tee time row per group */}
                 <View className="gap-2">
                   {Array.from({ length: groupCount }, (_, i) => (
                     <View key={i} className="flex-row items-center gap-3">
@@ -1073,8 +981,6 @@ export default function EventDetailScreen() {
                         Group {i + 1}
                       </Text>
 
-                      {/* Tappable tee time button — opens the native time picker.
-                          Shows the formatted time when set, or a greyed placeholder. */}
                       <TouchableOpacity
                         className={`flex-1 border rounded-xl px-3 py-2 flex-row items-center justify-between ${t.borderInput} ${t.surfaceSunken}`}
                         onPress={() => setOpenTeeTimePicker(i)}
@@ -1083,9 +989,7 @@ export default function EventDetailScreen() {
                       >
                         <Text
                           className={`text-sm ${groupTeeTimes[i] ? t.textPrimary : ""}`}
-                          // Use inline style for the placeholder color hex — can't use className
-                          // because placeholderTextColor only works as a prop on TextInput,
-                          // and here we're using a plain Text inside TouchableOpacity.
+                          // Inline style required for dynamic hex — can't use className on plain Text
                           // eslint-disable-next-line react-native/no-inline-styles
                           style={!groupTeeTimes[i] ? { color: t.colors.tabBarInactive } : undefined}
                         >
@@ -1097,29 +1001,18 @@ export default function EventDetailScreen() {
                   ))}
                 </View>
 
-                {/* ── Native time picker ─────────────────────────────────────────
-                    Android: DateTimePicker shows its own system dialog. We render it
-                    outside the map so there's only one instance. When dismissed or
-                    confirmed, we close the picker and update the relevant group entry.
-
-                    iOS: We use a transparent Modal with a bottom sheet (same pattern
-                    as DateInput). The Modal sits inside the schedule round pageSheet
-                    modal and overlays it correctly on iOS. */}
+                {/* Native time picker — Android uses a system dialog; iOS uses a bottom sheet. */}
 
                 {Platform.OS === "android" && openTeeTimePicker !== null && (
                   <DateTimePicker
                     value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
                     mode="time"
-                    // "default" = the Android native time picker dialog
                     display="default"
-                    // is24Hour={false}: show AM/PM selector (matches how times appear in the app)
                     is24Hour={false}
                     onChange={(event: DateTimePickerEvent, date?: Date) => {
-                      // Close the picker first — Android dismisses its own dialog,
-                      // but we need to clear our state flag.
                       const idx = openTeeTimePicker;
                       setOpenTeeTimePicker(null);
-                      // event.type === "set" means the user pressed OK (not cancelled).
+                      // event.type === "set" means the user confirmed (not cancelled)
                       if (event.type === "set" && date) {
                         const updated = [...groupTeeTimes];
                         updated[idx] = dateToTeeTime(date);
@@ -1136,18 +1029,15 @@ export default function EventDetailScreen() {
                     animationType="slide"
                     onRequestClose={() => setOpenTeeTimePicker(null)}
                   >
-                    {/* Full-screen container — positions the sheet at the bottom */}
                     <View className="flex-1">
-                      {/* Semi-transparent backdrop: tap anywhere outside the sheet to close */}
+                      {/* Backdrop — tap to close */}
                       <TouchableOpacity
                         className="absolute inset-0 bg-black/40"
                         activeOpacity={1}
                         onPress={() => setOpenTeeTimePicker(null)}
                       />
 
-                      {/* Bottom sheet */}
                       <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
-                        {/* Header: label on left, "Done" button on right */}
                         <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
                           <Text className={`font-semibold ${t.textSecondary}`}>
                             {openTeeTimePicker !== null
@@ -1155,8 +1045,7 @@ export default function EventDetailScreen() {
                               : "Tee Time"}
                           </Text>
                           <TouchableOpacity onPress={() => setOpenTeeTimePicker(null)}>
-                            {/* "Done" uses the theme's active color — inline style required
-                                because Text doesn't accept a color prop */}
+                            {/* "Done" uses theme hex — inline style required for Text color */}
                             <Text
                               className="font-semibold text-base"
                               // eslint-disable-next-line react-native/no-inline-styles
@@ -1167,17 +1056,12 @@ export default function EventDetailScreen() {
                           </TouchableOpacity>
                         </View>
 
-                        {/* iOS spinner-style time picker.
-                            We only render it when openTeeTimePicker is not null
-                            (the outer Modal.visible already guards this, but
-                            the null check also satisfies TypeScript). */}
+                        {/* Render only when picker is open — also satisfies TypeScript's null check */}
                         {openTeeTimePicker !== null && (
                           <DateTimePicker
                             value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
                             mode="time"
                             display="spinner"
-                            // Update the group's tee time live as the spinner scrolls.
-                            // The user taps "Done" (above) to dismiss.
                             onChange={(_event: DateTimePickerEvent, date?: Date) => {
                               if (date && openTeeTimePicker !== null) {
                                 const updated = [...groupTeeTimes];
@@ -1195,7 +1079,6 @@ export default function EventDetailScreen() {
                 )}
               </View>
 
-              {/* Schedule button */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center ${
                   scheduleRoundMutation.isPending ? t.primaryBgDisabled : t.primaryBg

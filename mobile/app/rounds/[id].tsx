@@ -15,11 +15,11 @@
 // Non-organizers can view all groups and players but cannot add, remove, or edit.
 //
 // Data flow:
-//   GET    /api/v1/rounds/:id                               → round detail (includes is_organizer)
-//   GET    /api/v1/events/:eventId/members                  → event members for add-player picker
-//   PATCH  /api/v1/rounds/:id                               → edit round fields
-//   DELETE /api/v1/rounds/:id                               → delete round
-//   POST   /api/v1/rounds/:id/groups/:groupId/members       → add player
+//   GET    /api/v1/rounds/:id                                 → round detail (includes is_organizer)
+//   GET    /api/v1/events/:eventId/members                    → event members for add-player picker
+//   PATCH  /api/v1/rounds/:id                                 → edit round fields
+//   DELETE /api/v1/rounds/:id                                 → delete round
+//   POST   /api/v1/rounds/:id/groups/:groupId/members         → add player
 //   DELETE /api/v1/rounds/:id/groups/:groupId/members/:userId → remove player
 
 import { useState } from "react";
@@ -36,35 +36,25 @@ import {
   Platform,
 } from "react-native";
 
-// useLocalSearchParams reads dynamic route params: /rounds/abc-123 → { id: "abc-123" }
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
-
-// apiToDisplay converts "YYYY-MM-DD" → "MM-DD-YY" for display
-// displayToApi converts "MM-DD-YY" → "YYYY-MM-DD" for sending to the API
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
-
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
 import ModalHeader from "@/components/ModalHeader";
 import SectionHeader from "@/components/SectionHeader";
-// UserSearchList + UserSummary — reuse the same search+pick component from Add Member flow.
-// UserSummary is { id, display_name, email }.
 import UserSearchList, { UserSummary } from "@/components/UserSearchList";
-// chunk: splits an array into equal-sized sub-arrays — used to render the
-// scoring format pill grid as rows. Shared across screens via utils/array.ts.
+// chunk: splits an array into equal-sized sub-arrays — used to render the scoring
+// format pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// SCORING_FORMATS: ALL valid scoring formats supported by the backend.
-// Displayed as a 2-column pill grid in the Edit Round form.
-// Note: this list intentionally differs from events/[id].tsx, which shows only
-// a simplified 4-format subset when scheduling a new round. This edit form
-// exposes every option so organizers can change to any format after creation.
+// All valid scoring formats — exposed in the Edit Round form so organizers can
+// change to any format after creation. The Schedule Round form shows a shorter list.
 const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "stroke",     label: "Stroke" },
   { value: "net_stroke", label: "Net Stroke" },
@@ -77,15 +67,13 @@ const SCORING_FORMATS: { value: string; label: string }[] = [
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-// GroupMember is one player assigned to a group.
 type GroupMember = {
   user_id: string;
-  round_player_id: string; // used internally; not displayed
+  round_player_id: string;
   display_name: string;
   email: string;
 };
 
-// RoundGroup is one tee-time group with its assigned players.
 type RoundGroup = {
   id: string;
   group_number: number;
@@ -94,22 +82,20 @@ type RoundGroup = {
   players: GroupMember[];
 };
 
-// RoundDetail is the full payload from GET /api/v1/rounds/:id.
 type RoundDetail = {
   id: string;
   event_id: string;
-  name: string;           // display name, e.g. "Round 1" or "Championship Round"
+  name: string;
   course_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
   status: string;         // "scheduled" | "active" | "completed"
   scoring_format: string;
   round_number: number;
-  // is_organizer is computed server-side so the client doesn't need an extra permission query.
+  // is_organizer is computed server-side so the client doesn't need a separate permission query.
   is_organizer: boolean;
   groups: RoundGroup[];
 };
 
-// EventMember is one row from GET /api/v1/events/:id/members.
 type EventMember = {
   user_id: string;
   display_name: string;
@@ -122,28 +108,25 @@ type EventMember = {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function RoundDetailScreen() {
-  // Read the dynamic route segment: /rounds/[id] → params.id
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
-
-  // t: active theme — drives all colors on this screen
   const t = useTheme();
 
-  // selectedGroupId: which group's "+ Add" was tapped. null = modal closed.
+  // selectedGroupId: which group's "+ Add Player" was tapped; null = modal closed.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  // memberSearch: search text in the Add Player modal (owned here so we can reset on close)
+  // memberSearch: owned here so it resets when the modal closes.
   const [memberSearch, setMemberSearch] = useState("");
 
-  // --- Edit Round modal state ---
-  const [editModalVisible, setEditModalVisible]     = useState(false);
-  const [editName, setEditName]                     = useState("");
-  const [editCourseName, setEditCourseName]         = useState("");
-  const [editDate, setEditDate]                     = useState("");         // MM-DD-YY display format
-  const [editScoringFormat, setEditScoringFormat]   = useState("stroke");
+  const [editModalVisible, setEditModalVisible]   = useState(false);
+  const [editName, setEditName]                   = useState("");
+  const [editCourseName, setEditCourseName]       = useState("");
+  const [editDate, setEditDate]                   = useState(""); // MM-DD-YY display format
+  const [editScoringFormat, setEditScoringFormat] = useState("stroke");
 
-  // --- Fetch round detail (groups + players + is_organizer) ---
+  // --- Queries ---
+
   const {
     data: round,
     isLoading: roundLoading,
@@ -162,8 +145,6 @@ export default function RoundDetailScreen() {
     enabled: !!id,
   });
 
-  // --- Fetch event members (for the add-player picker — only when modal is open) ---
-  // We need the event_id from the round before we can fetch members.
   const { data: eventMembers } = useQuery<EventMember[]>({
     queryKey: ["event", round?.event_id, "members"],
     queryFn: async () => {
@@ -174,23 +155,23 @@ export default function RoundDetailScreen() {
       if (!res.ok) throw new Error("Failed to fetch members");
       return res.json();
     },
-    // Only fetch when the add-player modal is open AND we have the event_id.
-    // This avoids an unnecessary network request on screen load.
+    // Only fetch when the Add Player modal is open and we have the event_id.
     enabled: !!selectedGroupId && !!round?.event_id,
   });
 
-  // --- Build the available-member list for the add-player picker ---
-  // Exclude anyone already assigned to ANY group in this round (a player can only
-  // be in one group per round). Map user_id → id to match UserSummary's shape.
+  // --- Derived values ---
+
+  // Exclude anyone already assigned to ANY group — a player can only be in one group per round.
   const assignedUserIds = new Set(
     round?.groups.flatMap((g) => g.players.map((p) => p.user_id)) ?? []
   );
-  // availableMembers is undefined while eventMembers is loading → UserSearchList shows spinner
+  // Returns undefined while loading — UserSearchList shows a spinner for undefined.
   const availableMembers: UserSummary[] | undefined = eventMembers
     ?.filter((m) => !assignedUserIds.has(m.user_id))
     .map((m) => ({ id: m.user_id, display_name: m.display_name, email: m.email }));
 
-  // --- Mutation: add player to group ---
+  // --- Mutations ---
+
   const addPlayerMutation = useMutation({
     mutationFn: async ({ groupId, userId }: { groupId: string; userId: string }) => {
       const token = await getToken();
@@ -212,7 +193,6 @@ export default function RoundDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
-      // Refresh the round so the new player appears in the group card immediately.
       queryClient.invalidateQueries({ queryKey: ["round", id] });
       setSelectedGroupId(null);
       setMemberSearch("");
@@ -222,7 +202,6 @@ export default function RoundDetailScreen() {
     },
   });
 
-  // --- Mutation: remove player from group ---
   const removePlayerMutation = useMutation({
     mutationFn: async ({ groupId, userId }: { groupId: string; userId: string }) => {
       const token = await getToken();
@@ -246,12 +225,11 @@ export default function RoundDetailScreen() {
     },
   });
 
-  // --- Mutation: update round fields ---
   const updateRoundMutation = useMutation({
     mutationFn: async (data: {
       name?: string;
       course_name?: string;
-      scheduled_date?: string; // "YYYY-MM-DD"
+      scheduled_date?: string;
       scoring_format?: string;
     }) => {
       const token = await getToken();
@@ -270,7 +248,6 @@ export default function RoundDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
-      // Refresh round detail and the parent event's rounds list so the card updates too.
       queryClient.invalidateQueries({ queryKey: ["round", id] });
       if (round?.event_id) {
         queryClient.invalidateQueries({ queryKey: ["event", round.event_id, "rounds"] });
@@ -282,7 +259,6 @@ export default function RoundDetailScreen() {
     },
   });
 
-  // --- Mutation: delete round ---
   const deleteRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
@@ -296,11 +272,9 @@ export default function RoundDetailScreen() {
       }
     },
     onSuccess: () => {
-      // Invalidate the parent event's rounds list so the deleted round disappears there too.
       if (round?.event_id) {
         queryClient.invalidateQueries({ queryKey: ["event", round.event_id, "rounds"] });
       }
-      // Navigate back — this round no longer exists.
       router.back();
     },
     onError: (err: Error) => {
@@ -308,7 +282,8 @@ export default function RoundDetailScreen() {
     },
   });
 
-  // --- Handler: tap a player row to remove them ---
+  // --- Handlers ---
+
   const handleRemovePlayer = (group: RoundGroup, player: GroupMember) => {
     Alert.alert(
       "Remove player?",
@@ -325,18 +300,15 @@ export default function RoundDetailScreen() {
     );
   };
 
-  // --- Handler: open Edit Round modal pre-filled with current values ---
   const openEditModal = () => {
     if (!round) return;
     setEditName(round.name);
     setEditCourseName(round.course_name);
-    // Convert the API's YYYY-MM-DD date to MM-DD-YY for the DateInput component.
     setEditDate(apiToDisplay(round.scheduled_date));
     setEditScoringFormat(round.scoring_format);
     setEditModalVisible(true);
   };
 
-  // --- Handler: save edits ---
   const handleSaveEdit = () => {
     if (!editName.trim()) {
       Alert.alert("Name required", "Round name cannot be empty.", [{ text: "OK" }]);
@@ -345,13 +317,11 @@ export default function RoundDetailScreen() {
     updateRoundMutation.mutate({
       name: editName.trim(),
       course_name: editCourseName.trim() || undefined,
-      // Convert MM-DD-YY → YYYY-MM-DD for the API, or undefined if no date was entered.
       scheduled_date: displayToApi(editDate.trim()) || undefined,
       scoring_format: editScoringFormat,
     });
   };
 
-  // --- Handler: delete round with confirmation ---
   const handleDeleteRound = () => {
     Alert.alert(
       "Delete round?",
@@ -398,8 +368,7 @@ export default function RoundDetailScreen() {
   return (
     <View className={`flex-1 ${t.screen}`}>
 
-      {/* ── Custom back header ──────────────────────────────────────────────── */}
-      {/* Shows the round name in the title and an edit icon for organizers. */}
+      {/* Custom back header — shows round name and edit icon for organizers */}
       <View
         className={`${t.surface} border-b ${t.divider} px-4 pt-14 pb-3 flex-row items-center gap-3`}
       >
@@ -409,7 +378,6 @@ export default function RoundDetailScreen() {
         <Text className={`text-lg font-bold flex-1 ${t.textPrimary}`} numberOfLines={1}>
           {round.name}
         </Text>
-        {/* Edit icon — only visible to organizers. Tapping opens the Edit Round modal. */}
         {round.is_organizer && (
           <TouchableOpacity onPress={openEditModal} hitSlop={8}>
             <Ionicons name="pencil-outline" size={20} color="#2563eb" />
@@ -422,18 +390,15 @@ export default function RoundDetailScreen() {
         {/* ── Round info card ─────────────────────────────────────────────────── */}
         <View className={`${t.surface} rounded-2xl p-4 mb-6 border ${t.border}`}>
 
-          {/* Status chip — categorical color, not themed */}
           <View className="flex-row items-center gap-2 mb-3">
             <RoundStatusChip status={round.status} />
           </View>
 
-          {/* Course */}
           <View className="flex-row items-center gap-2 mb-2">
             <Ionicons name="golf-outline" size={14} color={t.colors.tabBarInactive} />
             <Text className={`text-sm ${t.textSecondary}`}>{round.course_name}</Text>
           </View>
 
-          {/* Date */}
           <View className="flex-row items-center gap-2 mb-2">
             <Ionicons name="calendar-outline" size={14} color={t.colors.tabBarInactive} />
             <Text className={`text-sm ${t.textSecondary}`}>
@@ -441,7 +406,7 @@ export default function RoundDetailScreen() {
             </Text>
           </View>
 
-          {/* Scoring format — capitalize converts "net_stroke" → "Net stroke" */}
+          {/* capitalize converts "net_stroke" → "Net stroke" */}
           <View className="flex-row items-center gap-2">
             <Ionicons name="podium-outline" size={14} color={t.colors.tabBarInactive} />
             <Text className={`text-sm capitalize ${t.textSecondary}`}>
@@ -451,7 +416,6 @@ export default function RoundDetailScreen() {
         </View>
 
         {/* ── Groups section ──────────────────────────────────────────────────── */}
-        {/* SectionHeader shows the count; showAction is false — group "+" buttons are per-group */}
         <SectionHeader
           title={`Groups (${round.groups.length})`}
           actionLabel=""
@@ -465,7 +429,7 @@ export default function RoundDetailScreen() {
               key={group.id}
               className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
             >
-              {/* Group header row: group number + optional tee time */}
+              {/* Group header: number + optional tee time */}
               <View className={`px-4 py-3 flex-row items-center justify-between border-b ${t.divider}`}>
                 <Text className={`font-bold text-base ${t.textPrimary}`}>
                   Group {group.group_number}
@@ -478,20 +442,19 @@ export default function RoundDetailScreen() {
                 ) : null}
               </View>
 
-              {/* Player slots — always show 4 rows; empty slots shown as dashes */}
+              {/* Always render 4 player slots; empty slots show a dash */}
               {Array.from({ length: 4 }, (_, slotIdx) => {
                 const player = group.players[slotIdx];
                 return (
                   <View
                     key={slotIdx}
                     className={`px-4 py-3 flex-row items-center gap-3 ${
-                      // Divider between every row except the last
                       slotIdx < 3 ? `border-b ${t.divider}` : ""
                     }`}
                   >
                     {player ? (
-                      // Assigned player row — tappable to remove (organizers only)
                       round.is_organizer ? (
+                        // Organizer: player row is tappable to remove
                         <TouchableOpacity
                           className="flex-1 flex-row items-center gap-3"
                           onPress={() => handleRemovePlayer(group, player)}
@@ -515,7 +478,6 @@ export default function RoundDetailScreen() {
                               {player.email}
                             </Text>
                           </View>
-                          {/* Trash icon hint — visible so user knows the row is tappable */}
                           <Ionicons
                             name="close-circle-outline"
                             size={18}
@@ -523,7 +485,7 @@ export default function RoundDetailScreen() {
                           />
                         </TouchableOpacity>
                       ) : (
-                        // Non-organizers see the player row but it isn't tappable
+                        // Non-organizer: player row is read-only
                         <View className="flex-1 flex-row items-center gap-3">
                           <View className="w-8 h-8 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
                             <Text className="text-green-700 font-bold text-xs">
@@ -544,7 +506,6 @@ export default function RoundDetailScreen() {
                         </View>
                       )
                     ) : (
-                      // Empty slot — show a dash placeholder
                       <Text className={`text-sm italic ${t.textTertiary}`}>
                         — empty slot
                       </Text>
@@ -553,7 +514,7 @@ export default function RoundDetailScreen() {
                 );
               })}
 
-              {/* "+ Add" button — shown only to organizers when the group has fewer than 4 players */}
+              {/* "+ Add Player" — only for organizers when the group has fewer than 4 players */}
               {round.is_organizer && group.players.length < 4 && (
                 <TouchableOpacity
                   className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
@@ -576,10 +537,7 @@ export default function RoundDetailScreen() {
 
       </ScrollView>
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* ── Edit Round Modal ────────────────────────────────────────────────── */}
-      {/* Opens when the organizer taps the pencil icon in the header. */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
 
       <Modal
         visible={editModalVisible}
@@ -600,7 +558,6 @@ export default function RoundDetailScreen() {
                 disabled={updateRoundMutation.isPending || deleteRoundMutation.isPending}
               />
 
-              {/* Round name — required; cannot be saved as empty */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Round Name <Text className="text-red-500">*</Text>
@@ -617,7 +574,6 @@ export default function RoundDetailScreen() {
                 />
               </View>
 
-              {/* Course name — optional to change; blank = keep current course */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Course Name
@@ -634,7 +590,6 @@ export default function RoundDetailScreen() {
                 />
               </View>
 
-              {/* Date — uses DateInput for auto-formatting + native picker */}
               <View className="mb-6">
                 <DateInput
                   label="Date"
@@ -645,7 +600,7 @@ export default function RoundDetailScreen() {
                 />
               </View>
 
-              {/* Scoring format — 2-column pill grid matching the Schedule Round form */}
+              {/* Scoring format — 2-column pill grid */}
               <View className="mb-8">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>
                   Scoring Format
@@ -654,7 +609,6 @@ export default function RoundDetailScreen() {
                   {chunk(SCORING_FORMATS, 2).map((row, rowIdx) => (
                     <View key={rowIdx} className="flex-row gap-2">
                       {row.map((fmt) => {
-                        // isSelected: true if this pill is the active scoring format
                         const isSelected = editScoringFormat === fmt.value;
                         return (
                           <TouchableOpacity
@@ -682,7 +636,6 @@ export default function RoundDetailScreen() {
                 </View>
               </View>
 
-              {/* Save button */}
               <TouchableOpacity
                 className={`rounded-xl py-4 items-center mb-4 ${
                   updateRoundMutation.isPending ? t.primaryBgDisabled : t.primaryBg
@@ -697,9 +650,7 @@ export default function RoundDetailScreen() {
                 )}
               </TouchableOpacity>
 
-              {/* Delete Round — destructive action at the bottom of the modal.
-                  Uses categorical red (not a theme token) because this is a brand-specific
-                  danger color, not a UI surface color. */}
+              {/* Delete Round — always red, not themed */}
               <TouchableOpacity
                 className="rounded-xl py-4 items-center border border-red-200 bg-red-50"
                 onPress={handleDeleteRound}
@@ -717,10 +668,7 @@ export default function RoundDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* ── Add Player Modal ────────────────────────────────────────────────── */}
-      {/* Opens when the user taps "+ Add Player" on a group card. */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
 
       <Modal
         visible={!!selectedGroupId}
@@ -744,9 +692,7 @@ export default function RoundDetailScreen() {
             />
           </View>
 
-          {/* UserSearchList handles the search box, loading state, and item list.
-              availableMembers is undefined while loading → shows a spinner.
-              We filter out already-assigned members before passing the list. */}
+          {/* availableMembers is undefined while loading — UserSearchList shows a spinner. */}
           <View className="flex-1">
             <UserSearchList
               users={availableMembers}

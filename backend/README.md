@@ -60,11 +60,12 @@ Copy the example file and fill in the values:
 cp .env.example .env
 ```
 
-| Variable | Description | Example |
+| Variable | Description | Where to find it |
 |---|---|---|
-| `PORT` | Port the server listens on | `8080` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://postgres:password@localhost:5432/golf_league?sslmode=disable` |
-| `CLERK_SECRET_KEY` | Secret key from Clerk Dashboard → API Keys | `sk_test_...` |
+| `PORT` | Port the server listens on (default: `8080`) | — |
+| `DATABASE_URL` | PostgreSQL connection string | Railway dashboard → database service |
+| `CLERK_SECRET_KEY` | Clerk Backend API key | Clerk Dashboard → API Keys |
+| `CLERK_JWKS_URL` | Clerk's public key endpoint for JWT verification | Clerk Dashboard → API Keys → Advanced |
 | `ENV` | Runtime environment | `development` or `production` |
 
 ### Running Locally
@@ -137,17 +138,18 @@ Role enforcement is then applied per-route with `RequireRole("admin", "manager")
 
 The WebSocket hub in `internal/websocket/hub.go` broadcasts score updates to all clients watching a specific round. When a score is submitted via the REST API, the handler calls `hub.BroadcastToRound(roundID, data)` and all connected mobile clients receive the update instantly.
 
-## Docker
+## Docker / Railway Deployment
 
 The `Dockerfile` uses a two-stage build:
 
 1. **Build stage** (`golang:1.24-alpine`) — compiles the Go binary
 2. **Runtime stage** (`alpine:latest`) — contains only the binary and migrations folder (~10MB total)
 
+**Local testing of the Docker image:**
 ```bash
-# Build the image
 docker build -t golf-league-backend .
-
-# Run it
 docker run -p 8080:8080 --env-file .env golf-league-backend
 ```
+
+**Production (Railway):**
+Railway detects the `Dockerfile` automatically and builds + deploys it on every push to `main`. Environment variables are set in the Railway project dashboard — no manual Docker commands needed for deployment.

@@ -1,7 +1,6 @@
 // Package middleware contains HTTP middleware functions for the Golf League API.
-// Middleware sits between the HTTP server and route handlers — it runs on every
-// request that passes through it, making it the right place for cross-cutting
-// concerns like authentication, logging, and rate limiting.
+// Middleware runs on every request before route handlers — the right place for
+// cross-cutting concerns like authentication and role checking.
 package middleware
 
 import (
@@ -11,69 +10,51 @@ import (
 	"strings"
 	"time"
 
-	// fiber is the HTTP framework; fiber.Handler is the function signature for middleware
 	"github.com/gofiber/fiber/v2"
-	// jwt is used to parse and verify JSON Web Tokens (JWTs)
 	"github.com/golang-jwt/jwt/v5"
-	// keyfunc fetches Clerk's public keys (JWKS) and caches them for signature verification.
-	// JWT signature verification requires the matching public key from Clerk's key set —
-	// keyfunc handles fetching, caching, and automatic key rotation transparently.
+
+	// keyfunc fetches Clerk's public JWKS keys, caches them, and handles key rotation.
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
 
-	// gorm is our ORM — used here to find or create the user record in Postgres
 	"gorm.io/gorm"
 )
 
 // Claims defines the data we expect inside a Clerk JWT payload.
-// Clerk's default token includes standard fields (Subject = Clerk user ID, expiry, etc.).
-// We also read custom claims that you add via the Clerk dashboard JWT template:
+// Standard fields (Subject = Clerk user ID, expiry, etc.) come from jwt.RegisteredClaims.
+// The custom claims below are added via the Clerk dashboard JWT template:
 //
-//	"role":  "{{user.public_metadata.role}}"   — the user's permission level
-//	"email": "{{user.primary_email_address}}"  — used to populate our users table
-//	"name":  "{{user.full_name}}"              — display name for our users table
-//
-// Without these custom claims in the template, role will be empty (defaults to "user")
-// and email/name will use placeholder values.
+//	"role":  "{{user.public_metadata.role}}"
+//	"email": "{{user.primary_email_address}}"
+//	"name":  "{{user.full_name}}"
 type Claims struct {
-	jwt.RegisteredClaims        // Standard JWT fields: Subject (user ID), ExpiresAt, IssuedAt, etc.
-	Role                 string `json:"role"`  // Custom claim: "admin", "manager", or "user"
-	Email                string `json:"email"` // Custom claim: the user's primary email address
-	Name                 string `json:"name"`  // Custom claim: the user's full name
+	jwt.RegisteredClaims
+	Role  string `json:"role"` // "admin", "manager", or "user"
+	Email string `json:"email"`
+	Name  string `json:"name"`
 }
 
 // bearerPrefix is the standard HTTP Authorization header prefix for JWTs.
-// Defined as a constant to avoid duplicating the literal string across the file.
 const bearerPrefix = "Bearer "
 
 // Auth returns a Fiber middleware handler that:
-//  1. Validates the JWT from the "Authorization: Bearer <token>" header,
-//     verifying its cryptographic signature against Clerk's public JWKS keys
-//  2. Finds the matching user in our database (or creates one on first visit)
-//  3. Syncs the user's role from the JWT into the database
-//  4. Stores the user's internal UUID and role in the request context (c.Locals)
-//     so downstream handlers can read them without re-parsing the token
+//  1. Validates the JWT from the "Authorization: Bearer <token>" header.
+//  2. Finds the matching user in our database (or creates one on first visit).
+//  3. Syncs the user's role, name, and email from the JWT into the database.
+//  4. Stores the user's internal UUID and role in c.Locals for downstream handlers.
 //
-// This is a closure — a function that returns another function. The JWKS key
-// function is initialized once here (at server startup) and reused on every
-// request, avoiding repeated network calls to Clerk's JWKS endpoint.
+// The JWKS key function is initialized once here (at server startup) via a closure
+// and reused on every request, avoiding repeated network calls to Clerk.
 func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
-	// Fetch Clerk's JSON Web Key Set (JWKS) at startup and cache it.
-	// JWKS is a set of public keys that Clerk uses to sign JWTs. We fetch them
-	// once and verify every incoming token against them — this prevents token
-	// forgery because only Clerk holds the corresponding private key.
-	// keyfunc also handles automatic key rotation in the background.
+	// Fetch Clerk's JWKS at startup and cache it. keyfunc handles automatic key rotation.
+	// Without the JWKS we cannot verify any token — fatal at startup, not silently at request time.
 	jwks, err := keyfunc.NewDefault([]string{cfg.ClerkJWKSURL})
 	if err != nil {
-		// Fatal: without the JWKS we cannot verify any token. Fail at startup,
-		// not silently at request time. Check that CLERK_JWKS_URL is set in .env.
 		log.Fatalf("Failed to load Clerk JWKS — is CLERK_JWKS_URL set? %v", err)
 	}
 
 	return func(c *fiber.Ctx) error {
-		// --- Step 1: Extract the token from the Authorization header ---
-
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, bearerPrefix) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -81,15 +62,11 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		// Strip the "Bearer " prefix to get just the raw JWT string
 		tokenStr := strings.TrimPrefix(authHeader, bearerPrefix)
 
-		// --- Step 2: Parse and VERIFY the JWT signature ---
-		// jwt.ParseWithClaims checks:
-		//   • The token's "kid" (key ID) header → looks up the matching public key in the JWKS
-		//   • The cryptographic signature — rejects any token not signed by Clerk's private key
-		//   • The expiry ("exp" claim) — rejects tokens that have expired
-		// An attacker cannot forge a valid signature without Clerk's private key.
+		// jwt.ParseWithClaims verifies the cryptographic signature, the key ID (kid),
+		// and the expiry claim. An attacker cannot forge a valid signature without
+		// Clerk's private key.
 		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, jwks.Keyfunc)
 		if err != nil || !token.Valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -104,7 +81,7 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		// claims.Subject is the standard JWT "sub" field — Clerk sets it to the Clerk user ID
+		// claims.Subject is the standard JWT "sub" field — Clerk sets it to the Clerk user ID.
 		clerkUserID := claims.Subject
 		if clerkUserID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -112,43 +89,32 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		// --- Step 3: Find or create the user in our database ---
-		// This is "lazy user sync": the first time a user hits any authenticated endpoint,
-		// we create their record in our database. On subsequent requests we just look them up.
-
-		// Determine the role from the JWT claim, defaulting to "user" if not set
-		// (e.g. if the Clerk JWT template hasn't been configured yet)
+		// Lazy user sync: on first request we create the user record; subsequently we look them up.
 		role := roleFromClaim(claims.Role)
 
-		// Build placeholder email and name in case the JWT template doesn't include them.
+		// Build placeholder email/name if the JWT template isn't configured yet.
 		// These use the Clerk user ID so they're deterministic and unique.
-		// They should be replaced by the real values once the JWT template is set up.
 		email := claims.Email
 		if email == "" {
-			// Placeholder: "user_2abc123@clerk.local" — clearly not real, and unique per user
 			email = fmt.Sprintf("%s@clerk.local", clerkUserID)
 		}
 
 		name := claims.Name
 		if name == "" {
-			name = "User" // Generic fallback display name
+			name = "User"
 		}
 
 		var user models.User
 
-		// Try to find an existing user by their Clerk ID
 		result := db.Where("clerk_id = ?", clerkUserID).First(&user)
 
 		if result.Error != nil {
-			// User not found — create a new record for them
-			// gorm.ErrRecordNotFound is the expected "not found" error; anything else is a DB problem
 			if result.Error != gorm.ErrRecordNotFound {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "database error",
 				})
 			}
 
-			// Create the user row — GORM will call INSERT and populate user.ID with the new UUID
 			user = models.User{
 				ClerkID:     &clerkUserID,
 				DisplayName: name,
@@ -161,61 +127,40 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 				})
 			}
 
-			// If no role claim came through in the JWT, public_metadata.role is not yet set
-			// in Clerk for this user. Set it to "user" now so that future JWTs (once the
-			// JWT template is configured to read public_metadata.role) carry the correct
-			// default role.
-			//
-			// This only runs on new user creation — never on subsequent requests — so there
-			// is no risk of accidentally overwriting a role elevated to "admin" or "manager"
-			// after the fact. The guard is: if the JWT already contained a role claim, Clerk
-			// already has the metadata set and we skip this call entirely.
+			// Set public_metadata.role = "user" in Clerk so future JWTs carry the role claim.
+			// Only called when claims.Role == "" (no existing role in Clerk metadata).
+			// Cannot overwrite "admin" or "manager" because those would already appear in the JWT.
+			// Best-effort: failure is logged but doesn't block the user's first request.
 			if claims.Role == "" {
 				if err := setDefaultRoleInClerk(cfg.ClerkSecretKey, clerkUserID); err != nil {
-					// Log and continue — the user was created in our DB with role "user".
-					// The Clerk metadata update is best-effort; if it fails, their JWT won't
-					// carry the role claim until the metadata is set manually in the Clerk dashboard.
 					log.Printf("warning: could not set default role in Clerk for %s: %v", clerkUserID, err)
 				}
 			}
 		} else {
-			// User found — sync any profile fields that may have changed in Clerk.
-			// We collect all changed fields into a single Updates() call to avoid
-			// multiple round-trips to the database per request.
+			// User found — sync changed fields from the JWT in a single Updates() call.
 			updates := map[string]any{}
 
-			// Sync role only when the JWT explicitly carries a role claim.
-			// Skipping when claims.Role is empty prevents accidentally demoting a user
-			// whose role was set via the Clerk dashboard but whose JWT template isn't
-			// configured yet (it would come through as "" → default "user").
+			// Only sync role when the JWT explicitly carries one — avoids accidentally demoting
+			// a user whose Clerk JWT template isn't configured yet (role would come as "").
 			if claims.Role != "" && user.Role != role {
 				updates["role"] = role
 			}
 
-			// Sync display name when Clerk returned a non-empty name AND it differs
-			// from what we have stored. We use claims.Name (the raw JWT value) rather
-			// than the local `name` variable so we never sync the "User" fallback
-			// placeholder over a real name that's already in the database.
+			// Use claims.Name / claims.Email (raw JWT values) to avoid syncing placeholders
+			// over real values already in the database.
 			if claims.Name != "" && user.DisplayName != claims.Name {
 				updates["display_name"] = claims.Name
 			}
-
-			// Sync email when Clerk returns one and it differs from our record.
-			// This handles the case where a user changes their primary email in Clerk.
-			// Similarly, use claims.Email (raw) to avoid syncing the "@clerk.local"
-			// placeholder over a real email already in the database.
 			if claims.Email != "" && user.Email != claims.Email {
 				updates["email"] = claims.Email
 			}
 
 			if len(updates) > 0 {
-				// Updates() with a map uses the map keys as column names.
-				// Only the specified columns are touched — no full-row overwrite.
+				// Updates() with a map only touches the specified columns.
 				db.Model(&user).Updates(updates)
 
-				// Mirror the changes in the in-memory struct so downstream handlers
-				// in this same request see the freshly-synced values without
-				// needing another database round-trip.
+				// Mirror changes in the in-memory struct so downstream handlers in this
+				// request see fresh values without an extra DB round-trip.
 				if r, ok := updates["role"].(models.UserRole); ok {
 					user.Role = r
 				}
@@ -228,19 +173,16 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		// --- Step 4: Store user info in the request context ---
-		// c.Locals is a key-value store scoped to this single request.
-		// Handlers read "userID" (our internal UUID) and "userRole" from here.
+		// Store user info in request-scoped locals for downstream handlers.
 		c.Locals("userID", user.ID.String())
 		c.Locals("userRole", string(user.Role))
 
-		// Pass control to the next middleware or route handler
 		return c.Next()
 	}
 }
 
 // roleFromClaim converts the raw role string from the JWT into our typed UserRole enum.
-// If the claim is missing or unrecognised, it defaults to "user" (least privileged).
+// Unknown or empty values default to "user" (least privileged).
 func roleFromClaim(s string) models.UserRole {
 	switch s {
 	case "admin":
@@ -248,33 +190,24 @@ func roleFromClaim(s string) models.UserRole {
 	case "manager":
 		return models.UserRoleManager
 	default:
-		// Unknown or empty role — default to regular user
 		return models.UserRoleUser
 	}
 }
 
 // setDefaultRoleInClerk calls the Clerk Backend API to set public_metadata.role = "user"
-// for a newly created user who doesn't yet have a role in their Clerk metadata.
+// for a newly created user who doesn't yet have a role in Clerk metadata.
 //
 // Why this matters: the JWT template reads {{user.public_metadata.role}} to populate the
-// "role" claim. If public_metadata.role is absent, the claim is empty and the auth
-// middleware can't distinguish admins from new users on future sign-ins. Setting the
-// default here ensures every user has an explicit role in Clerk from their very first
-// sign-in.
+// "role" claim. Without it, the claim is empty and we can't distinguish roles on future sign-ins.
 //
-// Safety: this is only called when claims.Role == "" (no existing role in the JWT),
-// which means public_metadata.role was not set before this user signed in. If a role
-// was already present in Clerk metadata it would appear in the JWT claim, and this
-// function would never be called — so it cannot overwrite "admin" or "manager".
+// Safety: only called when claims.Role == "" (no existing role in the JWT), so it cannot
+// overwrite "admin" or "manager" — those would already appear in the token if set.
 //
-// The Clerk PATCH /v1/users/{id} endpoint replaces the entire public_metadata object,
-// so we only send {"role": "user"} — any other metadata keys this user might have had
-// would be lost. In practice, brand new users have no prior metadata.
+// Note: Clerk's PATCH /v1/users/{id} replaces the entire public_metadata object,
+// so we only send {"role": "user"}. New users have no prior metadata to lose.
 func setDefaultRoleInClerk(secretKey, clerkUserID string) error {
-	// Build the JSON body. Only the "role" key is included — see note above on replacement.
 	body := strings.NewReader(`{"public_metadata": {"role": "user"}}`)
 
-	// Clerk Backend API endpoint for updating a user's metadata
 	url := fmt.Sprintf("https://api.clerk.com/v1/users/%s", clerkUserID)
 
 	req, err := http.NewRequest(http.MethodPatch, url, body)
@@ -282,12 +215,10 @@ func setDefaultRoleInClerk(secretKey, clerkUserID string) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 
-	// Clerk authenticates Backend API calls with the secret key as a Bearer token
 	req.Header.Set("Authorization", "Bearer "+secretKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	// 5-second timeout — this is a best-effort call on a hot path (user sign-in).
-	// We don't want a slow Clerk API to block the user's first request for long.
+	// 5-second timeout — best-effort call on a hot path (user sign-in).
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	resp, err := client.Do(req)
@@ -296,7 +227,6 @@ func setDefaultRoleInClerk(secretKey, clerkUserID string) error {
 	}
 	defer resp.Body.Close()
 
-	// Any 2xx status means success. Clerk returns 200 with the updated user object.
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("clerk API returned status %d", resp.StatusCode)
 	}

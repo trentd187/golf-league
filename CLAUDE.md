@@ -20,7 +20,7 @@ When updating, **edit the relevant existing section** rather than appending a ne
 ## Project Overview
 
 **Golf Stuff In Here** is a mobile-first golf league and tournament management app.
-- **Backend:** Go + Fiber v2 API server with WebSockets, deployed on AWS ECS via Docker
+- **Backend:** Go + Fiber v2 API server with WebSockets, deployed on Railway (Docker-based)
 - **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
 - **Auth:** Clerk (Google OAuth + Email OTP; sign-in and sign-up share one screen with email OTP fallback to sign-up)
@@ -34,23 +34,14 @@ The user is **learning TypeScript** and has **intermediate Go knowledge**. Alway
 
 ## Universal Rules
 
-### Comments Are Required
-Every file must have comments. This is non-negotiable. The user is learning and relies on comments to understand the code.
+### Comments
+Every file must have a file-level comment explaining its purpose. Beyond that, comment to explain *why*, not *what* — the code itself shows what it does.
 
-- **File-level comment** at the top of every file explaining its purpose and role in the system
-- **Section comments** before logical groupings of code
-- **Inline comments** on any line that isn't immediately obvious
-- For Go: use `//` comments
-- For TypeScript/TSX: use `//` and `{/* */}` (in JSX)
-- For SQL: use `--` comments
-- For config files (JS): use `//` comments
-
-### No Unexplained Magic
-If a library, pattern, or language feature is non-obvious, explain it. Examples:
-- Why `_` discards a value in Go
-- What `??` (nullish coalescing) does in TypeScript
-- What a GORM struct tag like `uniqueIndex:idx_name` means
-- What `go hub.Run()` does (goroutine)
+- **File-level comment** at the top of every file (required)
+- **Explain non-obvious decisions** — why a pattern was chosen, why something works a particular way
+- **Explain non-obvious language/library features** (e.g. `_` in Go, `??` in TypeScript, GORM struct tags, goroutines)
+- **Skip comments that restate the code** — if the code is clear, no comment is needed
+- For Go: `//`  |  For TypeScript/TSX: `//` and `{/* */}`  |  For SQL: `--`
 
 ---
 
@@ -600,12 +591,17 @@ Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test
 
 ---
 
-## Docker
+## Docker / Railway Deployment
 
-- `docker-compose.yml` at the repo root starts PostgreSQL and the backend together
+- `docker-compose.yml` at the repo root is for **local development only** — starts PostgreSQL and the backend together
 - The backend waits for the database healthcheck before starting (`depends_on: condition: service_healthy`)
 - Migrations run automatically on every server startup via `database.RunMigrations()`
 - The Dockerfile uses a multi-stage build: `golang:1.24-alpine` to build, `alpine:latest` to run
+
+**Production deployment is Railway:**
+- Railway detects the `Dockerfile` in `backend/` and builds + deploys it automatically on push to `main`
+- PostgreSQL is provisioned as a Railway managed database service (no self-managed RDS)
+- Environment variables (`DATABASE_URL`, `CLERK_SECRET_KEY`, `CLERK_JWKS_URL`, etc.) are configured in the Railway project settings
 
 ---
 

@@ -1,49 +1,42 @@
 // Package websocket implements a WebSocket Hub for broadcasting real-time score updates.
-// WebSockets are persistent two-way connections between the server and clients — unlike
-// regular HTTP where the client always initiates the request, WebSockets let the server
-// push data to clients instantly. This is used so players watching a live round see
-// score updates the moment they're entered, without polling the API repeatedly.
+// WebSockets are persistent two-way connections — the server can push data to clients
+// instantly without polling. Used so players watching a live round see score updates
+// the moment they're entered.
 package websocket
 
-import "sync" // sync provides synchronization primitives like mutexes for safe concurrent access
+import "sync" // sync provides the RWMutex for safe concurrent map access
 
 // Client represents a single connected WebSocket client.
-// Each player watching a live round has one Client instance on the server.
 type Client struct {
-	RoundID string      // Which round this client is watching — used to route messages to the right audience
-	Send    chan []byte // Buffered channel of outgoing messages; the Hub sends data here, the WebSocket writes it to the client
+	RoundID string      // Which round this client is watching
+	Send    chan []byte // Buffered channel of outgoing messages
 }
 
 // Message is a unit of data to broadcast to all clients watching a specific round.
-// By attaching the RoundID, the Hub knows which group of clients should receive it.
 type Message struct {
-	RoundID string // The round this message belongs to
-	Data    []byte // The raw bytes to send (typically JSON-encoded score data)
+	RoundID string
+	Data    []byte // Typically JSON-encoded score data
 }
 
 // Hub manages all active WebSocket connections, grouped by round ID.
-// It runs in its own goroutine and processes registration, unregistration, and
-// broadcast events through channels — this keeps all map access on a single goroutine,
-// which avoids data races (concurrent map reads/writes cause panics in Go).
+// It runs in its own goroutine and processes events through channels — keeping all
+// map access on a single goroutine avoids data races (concurrent map reads/writes panic in Go).
 type Hub struct {
-	// clients is a nested map: roundID -> set of Client pointers -> bool (true = connected).
-	// Using a map[*Client]bool as a "set" is a common Go idiom because Go has no built-in set type.
+	// clients is a nested map: roundID → set of Client pointers.
+	// map[*Client]bool as a "set" is a common Go idiom — no built-in set type exists.
 	clients map[string]map[*Client]bool
 
-	broadcast  chan *Message // Incoming messages to be sent to all clients watching a given round
-	register   chan *Client  // Signals that a new client has connected and should be tracked
-	unregister chan *Client  // Signals that a client has disconnected and should be removed
+	broadcast  chan *Message
+	register   chan *Client
+	unregister chan *Client
 
-	// mu (mutex) protects the clients map when it's accessed from broadcast (RLock/RUnlock)
-	// while the main loop modifies it (Lock/Unlock). A RWMutex allows multiple concurrent
-	// readers OR one exclusive writer — suitable since broadcasts just read the client list.
+	// RWMutex allows multiple concurrent readers (broadcast) or one exclusive writer (register/unregister).
 	mu sync.RWMutex
 }
 
-// NewHub creates and initializes a Hub with empty channels and maps.
-// The broadcast channel has a buffer of 256 so writers don't block immediately
-// if the Hub goroutine is briefly busy. register and unregister are unbuffered
-// because those operations need to complete synchronously.
+// NewHub creates and initializes a Hub.
+// broadcast is buffered (256) so writers don't block immediately if the Hub goroutine is busy.
+// register and unregister are unbuffered — those operations complete synchronously.
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[string]map[*Client]bool),
@@ -53,31 +46,26 @@ func NewHub() *Hub {
 	}
 }
 
-// Run is the Hub's main event loop. It must be called in a goroutine ("go hub.Run()").
-// It blocks forever, processing one event at a time via a select statement.
-// select is like a switch but for channels — it waits until one of the cases has data ready.
+// Run is the Hub's main event loop. Must be called in a goroutine ("go hub.Run()").
+// select blocks until one of the cases has data ready — like a switch but for channels.
 func (h *Hub) Run() {
 	for {
 		select {
 
-		// A new client has connected — add it to the clients map under its RoundID
 		case client := <-h.register:
 			h.mu.Lock()
-			// If this is the first client for this round, initialize the inner map
 			if h.clients[client.RoundID] == nil {
 				h.clients[client.RoundID] = make(map[*Client]bool)
 			}
 			h.clients[client.RoundID][client] = true
 			h.mu.Unlock()
 
-		// A client has disconnected — remove it from the map and close its Send channel
 		case client := <-h.unregister:
 			h.mu.Lock()
 			if clients, ok := h.clients[client.RoundID]; ok {
 				if _, ok := clients[client]; ok {
-					delete(clients, client) // Remove this client from the round's set
-					close(client.Send)      // Closing the channel signals the WebSocket writer goroutine to stop
-					// Clean up the round's map entry if no clients are left — avoids memory leaks
+					delete(clients, client)
+					close(client.Send) // Closing the channel signals the WebSocket writer goroutine to stop
 					if len(clients) == 0 {
 						delete(h.clients, client.RoundID)
 					}
@@ -85,21 +73,17 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 
-		// A message arrived to broadcast to all clients watching a specific round
 		case msg := <-h.broadcast:
-			// Use RLock (read lock) here because we're only reading the clients map,
-			// not modifying it. Multiple goroutines can hold an RLock simultaneously.
+			// RLock: we're only reading the clients map, not modifying it.
 			h.mu.RLock()
 			clients := h.clients[msg.RoundID]
 			h.mu.RUnlock()
 
 			for client := range clients {
 				select {
-				// Try to send the message to the client's outgoing channel
 				case client.Send <- msg.Data:
-				// If the channel buffer is full, the client is too slow — drop and disconnect it.
-				// The default case makes this non-blocking: if Send is full we unregister
-				// rather than blocking the broadcast loop for all other clients.
+				// If the channel buffer is full, the client is too slow — drop and disconnect.
+				// The default case makes this non-blocking so we don't stall all other clients.
 				default:
 					h.unregister <- client
 				}
@@ -109,13 +93,12 @@ func (h *Hub) Run() {
 }
 
 // BroadcastToRound sends data to all clients currently watching the given round.
-// This is the public API that handlers call when a score is submitted.
+// Called by handlers when a score is submitted.
 func (h *Hub) BroadcastToRound(roundID string, data []byte) {
 	h.broadcast <- &Message{RoundID: roundID, Data: data}
 }
 
 // Register adds a client to the Hub so it starts receiving broadcasts for its round.
-// Called when a WebSocket connection is opened.
 func (h *Hub) Register(client *Client) {
 	h.register <- client
 }

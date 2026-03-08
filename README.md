@@ -15,14 +15,14 @@ A mobile-first golf league and tournament management application. Players can tr
 
 | Layer | Technology |
 |---|---|
-| Mobile app | React Native + Expo SDK 55 (TypeScript) |
+| Mobile app | React Native + Expo SDK 54 (TypeScript) |
 | Backend API | Go + Fiber v2 |
 | Database | PostgreSQL 16 |
 | ORM | GORM |
 | Migrations | golang-migrate |
 | Real-time | WebSockets (gofiber/websocket) |
 | Auth | Clerk |
-| Deployment | AWS ECS (backend) + App Store / Google Play (mobile) |
+| Deployment | Railway (backend) + App Store / Google Play (mobile) |
 
 ## Repository Structure
 

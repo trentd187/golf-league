@@ -40,8 +40,11 @@ PACKAGES=(
   "github.com/trentd187/golf-league/internal/middleware"
 )
 
-# Temporary coverage output file — deleted automatically on exit via trap.
-COVERAGE_FILE="$(mktemp /tmp/golf-league-coverage.XXXXXX.out)"
+# Coverage output file written to backend/coverage.out (relative to backend/, where
+# lefthook runs this script). This path is intentionally persistent — it is read by
+# SonarCloud to display line-level coverage in the dashboard. The file is generated
+# fresh on every run, so stale data is never an issue. It is gitignored.
+COVERAGE_FILE="coverage.out"
 
 # ---------------------------------------------------------------------------
 # Strict mode
@@ -50,10 +53,6 @@ COVERAGE_FILE="$(mktemp /tmp/golf-league-coverage.XXXXXX.out)"
 # -u: treat unset variables as errors (catches typos in variable names)
 # -o pipefail: a pipe like "cmd | grep" fails if cmd fails, not just grep
 set -euo pipefail
-
-# Always clean up the temp coverage file, even if the script exits early.
-# "trap CMD EXIT" runs CMD whenever this shell process exits for any reason.
-trap 'rm -f "$COVERAGE_FILE"' EXIT
 
 # ---------------------------------------------------------------------------
 # Read the stored baseline

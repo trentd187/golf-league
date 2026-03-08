@@ -19,7 +19,8 @@ import (
 type Config struct {
 	Port           string // The TCP port the HTTP server will listen on (e.g., "8080")
 	DatabaseURL    string // PostgreSQL connection string (e.g., "postgres://user:pass@host/dbname")
-	ClerkSecretKey string // Secret key for verifying Clerk authentication tokens server-side
+	ClerkSecretKey string // Secret key for calling Clerk's Backend API (e.g., creating users, updating metadata)
+	ClerkJWKSURL   string // Clerk's JSON Web Key Set URL — used to verify JWT signatures cryptographically
 	Env            string // The runtime environment: "development", "staging", or "production"
 }
 
@@ -51,7 +52,8 @@ func Load() *Config {
 	return &Config{
 		Port:           port,
 		DatabaseURL:    os.Getenv("DATABASE_URL"),     // Required — server will fail to start without it
-		ClerkSecretKey: os.Getenv("CLERK_SECRET_KEY"), // Required for JWT verification once Clerk is configured
+		ClerkSecretKey: os.Getenv("CLERK_SECRET_KEY"), // Required for Clerk Backend API calls (e.g., metadata updates)
+		ClerkJWKSURL:   os.Getenv("CLERK_JWKS_URL"),   // Required — JWT signature verification fails without it
 		Env:            env,
 	}
 }

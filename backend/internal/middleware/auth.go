@@ -13,8 +13,12 @@ import (
 
 	// fiber is the HTTP framework; fiber.Handler is the function signature for middleware
 	"github.com/gofiber/fiber/v2"
-	// jwt is used to parse JSON Web Tokens (JWTs) from the Authorization header
+	// jwt is used to parse and verify JSON Web Tokens (JWTs)
 	"github.com/golang-jwt/jwt/v5"
+	// keyfunc fetches Clerk's public keys (JWKS) and caches them for signature verification.
+	// JWT signature verification requires the matching public key from Clerk's key set —
+	// keyfunc handles fetching, caching, and automatic key rotation transparently.
+	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
 
@@ -39,35 +43,55 @@ type Claims struct {
 	Name                 string `json:"name"`  // Custom claim: the user's full name
 }
 
+// bearerPrefix is the standard HTTP Authorization header prefix for JWTs.
+// Defined as a constant to avoid duplicating the literal string across the file.
+const bearerPrefix = "Bearer "
+
 // Auth returns a Fiber middleware handler that:
-//  1. Validates the JWT from the "Authorization: Bearer <token>" header
+//  1. Validates the JWT from the "Authorization: Bearer <token>" header,
+//     verifying its cryptographic signature against Clerk's public JWKS keys
 //  2. Finds the matching user in our database (or creates one on first visit)
 //  3. Syncs the user's role from the JWT into the database
 //  4. Stores the user's internal UUID and role in the request context (c.Locals)
 //     so downstream handlers can read them without re-parsing the token
 //
-// This is a closure — a function that returns another function, capturing cfg and db
-// in its scope so they're available every time a request comes in.
+// This is a closure — a function that returns another function. The JWKS key
+// function is initialized once here (at server startup) and reused on every
+// request, avoiding repeated network calls to Clerk's JWKS endpoint.
 func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
+	// Fetch Clerk's JSON Web Key Set (JWKS) at startup and cache it.
+	// JWKS is a set of public keys that Clerk uses to sign JWTs. We fetch them
+	// once and verify every incoming token against them — this prevents token
+	// forgery because only Clerk holds the corresponding private key.
+	// keyfunc also handles automatic key rotation in the background.
+	jwks, err := keyfunc.NewDefault([]string{cfg.ClerkJWKSURL})
+	if err != nil {
+		// Fatal: without the JWKS we cannot verify any token. Fail at startup,
+		// not silently at request time. Check that CLERK_JWKS_URL is set in .env.
+		log.Fatalf("Failed to load Clerk JWKS — is CLERK_JWKS_URL set? %v", err)
+	}
+
 	return func(c *fiber.Ctx) error {
 		// --- Step 1: Extract the token from the Authorization header ---
 
 		authHeader := c.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		if authHeader == "" || !strings.HasPrefix(authHeader, bearerPrefix) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "missing or invalid authorization header",
 			})
 		}
 
 		// Strip the "Bearer " prefix to get just the raw JWT string
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenStr := strings.TrimPrefix(authHeader, bearerPrefix)
 
-		// --- Step 2: Parse the JWT ---
-		// TODO: replace ParseUnverified with full JWKS signature verification.
-		// ParseUnverified skips signature checking — fine for development but
-		// MUST be replaced before production. Verification prevents token forgery.
-		token, _, err := jwt.NewParser().ParseUnverified(tokenStr, &Claims{})
-		if err != nil {
+		// --- Step 2: Parse and VERIFY the JWT signature ---
+		// jwt.ParseWithClaims checks:
+		//   • The token's "kid" (key ID) header → looks up the matching public key in the JWKS
+		//   • The cryptographic signature — rejects any token not signed by Clerk's private key
+		//   • The expiry ("exp" claim) — rejects tokens that have expired
+		// An attacker cannot forge a valid signature without Clerk's private key.
+		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, jwks.Keyfunc)
+		if err != nil || !token.Valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "invalid token",
 			})
@@ -158,7 +182,7 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			// User found — sync any profile fields that may have changed in Clerk.
 			// We collect all changed fields into a single Updates() call to avoid
 			// multiple round-trips to the database per request.
-			updates := map[string]interface{}{}
+			updates := map[string]any{}
 
 			// Sync role only when the JWT explicitly carries a role claim.
 			// Skipping when claims.Role is empty prevents accidentally demoting a user

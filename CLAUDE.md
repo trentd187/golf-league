@@ -133,6 +133,13 @@ All config is read in `internal/config/config.go`. To add a new variable:
 2. Read it with `os.Getenv("VAR_NAME")` in `Load()`
 3. Add it to `backend/.env.example` with a description comment
 
+Current required variables:
+- `DATABASE_URL` — PostgreSQL connection string
+- `CLERK_SECRET_KEY` — Clerk Backend API key (for metadata updates, profile image proxy)
+- `CLERK_JWKS_URL` — Clerk's JWKS endpoint for JWT signature verification. Found in Clerk Dashboard → API Keys → Advanced. Format: `https://<your-clerk-domain>.clerk.accounts.dev/.well-known/jwks.json`
+- `PORT` — HTTP port (default: `8080`)
+- `ENV` — runtime environment (default: `development`)
+
 ---
 
 ## Mobile (React Native + Expo)

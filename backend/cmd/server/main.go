@@ -82,8 +82,8 @@ func main() {
 	api.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent(db)) // create (admin/manager only)
 
 	// Single-event endpoints — :id is the event UUID
-	api.Get("/events/:id", handlers.GetEvent(db))      // detail view + members list
-	api.Patch("/events/:id", handlers.UpdateEvent(db)) // partial update including status (organizers only)
+	api.Get("/events/:id", handlers.GetEvent(db))       // detail view + members list
+	api.Patch("/events/:id", handlers.UpdateEvent(db))  // partial update including status (organizers only)
 	api.Delete("/events/:id", handlers.DeleteEvent(db)) // permanently delete event + all children (organizers only)
 
 	// Members sub-resource
@@ -96,11 +96,11 @@ func main() {
 	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db)) // schedule a new round (organizers only)
 
 	// Round detail and group management (top-level /rounds routes — round IDs are globally unique)
-	api.Get("/rounds/:roundId", handlers.GetRound(db))                                              // round detail with groups + players (any member)
-	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))                                         // edit round name/course/date/format (organizers only)
-	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))                                        // delete round + all children (organizers only)
-	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))               // add player to group (organizers only)
-	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))  // remove player from group (organizers only)
+	api.Get("/rounds/:roundId", handlers.GetRound(db))                                             // round detail with groups + players (any member)
+	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))                                        // edit round name/course/date/format (organizers only)
+	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))                                       // delete round + all children (organizers only)
+	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))              // add player to group (organizers only)
+	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db)) // remove player from group (organizers only)
 
 	// --- User routes ---
 	api.Get("/users", handlers.GetUsers(db))                             // all users except the caller (powers the add-member picker)

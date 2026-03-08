@@ -2,13 +2,15 @@
 // This file handles the /api/v1/users and /api/v1/me routes.
 //
 // Endpoints:
-//   GET  /api/v1/users              — list all users except the caller (powers Add Member picker)
-//   PATCH /api/v1/me/profile-image  — upload a profile photo, proxied to Clerk's Backend API
+//
+//	GET  /api/v1/users              — list all users except the caller (powers Add Member picker)
+//	PATCH /api/v1/me/profile-image  — upload a profile photo, proxied to Clerk's Backend API
 //
 // Why the profile image upload is proxied here:
-//   Clerk's Frontend API (the SDK's built-in setProfileImage) uses browser-cookie auth and
-//   rejects non-browser clients. The mobile app can't call it directly. Instead, we receive
-//   the image with normal JWT auth and forward it to Clerk's Backend API using the secret key.
+//
+//	Clerk's Frontend API (the SDK's built-in setProfileImage) uses browser-cookie auth and
+//	rejects non-browser clients. The mobile app can't call it directly. Instead, we receive
+//	the image with normal JWT auth and forward it to Clerk's Backend API using the secret key.
 package handlers
 
 import (
@@ -73,19 +75,20 @@ func GetUsers(db *gorm.DB) fiber.Handler {
 // which stores the image and updates user.imageUrl on the Clerk side.
 //
 // Why proxy instead of calling Clerk directly from mobile?
-//   Clerk's Frontend API (what setProfileImage() uses) requires browser-cookie auth and
-//   explicitly rejects native mobile clients with "Unable to authenticate this browser".
-//   Clerk's Backend API uses the secret key — safe only for server-side calls, never in
-//   the mobile app bundle.
+//
+//	Clerk's Frontend API (what setProfileImage() uses) requires browser-cookie auth and
+//	explicitly rejects native mobile clients with "Unable to authenticate this browser".
+//	Clerk's Backend API uses the secret key — safe only for server-side calls, never in
+//	the mobile app bundle.
 //
 // Flow:
-//   1. Mobile sends multipart/form-data with a "file" field (JPEG/PNG)
-//      authenticated with the normal Clerk session JWT.
-//   2. This handler verifies the JWT (via the Auth middleware), looks up the caller's
-//      Clerk user ID, and forwards the file to:
-//        POST https://api.clerk.com/v1/users/{clerkId}/profile_image
-//      authenticated with the Clerk secret key.
-//   3. Returns 200 on success; propagates Clerk's error JSON on failure.
+//  1. Mobile sends multipart/form-data with a "file" field (JPEG/PNG)
+//     authenticated with the normal Clerk session JWT.
+//  2. This handler verifies the JWT (via the Auth middleware), looks up the caller's
+//     Clerk user ID, and forwards the file to:
+//     POST https://api.clerk.com/v1/users/{clerkId}/profile_image
+//     authenticated with the Clerk secret key.
+//  3. Returns 200 on success; propagates Clerk's error JSON on failure.
 func UpdateProfileImage(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// --- 1. Identify the caller ---

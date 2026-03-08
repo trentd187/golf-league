@@ -1,0 +1,116 @@
+# .golangci.yml
+# golangci-lint configuration for the Golf League backend.
+#
+# golangci-lint is a "meta-linter" — it runs multiple Go linters in parallel and
+# combines their output. This is faster and easier than running each linter separately.
+#
+# Install (one-time, each developer machine):
+#   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+#
+# Run manually from backend/ directory:
+#   golangci-lint run ./...
+#
+# Run with auto-fix where possible:
+#   golangci-lint run --fix ./...
+#
+# Documentation: https://golangci-lint.run/usage/configuration/
+
+# ---- Run settings ----
+run:
+  # Timeout for the entire lint run. Increase if you add many linters.
+  timeout: 5m
+
+  # Directories to exclude from linting (migrations contain raw SQL, not Go).
+  # "vendor" is excluded by default.
+  exclude-dirs:
+    - migrations
+
+# ---- Linter selection ----
+linters:
+  # Disable all linters by default, then explicitly enable the ones we want.
+  # This prevents surprise failures when golangci-lint adds new linters in future versions.
+  disable-all: true
+
+  enable:
+    # --- Correctness ---
+
+    # errcheck: finds calls to functions that return an error but where the error is ignored.
+    # e.g., os.Remove("file.txt") without checking the error. One of the most important linters.
+    - errcheck
+
+    # govet: Go's built-in vet tool. Catches suspicious constructs that are technically valid
+    # Go but are almost certainly bugs (e.g., unreachable code, printf format mismatches).
+    - govet
+
+    # staticcheck: comprehensive static analysis. Finds bugs, deprecated API usage,
+    # incorrect usage of sync.Mutex, ineffective code, and more. Replaces several older linters.
+    - staticcheck
+
+    # ineffassign: detects assignments whose value is never read before being overwritten.
+    # e.g., err = doSomething(); err = doSomethingElse() — the first assignment is wasted.
+    - ineffassign
+
+    # --- Style and simplicity ---
+
+    # gosimple: suggests simplifications of Go code. e.g., using fmt.Sprintf("%s", x) when
+    # x is already a string, or using select{} instead of for { select { case ... } }.
+    - gosimple
+
+    # unused: reports unexported functions, types, variables, and constants that are never used.
+    # Keeps the codebase clean of dead code.
+    - unused
+
+    # misspell: catches common English spelling mistakes in identifiers and comments.
+    # Finds typos like "seperator" (should be "separator"), "recieve" (should be "receive"), etc.
+    - misspell
+
+    # --- Security ---
+
+    # gosec: checks for common security issues in Go code.
+    # Finds things like: hardcoded credentials, SQL injection risks, insecure HTTP usage,
+    # weak random number generation, file permission issues.
+    - gosec
+
+    # --- Formatting ---
+
+    # gofmt: checks that all code is formatted according to Go's standard formatter.
+    # Run `gofmt -w ./...` to auto-fix. The pre-commit hook will catch unformatted code.
+    - gofmt
+
+    # goimports: like gofmt, but also checks that imports are grouped and sorted correctly
+    # (stdlib imports first, then external packages). Run `goimports -w ./...` to auto-fix.
+    - goimports
+
+# ---- Per-linter settings ----
+linters-settings:
+  # gosec: security issue severity configuration
+  gosec:
+    # Exclude low-confidence findings to reduce noise. Keep medium and high.
+    # G104: errors unhandled — already caught by errcheck, so skip the duplicate.
+    excludes:
+      - G104  # Errors unhandled (duplicate of errcheck)
+
+  # gofmt: we use standard gofmt formatting, no custom options needed
+  gofmt:
+    simplify: true  # equivalent to gofmt -s (simplify composite literals)
+
+  # errcheck: configure which errors are OK to ignore
+  errcheck:
+    # Allow ignoring errors from defer statements in common safe cases.
+    # e.g., defer rows.Close() — the error rarely matters and can't be acted on.
+    check-type-assertions: true
+    check-blank: false  # allow _ = err pattern (explicit discard is intentional)
+
+# ---- Issue filtering ----
+issues:
+  # Maximum issues per linter per file — 0 means unlimited.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  # Paths to exclude from issue reporting (in addition to excluded dirs above).
+  exclude-rules:
+    # Test files: relax some rules that are common in test code.
+    - path: "_test\\.go"
+      linters:
+        - gosec       # test code commonly uses insecure patterns (e.g., hardcoded tokens)
+        - errcheck    # test code often ignores errors intentionally (testify handles failures)

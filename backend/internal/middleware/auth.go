@@ -17,6 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
+
 	// gorm is our ORM — used here to find or create the user record in Postgres
 	"gorm.io/gorm"
 )
@@ -25,9 +26,9 @@ import (
 // Clerk's default token includes standard fields (Subject = Clerk user ID, expiry, etc.).
 // We also read custom claims that you add via the Clerk dashboard JWT template:
 //
-//   "role":  "{{user.public_metadata.role}}"   — the user's permission level
-//   "email": "{{user.primary_email_address}}"  — used to populate our users table
-//   "name":  "{{user.full_name}}"              — display name for our users table
+//	"role":  "{{user.public_metadata.role}}"   — the user's permission level
+//	"email": "{{user.primary_email_address}}"  — used to populate our users table
+//	"name":  "{{user.full_name}}"              — display name for our users table
 //
 // Without these custom claims in the template, role will be empty (defaults to "user")
 // and email/name will use placeholder values.

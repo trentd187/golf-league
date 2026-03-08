@@ -6,13 +6,13 @@
 //
 // What lives here:
 //   - NewTestApp:    creates a bare Fiber app with a route registered — no auth middleware,
-//                   no DB required. Used for unit-testing individual handlers in isolation.
+//     no DB required. Used for unit-testing individual handlers in isolation.
 //   - MustReadBody: reads an HTTP response body into a string for assertions.
 //
 // What will live here later (as score/handicap handlers get built):
 //   - NewTestDB:     spins up a connection to a test PostgreSQL database (controlled by the
-//                   TEST_DATABASE_URL environment variable) and runs migrations. Each test
-//                   that needs a real DB calls this and defers db.Close().
+//     TEST_DATABASE_URL environment variable) and runs migrations. Each test
+//     that needs a real DB calls this and defers db.Close().
 package testutil
 
 import (
@@ -24,6 +24,7 @@ import (
 	// and httptest.NewRequest for building in-memory requests
 	"net/http"
 	"net/http/httptest"
+
 	// "testing" is Go's built-in test framework — t *testing.T is the test context
 	"testing"
 

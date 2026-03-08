@@ -1,7 +1,7 @@
 // Package database provides helpers for connecting to PostgreSQL and running migrations.
 // This file has two responsibilities:
-//   1. Opening a database connection using GORM (an ORM — Object Relational Mapper)
-//   2. Running SQL migration files to keep the database schema up to date
+//  1. Opening a database connection using GORM (an ORM — Object Relational Mapper)
+//  2. Running SQL migration files to keep the database schema up to date
 package database
 
 import (

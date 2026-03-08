@@ -1,14 +1,15 @@
 // Package handlers contains HTTP route handler functions for the Golf League API.
 // This file handles all /api/v1/events routes:
-//   GET    /events                        — list events (filtered by membership)
-//   POST   /events                        — create a new event
-//   GET    /events/:id                    — get event detail + members list
-//   PATCH  /events/:id                    — update event name/description/dates
-//   GET    /events/:id/members            — list all members of an event
-//   POST   /events/:id/members            — add a member to an event
-//   DELETE /events/:id/members/:userId    — remove a member from an event
-//   GET    /events/:id/rounds             — list rounds for an event
-//   POST   /events/:id/rounds             — schedule a new round
+//
+//	GET    /events                        — list events (filtered by membership)
+//	POST   /events                        — create a new event
+//	GET    /events/:id                    — get event detail + members list
+//	PATCH  /events/:id                    — update event name/description/dates
+//	GET    /events/:id/members            — list all members of an event
+//	POST   /events/:id/members            — add a member to an event
+//	DELETE /events/:id/members/:userId    — remove a member from an event
+//	GET    /events/:id/rounds             — list rounds for an event
+//	POST   /events/:id/rounds             — schedule a new round
 //
 // An "event" is the top-level container for any golf competition. It can be:
 //   - "league"     — an ongoing, multi-round season with accumulated standings
@@ -30,8 +31,8 @@
 //     a specific event (edit, invite members, schedule rounds).
 //     - "admin" global role → can manage ANY event (full platform access).
 //     - "manager" global role → can ONLY manage events where they hold the
-//       "organizer" event_player role (granted automatically when they create an event,
-//       or manually by another organizer adding them with that role).
+//     "organizer" event_player role (granted automatically when they create an event,
+//     or manually by another organizer adding them with that role).
 //     - "user" global role → same rule as manager for event-level access.
 //
 // This means a manager cannot edit events created by other people unless the
@@ -242,10 +243,10 @@ func CreateEvent(db *gorm.DB) fiber.Handler {
 				Description: req.Description,
 				EventType:   models.EventType(req.EventType),
 				// New events start as "active" — "upcoming" was removed from the status enum.
-			Status:      models.EventStatusActive,
-				StartDate:   startDate,
-				EndDate:     endDate,
-				CreatedBy:   userID, // Foreign key pointing to the creator's users.id
+				Status:    models.EventStatusActive,
+				StartDate: startDate,
+				EndDate:   endDate,
+				CreatedBy: userID, // Foreign key pointing to the creator's users.id
 			}
 
 			// tx.Create() runs an INSERT and populates event.ID with the new UUID
@@ -333,7 +334,7 @@ func isEventOrganizer(db *gorm.DB, eventID, userID uuid.UUID, userRole string) b
 // Returned by GET /api/v1/events/:id so the mobile app can show the member
 // roster and determine whether the current user is an organizer.
 type EventDetailResponse struct {
-	EventResponse                   // embed — all the list fields are included automatically
+	EventResponse                  // embed — all the list fields are included automatically
 	Members       []MemberResponse `json:"members"` // everyone who belongs to this event
 }
 
@@ -357,7 +358,7 @@ type UpdateEventRequest struct {
 	EndDate     *string `json:"end_date"`    // Optional "YYYY-MM-DD"; "" clears it
 	// Status allows organizers to change the event lifecycle state.
 	// Valid values: "upcoming", "active", "completed", "cancelled".
-	Status      *string `json:"status"`
+	Status *string `json:"status"`
 }
 
 // AddMemberRequest is the JSON body for POST /api/v1/events/:id/members.
@@ -379,13 +380,13 @@ type ScheduleRoundRequest struct {
 	// Name is the display name for the round. Optional — defaults to "Round N" where N is
 	// the round number (1-based count of existing rounds + 1). Organizers can set a custom
 	// name like "Championship Round" or "Back Nine Special".
-	Name          string       `json:"name"`
-	CourseName    string       `json:"course_name"`    // Required: name of the golf course
-	ScheduledDate string       `json:"scheduled_date"` // Required: "YYYY-MM-DD"
-	ScoringFormat *string      `json:"scoring_format"` // Optional; defaults to "stroke" if omitted
+	Name          string  `json:"name"`
+	CourseName    string  `json:"course_name"`    // Required: name of the golf course
+	ScheduledDate string  `json:"scheduled_date"` // Required: "YYYY-MM-DD"
+	ScoringFormat *string `json:"scoring_format"` // Optional; defaults to "stroke" if omitted
 	// Groups lists the tee-time groups to create with this round (1–8).
 	// An empty slice creates one default group with no tee time.
-	Groups        []GroupInput `json:"groups"`
+	Groups []GroupInput `json:"groups"`
 }
 
 // RoundSummaryResponse is returned per round in the rounds list and on round creation.
@@ -645,7 +646,7 @@ func AddEventMember(db *gorm.DB) fiber.Handler {
 		player := models.EventPlayer{
 			EventID: eventID,
 			UserID:  targetUserID,
-			Role:    models.EventPlayerRolePlayer,      // default: participant
+			Role:    models.EventPlayerRolePlayer,       // default: participant
 			Status:  models.EventPlayerStatusRegistered, // auto-confirmed when added by organizer
 		}
 		if err := db.Create(&player).Error; err != nil {
@@ -984,8 +985,10 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 // DeleteEvent returns a handler for DELETE /api/v1/events/:id.
 // Permanently deletes the event and all its associated data (rounds, members, scores).
 // The cascade deletions are handled by the database's ON DELETE CASCADE constraints:
-//   events → event_players, event_points_rules, rounds
-//   rounds → round_players, groups, teams, scores (and their children)
+//
+//	events → event_players, event_points_rules, rounds
+//	rounds → round_players, groups, teams, scores (and their children)
+//
 // Only organizers of the event (or global admins) may delete it.
 func DeleteEvent(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {

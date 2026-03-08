@@ -92,7 +92,7 @@ export default function HomeScreen() {
 
         {/* Page header */}
         <Text className={`text-2xl font-bold mb-1 ${t.textPrimary}`}>{greeting}</Text>
-        <Text className={`text-sm mb-8 ${t.textSecondary}`}>Here's what's happening in your events.</Text>
+        <Text className={`text-sm mb-8 ${t.textSecondary}`}>{"Here's what's happening in your events."}</Text>
 
         {/* Section heading */}
         <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>

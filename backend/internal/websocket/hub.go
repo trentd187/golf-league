@@ -10,7 +10,7 @@ import "sync" // sync provides synchronization primitives like mutexes for safe 
 // Client represents a single connected WebSocket client.
 // Each player watching a live round has one Client instance on the server.
 type Client struct {
-	RoundID string     // Which round this client is watching — used to route messages to the right audience
+	RoundID string      // Which round this client is watching — used to route messages to the right audience
 	Send    chan []byte // Buffered channel of outgoing messages; the Hub sends data here, the WebSocket writes it to the client
 }
 
@@ -75,8 +75,8 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			if clients, ok := h.clients[client.RoundID]; ok {
 				if _, ok := clients[client]; ok {
-					delete(clients, client)   // Remove this client from the round's set
-					close(client.Send)        // Closing the channel signals the WebSocket writer goroutine to stop
+					delete(clients, client) // Remove this client from the round's set
+					close(client.Send)      // Closing the channel signals the WebSocket writer goroutine to stop
 					// Clean up the round's map entry if no clients are left — avoids memory leaks
 					if len(clients) == 0 {
 						delete(h.clients, client.RoundID)

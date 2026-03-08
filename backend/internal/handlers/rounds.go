@@ -2,19 +2,20 @@
 // HTTP handlers for individual round management and group player assignment.
 //
 // Endpoints provided:
-//   GET  /api/v1/rounds/:roundId
-//     → Returns round details including all groups and their assigned players.
-//       Any authenticated event member can call this.
 //
-//   POST /api/v1/rounds/:roundId/groups/:groupId/members
-//     → Adds an event member to a tee-time group. Creates a RoundPlayer record
-//       if one doesn't already exist. Enforces a 4-player maximum per group.
-//       Organizer-only.
+//	GET  /api/v1/rounds/:roundId
+//	  → Returns round details including all groups and their assigned players.
+//	    Any authenticated event member can call this.
 //
-//   DELETE /api/v1/rounds/:roundId/groups/:groupId/members/:userId
-//     → Removes a player from a group. Deletes the RoundPlayer record, which
-//       cascades to the GroupPlayer join row automatically (ON DELETE CASCADE).
-//       Organizer-only.
+//	POST /api/v1/rounds/:roundId/groups/:groupId/members
+//	  → Adds an event member to a tee-time group. Creates a RoundPlayer record
+//	    if one doesn't already exist. Enforces a 4-player maximum per group.
+//	    Organizer-only.
+//
+//	DELETE /api/v1/rounds/:roundId/groups/:groupId/members/:userId
+//	  → Removes a player from a group. Deletes the RoundPlayer record, which
+//	    cascades to the GroupPlayer join row automatically (ON DELETE CASCADE).
+//	    Organizer-only.
 package handlers
 
 import (
@@ -47,18 +48,18 @@ type GroupResponse struct {
 
 // RoundDetailResponse is the full round payload returned by GET /api/v1/rounds/:roundId.
 type RoundDetailResponse struct {
-	ID            string          `json:"id"`
-	EventID       string          `json:"event_id"`
-	Name          string          `json:"name"`           // Display name, e.g. "Round 1" or "Championship Round"
-	CourseName    string          `json:"course_name"`
-	ScheduledDate string          `json:"scheduled_date"` // "YYYY-MM-DD"
-	Status        string          `json:"status"`
-	ScoringFormat string          `json:"scoring_format"`
-	RoundNumber   int             `json:"round_number"`
+	ID            string `json:"id"`
+	EventID       string `json:"event_id"`
+	Name          string `json:"name"` // Display name, e.g. "Round 1" or "Championship Round"
+	CourseName    string `json:"course_name"`
+	ScheduledDate string `json:"scheduled_date"` // "YYYY-MM-DD"
+	Status        string `json:"status"`
+	ScoringFormat string `json:"scoring_format"`
+	RoundNumber   int    `json:"round_number"`
 	// IsOrganizer tells the client whether the calling user can edit/delete this round.
 	// Computed server-side so the client doesn't need a separate permission check query.
-	IsOrganizer   bool            `json:"is_organizer"`
-	Groups        []GroupResponse `json:"groups"` // Ordered by group_number ascending
+	IsOrganizer bool            `json:"is_organizer"`
+	Groups      []GroupResponse `json:"groups"` // Ordered by group_number ascending
 }
 
 // ─── Shared helper ────────────────────────────────────────────────────────────
@@ -132,14 +133,6 @@ func GetRound(db *gorm.DB) fiber.Handler {
 		// We navigate: GroupPlayer → RoundPlayer → EventPlayer → User
 		groupResponses := make([]GroupResponse, 0, len(groups))
 		for _, g := range groups {
-			// Load group_players rows for this group, traversing the join chain to reach User.
-			// Preload("RoundPlayer.EventPlayer.User") tells GORM to follow that chain automatically.
-			type groupPlayerWithUser struct {
-				GroupID       uuid.UUID
-				RoundPlayerID uuid.UUID
-				RoundPlayer   models.RoundPlayer
-			}
-
 			// Raw join query is more reliable than deep Preload chains in GORM.
 			// We select just the columns we need for the response.
 			type playerRow struct {
@@ -425,9 +418,9 @@ func buildGroupResponse(db *gorm.DB, g models.Group) GroupResponse {
 // All fields are optional pointers — only non-nil fields are applied.
 type UpdateRoundRequest struct {
 	// Name is the display name for the round. Cannot be set to empty string.
-	Name          *string `json:"name"`
+	Name *string `json:"name"`
 	// CourseName triggers a find-or-create lookup (same logic as ScheduleEventRound).
-	CourseName    *string `json:"course_name"`
+	CourseName *string `json:"course_name"`
 	// ScheduledDate is "YYYY-MM-DD". Cannot be set to empty string.
 	ScheduledDate *string `json:"scheduled_date"`
 	ScoringFormat *string `json:"scoring_format"`

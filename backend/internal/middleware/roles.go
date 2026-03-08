@@ -16,7 +16,7 @@ import "github.com/gofiber/fiber/v2"
 // It accepts a variadic list of roles ("..." syntax) so you can allow one or
 // more roles on a route with a single call:
 //
-//   app.Post("/leagues", middleware.RequireRole("admin", "manager"), handlers.CreateLeague)
+//	app.Post("/leagues", middleware.RequireRole("admin", "manager"), handlers.CreateLeague)
 //
 // RequireRole must be used AFTER the Auth middleware, because Auth is what
 // populates the "userRole" value in the request context via c.Locals.

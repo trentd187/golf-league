@@ -15,61 +15,86 @@
 
 # ---------------------------------------------------------------------------
 # Pre-commit: runs before the commit is recorded.
-# All commands here run in PARALLEL by default for speed.
+# Runs in PARALLEL — all commands start simultaneously for speed.
 # ---------------------------------------------------------------------------
 pre-commit:
-  # Run all pre-commit commands in parallel where possible.
   parallel: true
 
   commands:
     # -------------------------------------------------------------------------
-    # Backend: Go test coverage gate
+    # Backend: Go linting (golangci-lint)
     # -------------------------------------------------------------------------
-    # Only triggers when .go source files are part of the commit, so pure
-    # docs/config/mobile commits are not slowed down by running Go tests.
+    # Runs multiple Go linters in parallel via golangci-lint.
+    # Config: backend/.golangci.yml
     #
-    # This check enforces a 90% coverage threshold on the core backend packages
-    # (handlers + middleware). See scripts/check-go-coverage.sh for details.
+    # Requires golangci-lint to be installed globally (one-time per dev machine):
+    #   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+    # -------------------------------------------------------------------------
+    backend-lint:
+      glob: "backend/**/*.go"
+      root: "backend"
+      run: golangci-lint run ./...
+
+    # -------------------------------------------------------------------------
+    # Backend: Go test coverage ratchet
+    # -------------------------------------------------------------------------
+    # Blocks commits that would lower test coverage below the stored baseline.
+    # The baseline is auto-updated when coverage improves.
+    # See scripts/check-go-coverage.sh and .go-coverage-baseline for details.
     # -------------------------------------------------------------------------
     backend-coverage:
-      # glob: only run this command when Go files are staged for commit.
-      # If you change only mobile or docs files, this command is skipped.
       glob: "backend/**/*.go"
-
-      # root: run the command from the backend/ directory.
-      # Relative paths in `run` are resolved from this directory.
       root: "backend"
-
-      # Run the coverage script. "../scripts/" goes up one level from backend/
-      # to the repo root where scripts/ lives.
       run: bash ../scripts/check-go-coverage.sh
 
     # -------------------------------------------------------------------------
-    # Mobile: TypeScript type-checking (fast — no test runner needed)
+    # Mobile: TypeScript type-checking
     # -------------------------------------------------------------------------
-    # tsc --noEmit checks types without producing output files.
-    # This catches TypeScript errors before they reach the remote.
-    #
-    # NOTE: Jest mobile tests will be added here once the mobile test
-    # framework is set up (currently only the backend has tests).
+    # tsc --noEmit checks all TypeScript types without emitting any files.
+    # This is faster than running ESLint because it only checks types, not style.
+    # Catches: wrong prop types, missing required fields, null pointer dereferences.
     # -------------------------------------------------------------------------
     mobile-typecheck:
-      # Only run when TypeScript/TSX files in mobile/ are staged.
       glob: "mobile/**/*.{ts,tsx}"
-
-      # Run from the mobile/ directory where tsconfig.json lives.
       root: "mobile"
-
-      # npx tsc --noEmit: type-check without writing any output files.
-      # The PATH prefix ensures Node.js is available in Git Bash on Windows.
+      # PATH prefix ensures Node.js is on the path in Git Bash on Windows.
       run: >
         export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
         && npx tsc --noEmit
 
+    # -------------------------------------------------------------------------
+    # Mobile: ESLint
+    # -------------------------------------------------------------------------
+    # Runs ESLint with eslint-config-expo (React Native rules) + react-native plugin.
+    # Config: mobile/eslint.config.js
+    # Catches: unused variables, unescaped entities, inline style violations,
+    #          React hooks rule violations, and more.
+    # -------------------------------------------------------------------------
+    mobile-lint:
+      glob: "mobile/**/*.{ts,tsx,js}"
+      root: "mobile"
+      run: >
+        export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
+        && npx expo lint
+
 # ---------------------------------------------------------------------------
 # Pre-push: runs before `git push` sends commits to the remote.
-# A good place for slower checks that are too heavy for every commit.
-# (Currently empty — add mobile Jest coverage here once tests are written.)
+# Good place for slower checks (full test suites, coverage) that would be
+# too slow on every commit.
 # ---------------------------------------------------------------------------
 pre-push:
-  commands: {}
+  parallel: true
+
+  commands:
+    # -------------------------------------------------------------------------
+    # Backend: full test suite on push
+    # -------------------------------------------------------------------------
+    # Run all backend tests (not just coverage) before pushing. This catches
+    # test failures that might have slipped through (e.g., LEFTHOOK=0 commits).
+    # -------------------------------------------------------------------------
+    backend-tests:
+      glob: "backend/**/*.go"
+      root: "backend"
+      run: go test ./... -timeout 60s
+
+    # Mobile Jest coverage will be added here once the Jest framework is set up.

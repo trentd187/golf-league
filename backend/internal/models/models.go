@@ -130,13 +130,13 @@ const (
 // The ClerkID links our internal record to Clerk's identity system.
 type User struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"` // UUID primary key; the DB generates it automatically
-	ClerkID     *string   `gorm:"uniqueIndex:idx_users_clerk_id"`                  // Clerk's user ID (e.g. "user_2abc123"); pointer = nullable for legacy rows
-	DisplayName string    `gorm:"not null"`                                        // The name shown in the app; populated from the Clerk JWT "name" claim
-	Email       string    `gorm:"uniqueIndex;not null"`                            // Unique email; populated from the Clerk JWT "email" claim
-	AvatarURL   *string                                                            // Optional profile picture URL; pointer means it can be NULL in the DB
-	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"`          // Global role; synced from Clerk publicMetadata via the JWT "role" claim
-	CreatedAt   time.Time                                                          // GORM automatically sets this on create
-	UpdatedAt   time.Time                                                          // GORM automatically updates this on every save
+	ClerkID     *string   `gorm:"uniqueIndex:idx_users_clerk_id"`                 // Clerk's user ID (e.g. "user_2abc123"); pointer = nullable for legacy rows
+	DisplayName string    `gorm:"not null"`                                       // The name shown in the app; populated from the Clerk JWT "name" claim
+	Email       string    `gorm:"uniqueIndex;not null"`                           // Unique email; populated from the Clerk JWT "email" claim
+	AvatarURL   *string   // Optional profile picture URL; pointer means it can be NULL in the DB
+	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"` // Global role; synced from Clerk publicMetadata via the JWT "role" claim
+	CreatedAt   time.Time // GORM automatically sets this on create
+	UpdatedAt   time.Time // GORM automatically updates this on every save
 }
 
 // Event is the top-level container for any golf competition.
@@ -155,8 +155,8 @@ type Event struct {
 	Status      EventStatus `gorm:"type:event_status;not null;default:'active'"`
 	StartDate   *time.Time  // Optional start date; pointer = nullable (some events don't have a fixed date)
 	EndDate     *time.Time  // Optional end date; pointer = nullable
-	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`       // Foreign key: which user created this event
-	Creator     User        `gorm:"foreignKey:CreatedBy"`     // GORM relationship: preloads the User struct when queried
+	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`   // Foreign key: which user created this event
+	Creator     User        `gorm:"foreignKey:CreatedBy"` // GORM relationship: preloads the User struct when queried
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	PointsRules []EventPointsRule `gorm:"foreignKey:EventID"` // Points awarded per finishing position
@@ -208,10 +208,10 @@ type Round struct {
 	Event            Event         `gorm:"foreignKey:EventID"`
 	CourseID         uuid.UUID     `gorm:"type:uuid;not null"`
 	Course           Course        `gorm:"foreignKey:CourseID"`
-	DefaultTeeID     uuid.UUID     `gorm:"type:uuid;not null"`        // The tee set most players use; individuals can override in RoundPlayer
+	DefaultTeeID     uuid.UUID     `gorm:"type:uuid;not null"` // The tee set most players use; individuals can override in RoundPlayer
 	DefaultTee       Tee           `gorm:"foreignKey:DefaultTeeID"`
-	Name             string        `gorm:"not null;default:'Round'"`  // Display name; auto-populated to "Round N" on creation, editable after
-	RoundNumber      int           `gorm:"not null;default:1"`        // 1 for first round, 2 for second, etc.
+	Name             string        `gorm:"not null;default:'Round'"` // Display name; auto-populated to "Round N" on creation, editable after
+	RoundNumber      int           `gorm:"not null;default:1"`       // 1 for first round, 2 for second, etc.
 	ScheduledDate    time.Time     `gorm:"not null"`
 	Status           RoundStatus   `gorm:"type:round_status;not null;default:'scheduled'"`
 	ScoringFormat    ScoringFormat `gorm:"type:scoring_format;not null"`
@@ -229,7 +229,7 @@ type RoundPlayer struct {
 	Round          Round             `gorm:"foreignKey:RoundID"`
 	EventPlayerID  uuid.UUID         `gorm:"type:uuid;not null;uniqueIndex:idx_round_event_player"`
 	EventPlayer    EventPlayer       `gorm:"foreignKey:EventPlayerID"`
-	TeeID          *uuid.UUID        `gorm:"type:uuid"`           // Optional tee override; if nil, the round's DefaultTee is used
+	TeeID          *uuid.UUID        `gorm:"type:uuid"` // Optional tee override; if nil, the round's DefaultTee is used
 	Tee            *Tee              `gorm:"foreignKey:TeeID"`
 	HandicapIndex  *float64          `gorm:"type:decimal(4,1)"` // Player's WHS handicap index at time of round (e.g., 14.2)
 	CourseHandicap *int              // Calculated playing handicap for this specific course and tee
@@ -252,8 +252,8 @@ type Score struct {
 	NetScore      int         `gorm:"not null"`                                   // Gross score minus handicap strokes for this hole
 	EnteredBy     uuid.UUID   `gorm:"type:uuid;not null"`                         // Which user entered this score (could be the player, a group member, or a scorer)
 	Enterer       User        `gorm:"foreignKey:EnteredBy"`
-	EnteredAt     time.Time   `gorm:"autoCreateTime"`  // Set automatically by GORM on insert
-	UpdatedAt     time.Time   `gorm:"autoUpdateTime"`  // Updated automatically by GORM on every save
+	EnteredAt     time.Time   `gorm:"autoCreateTime"` // Set automatically by GORM on insert
+	UpdatedAt     time.Time   `gorm:"autoUpdateTime"` // Updated automatically by GORM on every save
 }
 
 // Group represents a tee-time group — players who tee off together.
@@ -262,8 +262,8 @@ type Group struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	RoundID      uuid.UUID  `gorm:"type:uuid;not null"`
 	Round        Round      `gorm:"foreignKey:RoundID"`
-	GroupNumber  int        `gorm:"not null"`        // Display order: group 1 tees off first, etc.
-	TeeTime      *time.Time                          // Optional scheduled start time for this group
+	GroupNumber  int        `gorm:"not null"` // Display order: group 1 tees off first, etc.
+	TeeTime      *time.Time // Optional scheduled start time for this group
 	StartingHole int        `gorm:"not null;default:1"` // Which hole the group starts on (shotgun starts begin on different holes)
 	CreatedAt    time.Time
 }
@@ -284,8 +284,8 @@ type Team struct {
 	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	RoundID        uuid.UUID `gorm:"type:uuid;not null"`
 	Round          Round     `gorm:"foreignKey:RoundID"`
-	Name           string    `gorm:"not null"`    // Display name for the team (e.g., "Team A", "The Hackers")
-	FinishPosition *int                            // Nullable until the round is complete
+	Name           string    `gorm:"not null"` // Display name for the team (e.g., "Team A", "The Hackers")
+	FinishPosition *int      // Nullable until the round is complete
 	CreatedAt      time.Time
 }
 
@@ -331,7 +331,7 @@ type Tee struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	CourseID     uuid.UUID `gorm:"type:uuid;not null"`
 	Course       Course    `gorm:"foreignKey:CourseID"`
-	Name         string    `gorm:"not null"`                           // e.g., "Blue", "White", "Red", "Default"
+	Name         string    `gorm:"not null"` // e.g., "Blue", "White", "Red", "Default"
 	Gender       TeeGender `gorm:"type:tee_gender;not null"`
 	CourseRating float64   `gorm:"type:decimal(4,1);not null"` // USGA course rating (e.g., 72.4) — represents the expected score for a scratch golfer
 	SlopeRating  int       `gorm:"not null"`                   // USGA slope rating (55–155) — measures difficulty for bogey golfers relative to scratch
@@ -345,8 +345,8 @@ type Hole struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	TeeID       uuid.UUID `gorm:"type:uuid;not null"`
 	Tee         Tee       `gorm:"foreignKey:TeeID"`
-	HoleNumber  int       `gorm:"not null"`      // 1–18 (or 1–9 for a 9-hole course)
-	Par         int       `gorm:"not null"`      // Expected strokes for this hole (typically 3, 4, or 5)
-	StrokeIndex int       `gorm:"not null"`      // Handicap allocation: hole 1 = hardest (gets first handicap stroke), 18 = easiest
-	Yardage     *int                              // Distance in yards from this tee box; optional because some courses don't publish yardages
+	HoleNumber  int       `gorm:"not null"` // 1–18 (or 1–9 for a 9-hole course)
+	Par         int       `gorm:"not null"` // Expected strokes for this hole (typically 3, 4, or 5)
+	StrokeIndex int       `gorm:"not null"` // Handicap allocation: hole 1 = hardest (gets first handicap stroke), 18 = easiest
+	Yardage     *int      // Distance in yards from this tee box; optional because some courses don't publish yardages
 }

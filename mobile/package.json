@@ -7,10 +7,13 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "postinstall": "lefthook install"
+    "postinstall": "lefthook install",
+    "lint": "expo lint"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["lefthook"]
+    "onlyBuiltDependencies": [
+      "lefthook"
+    ]
   },
   "dependencies": {
     "@clerk/clerk-expo": "latest",
@@ -41,6 +44,9 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.17",
+    "eslint": "^9.39.4",
+    "eslint-config-expo": "~10.0.0",
+    "eslint-plugin-react-native": "^5.0.0",
     "lefthook": "^2.1.3",
     "typescript": "~5.9.3"
   },

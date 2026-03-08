@@ -612,29 +612,100 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 
 ### What the hooks enforce
 
-**`pre-commit` — runs on every `git commit`:**
+**`pre-commit` — runs on every `git commit` (parallel):**
 
 | Hook | Trigger | What it does |
 |---|---|---|
-| `backend-coverage` | Any `backend/**/*.go` file staged | Runs Go tests; blocks commit if coverage dropped below `.go-coverage-baseline` |
-| `mobile-typecheck` | Any `mobile/**/*.{ts,tsx}` file staged | Runs `tsc --noEmit`; blocks commit on TypeScript errors |
+| `backend-lint` | `backend/**/*.go` staged | Runs golangci-lint; blocks on errors. Config: `backend/.golangci.yml` |
+| `backend-coverage` | `backend/**/*.go` staged | Runs Go tests; blocks if coverage dropped below `.go-coverage-baseline` |
+| `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
+| `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
+
+**`pre-push` — runs on every `git push`:**
+
+| Hook | Trigger | What it does |
+|---|---|---|
+| `backend-tests` | `backend/**/*.go` staged | Runs full `go test ./...` suite to catch any failures before push |
 
 **Coverage ratchet rule:**
-- The current baseline is stored in `.go-coverage-baseline` at the repo root (committed to git)
-- On each commit that touches Go files, the baseline is checked: coverage cannot decrease
-- If coverage improves, the baseline auto-updates and is staged into the commit
+- Baseline stored in `.go-coverage-baseline` at repo root (committed to git)
+- Coverage cannot decrease; auto-updates when coverage improves
 - Measured packages: `internal/handlers`, `internal/middleware`
+
+### One-time developer setup
+
+```bash
+# After cloning — installs hooks automatically via postinstall script:
+cd mobile && pnpm install
+
+# golangci-lint must be installed globally (not via pnpm):
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+```
 
 ### Bypass (escape hatch)
 
-Use when adding new handler code where tests will follow in the next commit:
 ```bash
 LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
 ```
 
 ### Mobile test hook (coming soon)
 
-The `mobile-typecheck` command will be joined by `mobile-coverage` once Jest is set up for the mobile app. It will run in `pre-push` (slower check, only on push).
+`mobile-coverage` will be added to `pre-push` once Jest is set up for the mobile app.
+
+---
+
+## Linting
+
+### Backend (Go) — golangci-lint
+
+Config: `backend/.golangci.yml`. Enabled linters: `errcheck`, `govet`, `staticcheck`, `ineffassign`, `gosimple`, `unused`, `misspell`, `gosec`, `gofmt`, `goimports`.
+
+Run manually from `backend/`:
+```bash
+golangci-lint run ./...
+golangci-lint run --fix ./...   # auto-fix formatting
+```
+
+If the hook fails with formatting errors, auto-fix with:
+```bash
+cd backend && gofmt -w . && goimports -w .
+```
+
+### Mobile (TypeScript) — ESLint
+
+Config: `mobile/eslint.config.js` (ESLint 9 flat config). Uses `eslint-config-expo` + `eslint-plugin-react-native`.
+
+Key rules:
+- `react-native/no-inline-styles`: **warn** — inline styles are intentional only for dynamic theme hex colors; suppress with `// eslint-disable-next-line react-native/no-inline-styles`
+- `import/no-unresolved`: **off** — pnpm's layout confuses the resolver; TypeScript's `tsc` catches real missing imports
+
+Run manually from `mobile/`:
+```bash
+pnpm lint             # check
+pnpm lint --fix       # auto-fix where possible (or: npx expo lint --fix)
+```
+
+---
+
+## SonarCloud Integration
+
+Config: `sonar-project.properties` at repo root.
+
+**Quality chain:**
+1. Pre-commit (local): ESLint + golangci-lint + tsc + coverage ratchet
+2. CI (on push/PR): SonarCloud Scanner → sonarcloud.io quality gate *(GitHub Actions workflow — to be added)*
+3. IDE (real-time): SonarLint VS Code extension in connected mode
+
+**SonarLint IDE setup (one-time per developer):**
+1. Install "SonarQube for IDE" extension in VS Code
+2. Command Palette → "SonarLint: Connect to SonarCloud"
+3. Enter your `SONAR_TOKEN` and select the project
+4. SonarLint will sync SonarCloud's rule set for real-time feedback in the editor
+
+**Completing SonarCloud CI setup:**
+- Fill in `sonar.projectKey` and `sonar.organization` in `sonar-project.properties`
+- Add `SONAR_TOKEN` as a GitHub Actions secret
+- Add a GitHub Actions workflow that runs SonarScanner on push to `main` and on PRs
 
 ---
 

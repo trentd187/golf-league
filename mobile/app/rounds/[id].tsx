@@ -38,7 +38,7 @@ import {
 
 // useLocalSearchParams reads dynamic route params: /rounds/abc-123 → { id: "abc-123" }
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";

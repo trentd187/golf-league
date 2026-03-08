@@ -50,7 +50,7 @@ func Load() *Config {
 	// Using a pointer (*Config) avoids copying the struct everywhere it's passed.
 	return &Config{
 		Port:           port,
-		DatabaseURL:    os.Getenv("DATABASE_URL"),    // Required — server will fail to start without it
+		DatabaseURL:    os.Getenv("DATABASE_URL"),     // Required — server will fail to start without it
 		ClerkSecretKey: os.Getenv("CLERK_SECRET_KEY"), // Required for JWT verification once Clerk is configured
 		Env:            env,
 	}

@@ -833,7 +833,7 @@ func SearchExternalCourse(client *services.GolfCourseAPIClient) fiber.Handler {
 				name = r.ClubName
 			}
 			response = append(response, ExternalCourseSummaryResponse{
-				ExternalID: r.ID,
+				ExternalID: strconv.Itoa(r.ID),
 				Name:       name,
 				City:       r.City,
 				State:      r.State,
@@ -900,7 +900,7 @@ func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fib
 				State:          detail.State,
 				HoleCount:      holeCount,
 				ExternalSource: "golfcourseapi",
-				ExternalID:     detail.ID,
+				ExternalID:     strconv.Itoa(detail.ID),
 			}
 			if err := tx.Create(&created).Error; err != nil {
 				return err

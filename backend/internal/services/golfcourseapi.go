@@ -34,8 +34,9 @@ func NewGolfCourseAPIClient(apiKey string) *GolfCourseAPIClient {
 // These structs model GolfCourseAPI.com's JSON response shapes.
 
 // ExternalCourseSummary is the compact course record returned by the search endpoint.
+// GolfCourseAPI.com returns "id" as a JSON number, so we use int here.
 type ExternalCourseSummary struct {
-	ID         string `json:"id"`
+	ID         int    `json:"id"`
 	ClubName   string `json:"club_name"`
 	CourseName string `json:"course_name"`
 	City       string `json:"city"`
@@ -61,8 +62,9 @@ type ExternalHole struct {
 }
 
 // ExternalCourseDetail is the full course record returned by the detail endpoint.
+// GolfCourseAPI.com returns "id" as a JSON number, so we use int here.
 type ExternalCourseDetail struct {
-	ID         string        `json:"id"`
+	ID         int           `json:"id"`
 	ClubName   string        `json:"club_name"`
 	CourseName string        `json:"course_name"`
 	City       string        `json:"city"`

@@ -99,6 +99,9 @@ export default function CoursePickerModal({
   const t = useTheme();
 
   const [query, setQuery]                         = useState("");
+  // locationQuery: optional city, state, or zip — appended to external search and used
+  // to filter local DB results by city or state.
+  const [locationQuery, setLocationQuery]         = useState("");
   const [localResults, setLocalResults]           = useState<LocalCourseSummary[]>([]);
   const [externalResults, setExternalResults]     = useState<ExternalCourseSummary[]>([]);
   const [localLoading, setLocalLoading]           = useState(false);
@@ -117,6 +120,7 @@ export default function CoursePickerModal({
   useEffect(() => {
     if (!visible) {
       setQuery("");
+      setLocationQuery("");
       setLocalResults([]);
       setExternalResults([]);
       setLocalLoading(false);
@@ -128,6 +132,7 @@ export default function CoursePickerModal({
   }, [visible]);
 
   // ── Local search — fires 500 ms after the user stops typing ─────────────────
+  // Runs on both query and locationQuery changes so filtering updates when either field changes.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
@@ -145,10 +150,14 @@ export default function CoursePickerModal({
     debounceRef.current = setTimeout(async () => {
       try {
         const token = await getToken();
-        const res = await fetch(
-          `${API_URL}/api/v1/courses?name=${encodeURIComponent(query.trim())}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        // Build URL: always filter by name; ?location= does an OR across city and state
+        // so typing "MI" or "Grand Rapids" matches either column correctly.
+        let url = `${API_URL}/api/v1/courses?name=${encodeURIComponent(query.trim())}`;
+        const loc = locationQuery.trim();
+        if (loc) {
+          url += `&location=${encodeURIComponent(loc)}`;
+        }
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         if (res.ok) {
           const data = await res.json();
           setLocalResults(Array.isArray(data) ? data : []);
@@ -167,7 +176,7 @@ export default function CoursePickerModal({
     // not synchronously in the effect body. Including it would cause an infinite
     // loop because Clerk creates a new function reference on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, locationQuery]);
 
   // ── External search — only called when the user explicitly taps "Search Online" ─
   const searchExternal = async () => {
@@ -182,7 +191,10 @@ export default function CoursePickerModal({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ search: query.trim() }),
+        body: JSON.stringify({
+          search: query.trim(),
+          location: locationQuery.trim() || undefined,
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -304,6 +316,25 @@ export default function CoursePickerModal({
             />
             {query.length > 0 && (
               <TouchableOpacity onPress={() => setQuery("")} hitSlop={8} disabled={busy}>
+                <Ionicons name="close-circle" size={18} color={t.colors.tabBarInactive} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Optional location filter — city, state abbreviation, or zip */}
+          <View className={`flex-row items-center border rounded-xl px-3 mt-2 gap-2 ${t.borderInput} ${t.surfaceSunken}`}>
+            <Ionicons name="location-outline" size={18} color={t.colors.tabBarInactive} />
+            <TextInput
+              className={`flex-1 py-2.5 text-base ${t.textPrimary}`}
+              placeholder="City, state, or zip (optional)"
+              placeholderTextColor={t.colors.tabBarInactive}
+              value={locationQuery}
+              onChangeText={setLocationQuery}
+              returnKeyType="search"
+              editable={!busy}
+            />
+            {locationQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setLocationQuery("")} hitSlop={8} disabled={busy}>
                 <Ionicons name="close-circle" size={18} color={t.colors.tabBarInactive} />
               </TouchableOpacity>
             )}

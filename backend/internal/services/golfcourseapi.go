@@ -1,6 +1,13 @@
 // Package services contains clients for external services used by the Golf League API.
 // This file implements a client for GolfCourseAPI.com, a free API that provides
 // course information including hole-by-hole par, yardage, and stroke indexes.
+//
+// Verified against the official OpenAPI spec (openapi.yml):
+//   - Search endpoint: GET /v1/search?search_query=<term>  (not /v1/courses?search=)
+//   - Location fields are nested under a "location" object (not flat)
+//   - Tees are split into tees.male[] and tees.female[] (not a flat array)
+//   - Hole number is positional (1-indexed) — no explicit hole_number field
+//   - All IDs are JSON numbers, not strings
 package services
 
 import (
@@ -31,46 +38,49 @@ func NewGolfCourseAPIClient(apiKey string) *GolfCourseAPIClient {
 }
 
 // ─── External data types ───────────────────────────────────────────────────────
-// These structs model GolfCourseAPI.com's JSON response shapes.
+// These structs exactly match GolfCourseAPI.com's JSON response shapes.
 
-// ExternalCourseSummary is the compact course record returned by the search endpoint.
-// GolfCourseAPI.com returns "id" as a JSON number, so we use int here.
-type ExternalCourseSummary struct {
-	ID         int    `json:"id"`
-	ClubName   string `json:"club_name"`
-	CourseName string `json:"course_name"`
-	City       string `json:"city"`
-	State      string `json:"state_name"`
+// ExternalLocation is the nested location object inside every course record.
+type ExternalLocation struct {
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Country string `json:"country"`
 }
 
-// ExternalTee describes one tee set from the external API.
-type ExternalTee struct {
-	TeeType      string         `json:"tee_type"` // e.g. "Blue", "White", "Red"
-	Gender       string         `json:"gender"`   // "Male", "Female", or ""
-	CourseRating float64        `json:"course_rating"`
-	SlopeRating  int            `json:"slope_rating"`
-	Par          int            `json:"par"`
-	Holes        []ExternalHole `json:"holes"`
-}
-
-// ExternalHole describes one hole from the external API.
+// ExternalHole describes one hole. Holes are positionally ordered in the array —
+// GolfCourseAPI does not include a hole_number field; array index + 1 = hole number.
 type ExternalHole struct {
-	HoleNumber  int `json:"hole_number"`
 	Par         int `json:"par"`
-	StrokeIndex int `json:"handicap"` // GolfCourseAPI calls this "handicap"
+	StrokeIndex int `json:"handicap"` // GolfCourseAPI calls stroke index "handicap"
 	Yardage     int `json:"yardage"`
 }
 
-// ExternalCourseDetail is the full course record returned by the detail endpoint.
-// GolfCourseAPI.com returns "id" as a JSON number, so we use int here.
-type ExternalCourseDetail struct {
-	ID         int           `json:"id"`
-	ClubName   string        `json:"club_name"`
-	CourseName string        `json:"course_name"`
-	City       string        `json:"city"`
-	State      string        `json:"state_name"`
-	NumHoles   int           `json:"num_holes"`
-	Tees       []ExternalTee `json:"tees"`
+// ExternalTeeBox describes one tee set. Gender is not a field here — it is
+// determined by whether this tee appears in ExternalCourseTees.Male or .Female.
+type ExternalTeeBox struct {
+	TeeName      string         `json:"tee_name"`
+	CourseRating float64        `json:"course_rating"`
+	SlopeRating  int            `json:"slope_rating"`
+	Par          int            `json:"par_total"` // total par for all holes
+	NumHoles     int            `json:"number_of_holes"`
+	Holes        []ExternalHole `json:"holes"`
+}
+
+// ExternalCourseTees holds tee sets split by gender as returned by the API.
+type ExternalCourseTees struct {
+	Male   []ExternalTeeBox `json:"male"`
+	Female []ExternalTeeBox `json:"female"`
+}
+
+// ExternalCourse is the course record shape used by both the search and detail endpoints.
+// Both /v1/search and /v1/courses/{id} return this structure — search returns an array,
+// detail wraps one in a {"course": ...} envelope.
+type ExternalCourse struct {
+	ID         int                `json:"id"`
+	ClubName   string             `json:"club_name"`
+	CourseName string             `json:"course_name"`
+	Location   ExternalLocation   `json:"location"`
+	Tees       ExternalCourseTees `json:"tees"`
 }
 
 // IsConfigured reports whether an API key has been provided.
@@ -83,9 +93,13 @@ func (c *GolfCourseAPIClient) IsConfigured() bool {
 // ─── API methods ───────────────────────────────────────────────────────────────
 
 // Search queries GolfCourseAPI for courses matching the given search term.
-// The search term is matched against course name and club name.
-func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourseSummary, error) {
-	endpoint := fmt.Sprintf("%s/courses?search=%s", golfCourseAPIBase, url.QueryEscape(searchTerm))
+// The API matches against course name and club name; location context (e.g. "Pebble Beach CA")
+// can be included in the search term to narrow results.
+// Endpoint: GET /v1/search?search_query=<term>
+func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourse, error) {
+	// The search endpoint is /v1/search, distinct from /v1/courses/{id}.
+	// The query param is "search_query" (not "search") per the OpenAPI spec.
+	endpoint := fmt.Sprintf("%s/search?search_query=%s", golfCourseAPIBase, url.QueryEscape(searchTerm))
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -104,9 +118,9 @@ func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourseSummary
 		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	// GolfCourseAPI wraps results in a top-level object.
+	// GolfCourseAPI wraps results in {"courses": [...]}
 	var wrapper struct {
-		Courses []ExternalCourseSummary `json:"courses"`
+		Courses []ExternalCourse `json:"courses"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -116,7 +130,8 @@ func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourseSummary
 }
 
 // FetchByID retrieves the full course detail (all tees and holes) for the given external ID.
-func (c *GolfCourseAPIClient) FetchByID(externalID string) (*ExternalCourseDetail, error) {
+// Endpoint: GET /v1/courses/{id}
+func (c *GolfCourseAPIClient) FetchByID(externalID string) (*ExternalCourse, error) {
 	endpoint := fmt.Sprintf("%s/courses/%s", golfCourseAPIBase, url.PathEscape(externalID))
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -139,9 +154,9 @@ func (c *GolfCourseAPIClient) FetchByID(externalID string) (*ExternalCourseDetai
 		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	// GolfCourseAPI wraps the course in a top-level object.
+	// GolfCourseAPI wraps the course in {"course": {...}}
 	var wrapper struct {
-		Course ExternalCourseDetail `json:"course"`
+		Course ExternalCourse `json:"course"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)

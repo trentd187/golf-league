@@ -227,36 +227,52 @@ func activeRoundGuard(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (stop bool)
 // insertExternalTees creates tee and hole records from GolfCourseAPI data inside
 // an existing transaction. Extracted because ImportExternalCourse and RefreshCourse
 // share the identical insertion logic.
-func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, extTees []services.ExternalTee) error {
-	for _, extTee := range extTees {
-		tee := models.Tee{
-			CourseID:     courseID,
-			Name:         extTee.TeeType,
-			Gender:       mapExternalGender(extTee.Gender),
-			CourseRating: extTee.CourseRating,
-			SlopeRating:  extTee.SlopeRating,
-			Par:          extTee.Par,
-		}
-		if err := tx.Create(&tee).Error; err != nil {
+// GolfCourseAPI splits tees by gender into separate male/female arrays — gender is
+// implicit from which array the tee appears in, not a field on the tee itself.
+func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees services.ExternalCourseTees) error {
+	for _, extTee := range tees.Male {
+		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderMens); err != nil {
 			return err
 		}
-		for _, extHole := range extTee.Holes {
-			// The external API uses 0 to mean "no yardage" — store as NULL.
-			var yardagePtr *int
-			if extHole.Yardage > 0 {
-				y := extHole.Yardage
-				yardagePtr = &y
-			}
-			hole := models.Hole{
-				TeeID:       tee.ID,
-				HoleNumber:  extHole.HoleNumber,
-				Par:         extHole.Par,
-				StrokeIndex: extHole.StrokeIndex,
-				Yardage:     yardagePtr,
-			}
-			if err := tx.Create(&hole).Error; err != nil {
-				return err
-			}
+	}
+	for _, extTee := range tees.Female {
+		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderWomens); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertOneTee inserts a single tee and all its holes inside an existing transaction.
+// Hole numbers are positional: array index + 1 (GolfCourseAPI has no hole_number field).
+func insertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee services.ExternalTeeBox, gender models.TeeGender) error {
+	tee := models.Tee{
+		CourseID:     courseID,
+		Name:         extTee.TeeName,
+		Gender:       gender,
+		CourseRating: extTee.CourseRating,
+		SlopeRating:  extTee.SlopeRating,
+		Par:          extTee.Par,
+	}
+	if err := tx.Create(&tee).Error; err != nil {
+		return err
+	}
+	for i, extHole := range extTee.Holes {
+		// The external API uses 0 to mean "no yardage" — store as NULL.
+		var yardagePtr *int
+		if extHole.Yardage > 0 {
+			y := extHole.Yardage
+			yardagePtr = &y
+		}
+		hole := models.Hole{
+			TeeID:       tee.ID,
+			HoleNumber:  i + 1, // positional — GolfCourseAPI has no hole_number field
+			Par:         extHole.Par,
+			StrokeIndex: extHole.StrokeIndex,
+			Yardage:     yardagePtr,
+		}
+		if err := tx.Create(&hole).Error; err != nil {
+			return err
 		}
 	}
 	return nil
@@ -299,13 +315,22 @@ func loadCourseWithTees(db *gorm.DB, courseID uuid.UUID) (models.Course, error) 
 // ─── Handlers ──────────────────────────────────────────────────────────────────
 
 // GetCourses returns a handler for GET /api/v1/courses.
-// Supports optional query params: ?name=, ?city=, ?state= (all case-insensitive, partial match).
+// Supports optional query params (all case-insensitive, partial match):
+//   - ?name=      — filter by course name
+//   - ?location=  — OR filter across city and state (use this for free-text location input)
+//   - ?city=      — filter by city only
+//   - ?state=     — filter by state only
 func GetCourses(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		query := db.Model(&models.Course{})
 
 		if name := strings.TrimSpace(c.Query("name")); name != "" {
 			query = query.Where("name ILIKE ?", "%"+name+"%")
+		}
+		// ?location= matches against city OR state — useful when the user types a free-text
+		// location (e.g. "MI" or "Grand Rapids") without knowing which column it belongs to.
+		if loc := strings.TrimSpace(c.Query("location")); loc != "" {
+			query = query.Where("city ILIKE ? OR state ILIKE ?", "%"+loc+"%", "%"+loc+"%")
 		}
 		if city := strings.TrimSpace(c.Query("city")); city != "" {
 			query = query.Where("city ILIKE ?", "%"+city+"%")
@@ -789,7 +814,8 @@ func UpdateHole(db *gorm.DB) fiber.Handler {
 
 // SearchExternalCourseRequest is the body for POST /courses/search-external.
 type SearchExternalCourseRequest struct {
-	Search string `json:"search"` // required — matches course name or club name
+	Search   string `json:"search"`             // required — matches course name or club name
+	Location string `json:"location,omitempty"` // optional — city, state, or zip to narrow results
 }
 
 // ExternalCourseSummaryResponse is a single result from a course search.
@@ -817,11 +843,20 @@ func SearchExternalCourse(client *services.GolfCourseAPIClient) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
 		req.Search = strings.TrimSpace(req.Search)
+		req.Location = strings.TrimSpace(req.Location)
 		if req.Search == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "search is required"})
 		}
 
-		results, err := client.Search(req.Search)
+		// Combine name + location into one search term — GolfCourseAPI uses a single
+		// free-text "search" param, so appending location (e.g. "Pebble Beach CA")
+		// narrows results without needing a separate API param.
+		searchTerm := req.Search
+		if req.Location != "" {
+			searchTerm = req.Search + " " + req.Location
+		}
+
+		results, err := client.Search(searchTerm)
 		if err != nil {
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "external API search failed: " + err.Error()})
 		}
@@ -832,11 +867,14 @@ func SearchExternalCourse(client *services.GolfCourseAPIClient) fiber.Handler {
 			if name == "" {
 				name = r.ClubName
 			}
+			// Tee count is the total across male and female tee sets.
+			teeCount := len(r.Tees.Male) + len(r.Tees.Female)
 			response = append(response, ExternalCourseSummaryResponse{
 				ExternalID: strconv.Itoa(r.ID),
 				Name:       name,
-				City:       r.City,
-				State:      r.State,
+				City:       r.Location.City,
+				State:      r.Location.State,
+				TeeCount:   teeCount,
 			})
 		}
 
@@ -889,15 +927,18 @@ func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fib
 			if name == "" {
 				name = detail.ClubName
 			}
-			holeCount := detail.NumHoles
-			if holeCount == 0 {
-				holeCount = 18
+			// Derive hole count from the first tee set that declares it; default to 18.
+			holeCount := 18
+			if len(detail.Tees.Male) > 0 && detail.Tees.Male[0].NumHoles > 0 {
+				holeCount = detail.Tees.Male[0].NumHoles
+			} else if len(detail.Tees.Female) > 0 && detail.Tees.Female[0].NumHoles > 0 {
+				holeCount = detail.Tees.Female[0].NumHoles
 			}
 
 			created = models.Course{
 				Name:           name,
-				City:           detail.City,
-				State:          detail.State,
+				City:           detail.Location.City,
+				State:          detail.Location.State,
 				HoleCount:      holeCount,
 				ExternalSource: "golfcourseapi",
 				ExternalID:     strconv.Itoa(detail.ID),
@@ -971,18 +1012,5 @@ func RefreshCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Hand
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to reload course"})
 		}
 		return c.JSON(buildCourseDetail(full))
-	}
-}
-
-// mapExternalGender converts GolfCourseAPI's gender string to our TeeGender enum.
-// GolfCourseAPI uses "Male"/"Female"/empty; we use "mens"/"womens"/"unisex".
-func mapExternalGender(g string) models.TeeGender {
-	switch strings.ToLower(g) {
-	case "male", "men", "mens":
-		return models.TeeGenderMens
-	case "female", "women", "womens":
-		return models.TeeGenderWomens
-	default:
-		return models.TeeGenderUnisex
 	}
 }

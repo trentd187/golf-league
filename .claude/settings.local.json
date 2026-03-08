@@ -7,7 +7,9 @@
       "Bash(go test ./...)",
       "Bash(export PATH=\"/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH\")",
       "Bash(npx tsc --noEmit)",
-      "Bash(go test ./internal/handlers/ -run \"TestSearchExternal|TestImportExternal|TestRefreshCourse\" -v)"
+      "Bash(go test ./internal/handlers/ -run \"TestSearchExternal|TestImportExternal|TestRefreshCourse\" -v)",
+      "WebFetch(domain:api.golfcourseapi.com)",
+      "Bash(go test ./internal/handlers/ -v)"
     ]
   }
 }

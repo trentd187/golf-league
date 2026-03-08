@@ -127,6 +127,19 @@ func TestUpdateTee_InvalidCourseUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestUpdateTee_InvalidTeeUUID verifies that a valid course ID but malformed tee ID returns 400.
+// The handler parses courseId first; a valid UUID there lets it reach parseTeeID,
+// which must also reject the malformed tee ID before any DB call.
+func TestUpdateTee_InvalidTeeUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPatch, "/courses/:courseId/tees/:teeId",
+		handlers.UpdateTee(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch,
+			"/courses/00000000-0000-0000-0000-000000000001/tees/not-a-uuid", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── DeleteTee ─────────────────────────────────────────────────────────────────
 
 // TestDeleteTee_InvalidCourseUUID verifies that a malformed course ID returns 400.
@@ -135,6 +148,17 @@ func TestDeleteTee_InvalidCourseUUID(t *testing.T) {
 		handlers.DeleteTee(nil))
 	resp, err := app.Test(
 		httptest.NewRequest(http.MethodDelete, "/courses/bad-id/tees/also-bad", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestDeleteTee_InvalidTeeUUID verifies that a valid course ID but malformed tee ID returns 400.
+func TestDeleteTee_InvalidTeeUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodDelete, "/courses/:courseId/tees/:teeId",
+		handlers.DeleteTee(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodDelete,
+			"/courses/00000000-0000-0000-0000-000000000001/tees/not-a-uuid", nil), -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -151,7 +175,30 @@ func TestUpsertHoles_InvalidCourseUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestUpsertHoles_InvalidTeeUUID verifies that a valid course ID but malformed tee ID returns 400.
+func TestUpsertHoles_InvalidTeeUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut, "/courses/:courseId/tees/:teeId/holes",
+		handlers.UpsertHoles(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPut,
+			"/courses/00000000-0000-0000-0000-000000000001/tees/not-a-uuid/holes", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── UpdateHole ────────────────────────────────────────────────────────────────
+
+// TestUpdateHole_InvalidTeeUUID verifies that a valid course ID but malformed tee ID returns 400.
+func TestUpdateHole_InvalidTeeUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPatch,
+		"/courses/:courseId/tees/:teeId/holes/:holeNumber",
+		handlers.UpdateHole(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch,
+			"/courses/00000000-0000-0000-0000-000000000001/tees/not-a-uuid/holes/1", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
 
 // TestUpdateHole_InvalidCourseUUID verifies that a malformed course ID returns 400.
 func TestUpdateHole_InvalidCourseUUID(t *testing.T) {
@@ -182,6 +229,17 @@ func TestUpdateHole_InvalidHoleNumber(t *testing.T) {
 
 // ─── SearchExternalCourse ──────────────────────────────────────────────────────
 
+// TestSearchExternalCourse_UnconfiguredClient verifies that a missing API key returns 503.
+// The handler checks IsConfigured() before touching the request body, so no valid search
+// term is needed — even an otherwise-valid request is blocked without a key.
+func TestSearchExternalCourse_UnconfiguredClient(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/courses/search-external",
+		handlers.SearchExternalCourse(services.NewGolfCourseAPIClient("")))
+	resp := doJSON(t, app, http.MethodPost, "/courses/search-external",
+		map[string]any{"search": "Pinehurst"})
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
 // TestSearchExternalCourse_EmptySearchField verifies that an empty "search" field
 // is rejected before the external API client is called.
 func TestSearchExternalCourse_EmptySearchField(t *testing.T) {
@@ -204,6 +262,15 @@ func TestSearchExternalCourse_WhitespaceSearch(t *testing.T) {
 
 // ─── ImportExternalCourse ──────────────────────────────────────────────────────
 
+// TestImportExternalCourse_UnconfiguredClient verifies that a missing API key returns 503.
+func TestImportExternalCourse_UnconfiguredClient(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/courses/import-external",
+		handlers.ImportExternalCourse(nil, services.NewGolfCourseAPIClient("")))
+	resp := doJSON(t, app, http.MethodPost, "/courses/import-external",
+		map[string]any{"external_id": "12345"})
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
 // TestImportExternalCourse_MissingExternalID verifies that omitting "external_id" returns 400
 // before any DB query or external API call.
 func TestImportExternalCourse_MissingExternalID(t *testing.T) {
@@ -224,6 +291,18 @@ func TestImportExternalCourse_WhitespaceExternalID(t *testing.T) {
 }
 
 // ─── RefreshCourse ─────────────────────────────────────────────────────────────
+
+// TestRefreshCourse_UnconfiguredClient verifies that a missing API key returns 503.
+// The IsConfigured() check runs before UUID parsing, so any course ID triggers it.
+func TestRefreshCourse_UnconfiguredClient(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/courses/:courseId/refresh",
+		handlers.RefreshCourse(nil, services.NewGolfCourseAPIClient("")))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPost,
+			"/courses/00000000-0000-0000-0000-000000000001/refresh", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
 
 // TestRefreshCourse_InvalidUUID verifies that a malformed course ID returns 400
 // before any DB or external API call.

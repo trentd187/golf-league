@@ -520,9 +520,14 @@ A mirrored helper `isRoundOrganizer()` in `handlers/rounds.go` does the same che
 
 ### Handicap Rule
 
-- `rounds.requires_handicap = true` → score entry is blocked until the player's `round_players.handicap_index` is set
-- Course handicap formula: `ROUND(handicap_index × (slope_rating / 113) + (course_rating - par))`
+Handicap is **player-entered per round** — there is no automatic WHS calculation.
+
+- Before scoring begins, the player (or organizer) enters a single integer handicap for that round
+- This is stored in `round_players.course_handicap` (int) — the playing handicap for this specific round
+- `round_players.handicap_index` (decimal) exists in the schema but is optional; it can hold the player's self-reported WHS index for historical reference but is never used in any calculation
+- `rounds.requires_handicap = true` → score entry is blocked until `round_players.course_handicap` is set for that player
 - Enforced at the API layer (not at the database level) on score mutation routes
+- Do **not** implement the WHS formula (`handicap_index × slope / 113 + rating - par`) — this was a previous design that has been replaced
 
 ### Finish Position
 
@@ -534,12 +539,102 @@ Both are `nullable INT`, set programmatically when a round or event is marked `c
 
 ---
 
+## Backend Testing
+
+### Setup
+
+- Test runner: `go test` (built into Go — no install needed)
+- Assertion library: `github.com/stretchr/testify` (already in `go.mod`)
+- Shared helpers: `backend/internal/testutil/testutil.go`
+
+Run all tests from the `backend/` directory:
+```bash
+go test ./...
+```
+
+Run tests for a specific package with verbose output:
+```bash
+go test ./internal/handlers/ -v
+```
+
+Run a single test by name:
+```bash
+go test ./internal/handlers/ -run TestHealthCheck -v
+```
+
+### File Conventions
+
+- Test files end in `_test.go` (excluded from production builds automatically)
+- Package name is `<package>_test` (black-box style — only exported symbols accessible)
+- Test function signature: `func TestSubject_Scenario(t *testing.T)`
+- Test files live alongside the code they test (e.g., `health_test.go` next to `health.go`)
+
+### Two-Tier Test Strategy
+
+**Tier 1 — No database (fast, always runnable):**
+Use `testutil.NewTestApp` + `testutil.DoRequest` to test a handler in isolation against a minimal Fiber app.
+```go
+app := testutil.NewTestApp(t, http.MethodGet, "/health", handlers.HealthCheck)
+resp := testutil.DoRequest(t, app, http.MethodGet, "/health", nil)
+assert.Equal(t, http.StatusOK, resp.StatusCode)
+```
+
+**Tier 2 — With database (integration tests, requires `TEST_DATABASE_URL`):**
+Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test PostgreSQL instance, run migrations, and return a `*gorm.DB`. Each test that needs the DB calls this and defers cleanup. Tests in this tier should be in files named `*_integration_test.go` and skipped when `TEST_DATABASE_URL` is not set.
+
+### What to Test
+
+| Priority | Target | Why |
+|---|---|---|
+| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) | Core access control — bugs here affect all event/round mutations |
+| High | Score entry validation (handicap gate, group membership check) | Will be added when score handlers are built |
+| Medium | Handler happy paths (correct status + response shape) | Catches regressions in route wiring |
+| Low | Error paths (404, 403, invalid body) | Useful but less critical than correctness |
+
+---
+
 ## Docker
 
 - `docker-compose.yml` at the repo root starts PostgreSQL and the backend together
 - The backend waits for the database healthcheck before starting (`depends_on: condition: service_healthy`)
 - Migrations run automatically on every server startup via `database.RunMigrations()`
 - The Dockerfile uses a multi-stage build: `golang:1.24-alpine` to build, `alpine:latest` to run
+
+---
+
+## Pre-commit Hooks (lefthook)
+
+Git hooks are managed by **lefthook** (`lefthook.yml` at repo root).
+
+### Setup after cloning
+
+Hooks are installed automatically when you run `pnpm install` inside `mobile/` (the `postinstall` script runs `lefthook install`). No separate install step needed.
+
+### What the hooks enforce
+
+**`pre-commit` — runs on every `git commit`:**
+
+| Hook | Trigger | What it does |
+|---|---|---|
+| `backend-coverage` | Any `backend/**/*.go` file staged | Runs Go tests; blocks commit if coverage dropped below `.go-coverage-baseline` |
+| `mobile-typecheck` | Any `mobile/**/*.{ts,tsx}` file staged | Runs `tsc --noEmit`; blocks commit on TypeScript errors |
+
+**Coverage ratchet rule:**
+- The current baseline is stored in `.go-coverage-baseline` at the repo root (committed to git)
+- On each commit that touches Go files, the baseline is checked: coverage cannot decrease
+- If coverage improves, the baseline auto-updates and is staged into the commit
+- Measured packages: `internal/handlers`, `internal/middleware`
+
+### Bypass (escape hatch)
+
+Use when adding new handler code where tests will follow in the next commit:
+```bash
+LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
+```
+
+### Mobile test hook (coming soon)
+
+The `mobile-typecheck` command will be joined by `mobile-coverage` once Jest is set up for the mobile app. It will run in `pre-push` (slower check, only on push).
 
 ---
 

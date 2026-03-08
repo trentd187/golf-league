@@ -6,7 +6,10 @@ package middleware
 
 import (
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
+	"time"
 
 	// fiber is the HTTP framework; fiber.Handler is the function signature for middleware
 	"github.com/gofiber/fiber/v2"
@@ -132,6 +135,24 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 					"error": "failed to create user record",
 				})
 			}
+
+			// If no role claim came through in the JWT, public_metadata.role is not yet set
+			// in Clerk for this user. Set it to "user" now so that future JWTs (once the
+			// JWT template is configured to read public_metadata.role) carry the correct
+			// default role.
+			//
+			// This only runs on new user creation — never on subsequent requests — so there
+			// is no risk of accidentally overwriting a role elevated to "admin" or "manager"
+			// after the fact. The guard is: if the JWT already contained a role claim, Clerk
+			// already has the metadata set and we skip this call entirely.
+			if claims.Role == "" {
+				if err := setDefaultRoleInClerk(cfg.ClerkSecretKey, clerkUserID); err != nil {
+					// Log and continue — the user was created in our DB with role "user".
+					// The Clerk metadata update is best-effort; if it fails, their JWT won't
+					// carry the role claim until the metadata is set manually in the Clerk dashboard.
+					log.Printf("warning: could not set default role in Clerk for %s: %v", clerkUserID, err)
+				}
+			}
 		} else {
 			// User found — sync any profile fields that may have changed in Clerk.
 			// We collect all changed fields into a single Updates() call to avoid
@@ -205,4 +226,55 @@ func roleFromClaim(s string) models.UserRole {
 		// Unknown or empty role — default to regular user
 		return models.UserRoleUser
 	}
+}
+
+// setDefaultRoleInClerk calls the Clerk Backend API to set public_metadata.role = "user"
+// for a newly created user who doesn't yet have a role in their Clerk metadata.
+//
+// Why this matters: the JWT template reads {{user.public_metadata.role}} to populate the
+// "role" claim. If public_metadata.role is absent, the claim is empty and the auth
+// middleware can't distinguish admins from new users on future sign-ins. Setting the
+// default here ensures every user has an explicit role in Clerk from their very first
+// sign-in.
+//
+// Safety: this is only called when claims.Role == "" (no existing role in the JWT),
+// which means public_metadata.role was not set before this user signed in. If a role
+// was already present in Clerk metadata it would appear in the JWT claim, and this
+// function would never be called — so it cannot overwrite "admin" or "manager".
+//
+// The Clerk PATCH /v1/users/{id} endpoint replaces the entire public_metadata object,
+// so we only send {"role": "user"} — any other metadata keys this user might have had
+// would be lost. In practice, brand new users have no prior metadata.
+func setDefaultRoleInClerk(secretKey, clerkUserID string) error {
+	// Build the JSON body. Only the "role" key is included — see note above on replacement.
+	body := strings.NewReader(`{"public_metadata": {"role": "user"}}`)
+
+	// Clerk Backend API endpoint for updating a user's metadata
+	url := fmt.Sprintf("https://api.clerk.com/v1/users/%s", clerkUserID)
+
+	req, err := http.NewRequest(http.MethodPatch, url, body)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+
+	// Clerk authenticates Backend API calls with the secret key as a Bearer token
+	req.Header.Set("Authorization", "Bearer "+secretKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	// 5-second timeout — this is a best-effort call on a hot path (user sign-in).
+	// We don't want a slow Clerk API to block the user's first request for long.
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("clerk API call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Any 2xx status means success. Clerk returns 200 with the updated user object.
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("clerk API returned status %d", resp.StatusCode)
+	}
+
+	return nil
 }

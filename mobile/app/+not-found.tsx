@@ -2,7 +2,7 @@
 // Catch-all screen rendered by Expo Router when a URL doesn't match any route in the app/ directory.
 //
 // In normal usage this would be a 404 page, but this app currently has one specific case
-// where this screen appears legitimately: the Google/Facebook/Apple OAuth callback.
+// where this screen appears legitimately: the Google/Apple OAuth callback.
 //
 // How OAuth deep links work:
 //   1. The user taps "Continue with Google" on the sign-in screen.

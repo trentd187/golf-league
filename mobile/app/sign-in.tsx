@@ -1,11 +1,10 @@
 // app/sign-in.tsx
 // The sign-in / sign-up screen — the first screen unauthenticated users see.
 //
-// Supports four authentication methods:
+// Supports three authentication methods:
 //   1. Google OAuth    — one-tap sign in with a Google account
-//   2. Facebook OAuth  — sign in with a Facebook account
-//   3. Apple Sign In   — sign in with an Apple ID (required on iOS when other OAuth is offered)
-//   4. Email OTP       — passwordless: enter email → 6-digit code → done
+//   2. Apple Sign In   — sign in with an Apple ID (required on iOS when other OAuth is offered)
+//   3. Email OTP       — passwordless: enter email → 6-digit code → done
 //
 // The email flow is "combined" — it handles both new users (sign-up) and
 // returning users (sign-in) from the same screen:
@@ -47,9 +46,8 @@ export default function SignIn() {
   const { signUp, setActive: setSignUpActive, isLoaded: signUpLoaded } = useSignUp();
 
   // One hook per OAuth provider — each returns a startOAuthFlow() function
-  const { startOAuthFlow: startGoogleOAuth }   = useOAuth({ strategy: "oauth_google" });
-  const { startOAuthFlow: startFacebookOAuth } = useOAuth({ strategy: "oauth_facebook" });
-  const { startOAuthFlow: startAppleOAuth }    = useOAuth({ strategy: "oauth_apple" });
+  const { startOAuthFlow: startGoogleOAuth } = useOAuth({ strategy: "oauth_google" });
+  const { startOAuthFlow: startAppleOAuth }  = useOAuth({ strategy: "oauth_apple" });
 
   const router = useRouter();
 
@@ -84,7 +82,7 @@ export default function SignIn() {
 
   // --- Generic OAuth handler ---
   // handleOAuth accepts any OAuth flow-starter function, making it reusable for
-  // Google, Facebook, and Apple without duplicating the try/catch logic.
+  // Google and Apple without duplicating the try/catch logic.
   const handleOAuth = async (
     startFlow: () => Promise<{ createdSessionId?: string | null; setActive?: ((opts: { session: string }) => Promise<void>) | null }>
   ) => {
@@ -209,20 +207,6 @@ export default function SignIn() {
               <ActivityIndicator color="white" />
             ) : (
               <Text className="text-white font-semibold text-base">Continue with Google</Text>
-            )}
-          </TouchableOpacity>
-
-          {/* Facebook — uses Facebook brand blue (#1877F2) */}
-          <TouchableOpacity
-            className="w-full rounded-xl py-4 items-center justify-center"
-            style={{ backgroundColor: "#1877F2" }}
-            onPress={() => handleOAuth(startFacebookOAuth)}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="white" />
-            ) : (
-              <Text className="text-white font-semibold text-base">Continue with Facebook</Text>
             )}
           </TouchableOpacity>
 

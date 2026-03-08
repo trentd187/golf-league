@@ -15,6 +15,7 @@ import (
 	"github.com/trentd187/golf-league/internal/database"
 	"github.com/trentd187/golf-league/internal/handlers"
 	"github.com/trentd187/golf-league/internal/middleware"
+	"github.com/trentd187/golf-league/internal/services"
 	"github.com/trentd187/golf-league/internal/websocket"
 )
 
@@ -34,6 +35,10 @@ func main() {
 	// so it doesn't block the rest of startup.
 	hub := websocket.NewHub()
 	go hub.Run()
+
+	// GolfCourseAPIClient is created once and shared across requests.
+	// GOLF_COURSE_API_KEY may be empty — handlers check and return 503 if called without a key.
+	golfAPI := services.NewGolfCourseAPIClient(cfg.GolfCourseAPIKey)
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
@@ -71,6 +76,24 @@ func main() {
 	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))
+
+	// Course routes — GET open to any authenticated user; mutations require admin or manager
+	api.Get("/courses", handlers.GetCourses(db))
+	api.Post("/courses", middleware.RequireRole("admin", "manager"), handlers.CreateCourse(db))
+	api.Get("/courses/:courseId", handlers.GetCourse(db))
+	api.Patch("/courses/:courseId", middleware.RequireRole("admin", "manager"), handlers.UpdateCourse(db))
+
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin", "manager"), handlers.CreateTee(db))
+	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin", "manager"), handlers.UpdateTee(db))
+	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin", "manager"), handlers.DeleteTee(db))
+
+	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin", "manager"), handlers.UpsertHoles(db))
+	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin", "manager"), handlers.UpdateHole(db))
+
+	// External course import — search returns results without writing; import/refresh write to DB
+	api.Post("/courses/search-external", middleware.RequireRole("admin", "manager"), handlers.SearchExternalCourse(golfAPI))
+	api.Post("/courses/import-external", middleware.RequireRole("admin", "manager"), handlers.ImportExternalCourse(db, golfAPI))
+	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin", "manager"), handlers.RefreshCourse(db, golfAPI))
 
 	// User routes
 	api.Get("/users", handlers.GetUsers(db))

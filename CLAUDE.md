@@ -28,7 +28,7 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 > **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
 
-The user is **learning TypeScript** and has **intermediate Go knowledge**. Always add thorough explanatory comments to every file touched.
+The user is **learning TypeScript** and has **intermediate Go knowledge**. Follow the Comments rule below — file-level comment always, explain *why* and non-obvious features, skip comments that restate the code.
 
 ---
 
@@ -130,6 +130,7 @@ Current required variables:
 - `CLERK_JWKS_URL` — Clerk's JWKS endpoint for JWT signature verification. Found in Clerk Dashboard → API Keys → Advanced. Format: `https://<your-clerk-domain>.clerk.accounts.dev/.well-known/jwks.json`
 - `PORT` — HTTP port (default: `8080`)
 - `ENV` — runtime environment (default: `development`)
+- `GOLF_COURSE_API_KEY` — Free API key from [golfcourseapi.com](https://golfcourseapi.com) (sign-up required). Enables `POST /courses/search-external`, `POST /courses/import-external`, and `POST /courses/:courseId/refresh`. Leave empty to disable external course import (manual course entry still works).
 
 ---
 
@@ -567,27 +568,56 @@ go test ./internal/handlers/ -run TestHealthCheck -v
 - Test function signature: `func TestSubject_Scenario(t *testing.T)`
 - Test files live alongside the code they test (e.g., `health_test.go` next to `health.go`)
 
+### Tests Are Required for Every New Handler
+
+**Every new handler file must ship with a `_test.go` file in the same commit.** The coverage ratchet in `scripts/check-go-coverage.sh` blocks any commit that lowers the total coverage percentage — adding untested code will fail the pre-commit hook. Do not use `LEFTHOOK=0` to bypass this; write the tests instead.
+
+The minimum bar for a new handler: cover every validation path that can be reached without a real database (invalid UUIDs, missing required fields, out-of-range values). This alone is enough to hold coverage because those paths are the first code executed on any bad request.
+
 ### Two-Tier Test Strategy
 
 **Tier 1 — No database (fast, always runnable):**
-Use `testutil.NewTestApp` + `testutil.DoRequest` to test a handler in isolation against a minimal Fiber app.
+Most validation branches return before any DB call, so `nil` can be passed as `*gorm.DB` safely. Build the Fiber app inline (see pattern below) and fire requests with `httptest.NewRequest`. For POST/PATCH/PUT, set `Content-Type: application/json` — Fiber's `BodyParser` requires it.
+
 ```go
-app := testutil.NewTestApp(t, http.MethodGet, "/health", handlers.HealthCheck)
-resp := testutil.DoRequest(t, app, http.MethodGet, "/health", nil)
-assert.Equal(t, http.StatusOK, resp.StatusCode)
+// Minimal Fiber app for one route (no auth, no DB):
+app := fiber.New(fiber.Config{DisableStartupMessage: true})
+app.Get("/courses/:courseId", handlers.GetCourse(nil)) // nil DB — UUID check returns first
+
+req := httptest.NewRequest(http.MethodGet, "/courses/not-a-uuid", nil)
+resp, err := app.Test(req, -1)
+require.NoError(t, err)
+assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 ```
+
+For JSON bodies (POST/PATCH/PUT), always set the Content-Type header:
+```go
+buf := bytes.NewBufferString(`{"name":""}`)
+req := httptest.NewRequest(http.MethodPost, "/courses", buf)
+req.Header.Set("Content-Type", "application/json")
+resp, err := app.Test(req, -1)
+```
+
+Or use the `doJSON` helper pattern from `courses_test.go` — copy it into any new `_test.go` file rather than depending on it as a shared util (each test file is self-contained).
+
+`testutil.NewTestApp` + `testutil.DoRequest` still work for simple GET handlers (see `health_test.go`).
 
 **Tier 2 — With database (integration tests, requires `TEST_DATABASE_URL`):**
 Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test PostgreSQL instance, run migrations, and return a `*gorm.DB`. Each test that needs the DB calls this and defers cleanup. Tests in this tier should be in files named `*_integration_test.go` and skipped when `TEST_DATABASE_URL` is not set.
 
-### What to Test
+### What to Test (ordered by impact on coverage ratchet)
 
-| Priority | Target | Why |
+| Priority | Target | Tier |
 |---|---|---|
-| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) | Core access control — bugs here affect all event/round mutations |
-| High | Score entry validation (handicap gate, group membership check) | Will be added when score handlers are built |
-| Medium | Handler happy paths (correct status + response shape) | Catches regressions in route wiring |
-| Low | Error paths (404, 403, invalid body) | Useful but less critical than correctness |
+| **Required** | Every validation branch reachable without a DB (invalid UUID, missing required field, bad enum value) | 1 |
+| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) — bugs here break all event/round mutations | 1 |
+| High | Score entry validation (handicap gate, group membership) — add when score handlers are built | 1 |
+| Medium | Handler happy paths (correct status + response shape) | 2 |
+| Low | Additional error paths (404, 403) | 2 |
+
+### Coverage Ratchet
+
+The baseline is stored in `.go-coverage-baseline` (repo root, committed). The hook auto-updates it upward when coverage improves — it can never go down. Measured packages: `internal/handlers`, `internal/middleware`.
 
 ---
 
@@ -596,7 +626,7 @@ Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test
 - `docker-compose.yml` at the repo root is for **local development only** — starts PostgreSQL and the backend together
 - The backend waits for the database healthcheck before starting (`depends_on: condition: service_healthy`)
 - Migrations run automatically on every server startup via `database.RunMigrations()`
-- The Dockerfile uses a multi-stage build: `golang:1.24-alpine` to build, `alpine:latest` to run
+- The Dockerfile uses a multi-stage build: `golang:1.24-alpine` to build, `alpine:3.21` to run
 
 **Production deployment is Railway:**
 - Railway detects the `Dockerfile` in `backend/` and builds + deploys it automatically on push to `main`

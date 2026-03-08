@@ -283,14 +283,16 @@ type TeamScore struct {
 
 // Course represents a golf course where rounds are played.
 type Course struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name      string    `gorm:"not null"`
-	City      string    `gorm:"not null;default:''"`
-	State     string    `gorm:"not null;default:''"`
-	HoleCount int       `gorm:"not null;default:18"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Tees      []Tee `gorm:"foreignKey:CourseID"`
+	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name           string    `gorm:"not null"`
+	City           string    `gorm:"not null;default:''"`
+	State          string    `gorm:"not null;default:''"`
+	HoleCount      int       `gorm:"not null;default:18"`
+	ExternalSource string    `gorm:"not null;default:''"` // e.g. "golfcourseapi"; empty for manually-entered courses
+	ExternalID     string    `gorm:"not null;default:''"` // Course ID in the external system
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Tees           []Tee `gorm:"foreignKey:CourseID"`
 }
 
 // Tee represents one set of tee boxes on a course (e.g. "Blue", "White", "Red").

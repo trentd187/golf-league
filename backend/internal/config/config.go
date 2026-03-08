@@ -12,11 +12,12 @@ import (
 
 // Config holds all runtime configuration values for the application.
 type Config struct {
-	Port           string // TCP port the HTTP server listens on (e.g. "8080")
-	DatabaseURL    string // PostgreSQL connection string
-	ClerkSecretKey string // Secret key for calling Clerk's Backend API
-	ClerkJWKSURL   string // Clerk's JWKS URL — used to verify JWT signatures
-	Env            string // Runtime environment: "development", "staging", or "production"
+	Port             string // TCP port the HTTP server listens on (e.g. "8080")
+	DatabaseURL      string // PostgreSQL connection string
+	ClerkSecretKey   string // Secret key for calling Clerk's Backend API
+	ClerkJWKSURL     string // Clerk's JWKS URL — used to verify JWT signatures
+	Env              string // Runtime environment: "development", "staging", or "production"
+	GolfCourseAPIKey string // API key for GolfCourseAPI.com — enables external course search/import
 }
 
 // Load reads configuration from environment variables and returns a populated Config.
@@ -35,10 +36,11 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:           port,
-		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		ClerkSecretKey: os.Getenv("CLERK_SECRET_KEY"),
-		ClerkJWKSURL:   os.Getenv("CLERK_JWKS_URL"),
-		Env:            env,
+		Port:             port,
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		ClerkSecretKey:   os.Getenv("CLERK_SECRET_KEY"),
+		ClerkJWKSURL:     os.Getenv("CLERK_JWKS_URL"),
+		Env:              env,
+		GolfCourseAPIKey: os.Getenv("GOLF_COURSE_API_KEY"),
 	}
 }

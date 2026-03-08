@@ -389,11 +389,17 @@ func buildGroupResponse(db *gorm.DB, g models.Group) GroupResponse {
 // UpdateRoundRequest is the JSON body for PATCH /api/v1/rounds/:roundId.
 // All fields are optional pointers — only non-nil fields are applied.
 type UpdateRoundRequest struct {
-	Name *string `json:"name"`
-	// CourseName triggers a find-or-create lookup (same logic as ScheduleEventRound).
-	CourseName    *string `json:"course_name"`
+	Name          *string `json:"name"`
 	ScheduledDate *string `json:"scheduled_date"` // "YYYY-MM-DD"
 	ScoringFormat *string `json:"scoring_format"`
+
+	// Preferred: switch to a pre-managed course by UUID.
+	// When course_id is set, default_tee_id is also required.
+	CourseID     *string `json:"course_id"`
+	DefaultTeeID *string `json:"default_tee_id"`
+
+	// Legacy fallback: find-or-create by name. Prefer course_id going forward.
+	CourseName *string `json:"course_name"`
 }
 
 // UpdateRound returns a handler for PATCH /api/v1/rounds/:roundId.
@@ -449,9 +455,31 @@ func UpdateRound(db *gorm.DB) fiber.Handler {
 			round.ScoringFormat = models.ScoringFormat(*req.ScoringFormat)
 		}
 
-		// Course name change: find-or-create (same logic as ScheduleEventRound).
-		// No transaction needed here because we're updating, not creating the round itself.
-		if req.CourseName != nil && *req.CourseName != "" {
+		// Course change — preferred: switch by UUID (avoids find-or-create side effects).
+		if req.CourseID != nil {
+			if req.DefaultTeeID == nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "default_tee_id is required when course_id is provided"})
+			}
+			courseUUID, err := uuid.Parse(*req.CourseID)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course_id"})
+			}
+			teeUUID, err := uuid.Parse(*req.DefaultTeeID)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid default_tee_id"})
+			}
+			var course models.Course
+			if err := db.First(&course, "id = ?", courseUUID).Error; err != nil {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+			}
+			var tee models.Tee
+			if err := db.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found for this course"})
+			}
+			round.CourseID = courseUUID
+			round.DefaultTeeID = teeUUID
+		} else if req.CourseName != nil && *req.CourseName != "" {
+			// Legacy fallback: find-or-create by name (same logic as ScheduleEventRound).
 			var course models.Course
 			if err := db.Where("name ILIKE ?", *req.CourseName).First(&course).Error; err != nil {
 				course = models.Course{Name: *req.CourseName, HoleCount: 18}

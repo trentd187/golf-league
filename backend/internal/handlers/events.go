@@ -319,11 +319,19 @@ type GroupInput struct {
 type ScheduleRoundRequest struct {
 	// Name defaults to "Round N" (1-based count of existing rounds + 1) if omitted.
 	Name          string  `json:"name"`
-	CourseName    string  `json:"course_name"`    // required
 	ScheduledDate string  `json:"scheduled_date"` // required "YYYY-MM-DD"
 	ScoringFormat *string `json:"scoring_format"` // defaults to "stroke" if omitted
 	// Groups lists tee-time groups (1–8). An empty slice creates one default group.
 	Groups []GroupInput `json:"groups"`
+
+	// Preferred: select a pre-managed course by UUID.
+	// When course_id is set, default_tee_id is also required.
+	CourseID     *string `json:"course_id"`      // UUID of an existing course
+	DefaultTeeID *string `json:"default_tee_id"` // UUID of a tee set on that course
+
+	// Legacy fallback: find-or-create by name. Used only when course_id is absent.
+	// Prefer course_id — this field will be removed in a future version.
+	CourseName string `json:"course_name"`
 }
 
 // RoundSummaryResponse is returned per round in the rounds list and on round creation.
@@ -721,8 +729,11 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-		if req.CourseName == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "course_name is required"})
+		if req.CourseID == nil && req.CourseName == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "course_id or course_name is required"})
+		}
+		if req.CourseID != nil && req.DefaultTeeID == nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "default_tee_id is required when course_id is provided"})
 		}
 		if req.ScheduledDate == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date is required"})
@@ -747,40 +758,37 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		}
 
 		txErr := db.Transaction(func(tx *gorm.DB) error {
-			// ILIKE is PostgreSQL's case-insensitive LIKE.
 			var course models.Course
-			courseErr := tx.Where("name ILIKE ?", req.CourseName).First(&course).Error
-
 			var teeID uuid.UUID
 
-			if courseErr != nil {
-				course = models.Course{
-					Name:      req.CourseName,
-					HoleCount: 18,
+			if req.CourseID != nil {
+				// Preferred path: use a pre-managed course selected by UUID.
+				courseUUID, err := uuid.Parse(*req.CourseID)
+				if err != nil {
+					return fiber.NewError(fiber.StatusBadRequest, "invalid course_id")
 				}
-				if err := tx.Create(&course).Error; err != nil {
-					return err
+				if err := tx.First(&course, "id = ?", courseUUID).Error; err != nil {
+					return fiber.NewError(fiber.StatusNotFound, "course not found")
 				}
-
-				// Default tee: CourseRating 72.0 and SlopeRating 113 are USGA baseline values.
-				defaultTee := models.Tee{
-					CourseID:     course.ID,
-					Name:         "Default",
-					Gender:       models.TeeGenderUnisex,
-					CourseRating: 72.0,
-					SlopeRating:  113,
-					Par:          72,
+				teeUUID, err := uuid.Parse(*req.DefaultTeeID)
+				if err != nil {
+					return fiber.NewError(fiber.StatusBadRequest, "invalid default_tee_id")
 				}
-				if err := tx.Create(&defaultTee).Error; err != nil {
-					return err
-				}
-				teeID = defaultTee.ID
-			} else {
 				var tee models.Tee
-				teeErr := tx.Where("course_id = ?", course.ID).First(&tee).Error
-				if teeErr != nil {
-					// Course exists but has no tees — create the default.
-					tee = models.Tee{
+				if err := tx.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {
+					return fiber.NewError(fiber.StatusNotFound, "tee not found for this course")
+				}
+				teeID = teeUUID
+			} else {
+				// Legacy fallback: find-or-create by name (ILIKE = case-insensitive match).
+				courseErr := tx.Where("name ILIKE ?", req.CourseName).First(&course).Error
+				if courseErr != nil {
+					course = models.Course{Name: req.CourseName, HoleCount: 18}
+					if err := tx.Create(&course).Error; err != nil {
+						return err
+					}
+					// Default tee: CourseRating 72.0 and SlopeRating 113 are USGA baseline values.
+					defaultTee := models.Tee{
 						CourseID:     course.ID,
 						Name:         "Default",
 						Gender:       models.TeeGenderUnisex,
@@ -788,11 +796,29 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 						SlopeRating:  113,
 						Par:          72,
 					}
-					if err := tx.Create(&tee).Error; err != nil {
+					if err := tx.Create(&defaultTee).Error; err != nil {
 						return err
 					}
+					teeID = defaultTee.ID
+				} else {
+					var tee models.Tee
+					teeErr := tx.Where("course_id = ?", course.ID).First(&tee).Error
+					if teeErr != nil {
+						// Course exists but has no tees — create the default.
+						tee = models.Tee{
+							CourseID:     course.ID,
+							Name:         "Default",
+							Gender:       models.TeeGenderUnisex,
+							CourseRating: 72.0,
+							SlopeRating:  113,
+							Par:          72,
+						}
+						if err := tx.Create(&tee).Error; err != nil {
+							return err
+						}
+					}
+					teeID = tee.ID
 				}
-				teeID = tee.ID
 			}
 
 			courseName = course.Name
@@ -856,6 +882,11 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		})
 
 		if txErr != nil {
+			// fiber.NewError() errors carry an HTTP status (e.g. 400, 404) from validation
+			// inside the transaction. Pass those through; all other errors are 500.
+			if fe, ok := txErr.(*fiber.Error); ok {
+				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
+			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to schedule round"})
 		}
 

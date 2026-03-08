@@ -71,6 +71,13 @@ type ExternalCourseDetail struct {
 	Tees       []ExternalTee `json:"tees"`
 }
 
+// IsConfigured reports whether an API key has been provided.
+// Handlers call this before making any external API requests and return 503 if false,
+// so the caller gets a clear error instead of a cryptic 401 from GolfCourseAPI.
+func (c *GolfCourseAPIClient) IsConfigured() bool {
+	return c.apiKey != ""
+}
+
 // ─── API methods ───────────────────────────────────────────────────────────────
 
 // Search queries GolfCourseAPI for courses matching the given search term.

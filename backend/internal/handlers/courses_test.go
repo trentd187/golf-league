@@ -58,10 +58,12 @@ func doJSON(t *testing.T, app *fiber.App, method, path string, body any) *http.R
 	return resp
 }
 
-// stubClient returns a GolfCourseAPIClient with an empty key.
-// Safe to pass when the test path returns before calling Search or FetchByID.
+// stubClient returns a GolfCourseAPIClient with a non-empty placeholder key.
+// IsConfigured() returns true so the handler proceeds past the key check,
+// but the test path still exits on validation (empty/whitespace input) before
+// the client ever calls the real GolfCourseAPI.
 func stubClient() *services.GolfCourseAPIClient {
-	return services.NewGolfCourseAPIClient("")
+	return services.NewGolfCourseAPIClient("test-stub-key")
 }
 
 // ─── GetCourse ─────────────────────────────────────────────────────────────────

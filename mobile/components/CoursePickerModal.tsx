@@ -188,7 +188,11 @@ export default function CoursePickerModal({
         const data = await res.json();
         setExternalResults(Array.isArray(data) ? data : []);
       } else {
-        Alert.alert("Search failed", "Could not reach the external course database.");
+        // Read the backend error message so the user sees what actually went wrong
+        // (e.g. "GOLF_COURSE_API_KEY is not configured" or "API returned 401: ...").
+        const body = await res.json().catch(() => ({}));
+        const msg = (body as { error?: string }).error ?? `Server error (${res.status})`;
+        Alert.alert("Search failed", msg);
       }
     } catch {
       Alert.alert("Search failed", "Check your connection and try again.");

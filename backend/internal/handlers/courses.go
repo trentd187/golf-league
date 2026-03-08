@@ -807,6 +807,11 @@ type ExternalCourseSummaryResponse struct {
 // Requires "admin" or "manager" role (enforced by RequireRole middleware on the route).
 func SearchExternalCourse(client *services.GolfCourseAPIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if !client.IsConfigured() {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "GOLF_COURSE_API_KEY is not configured — external course search is disabled",
+			})
+		}
 		var req SearchExternalCourseRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
@@ -849,6 +854,11 @@ type ImportExternalCourseRequest struct {
 // in a single transaction. Returns 409 if the course has already been imported.
 func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if !client.IsConfigured() {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "GOLF_COURSE_API_KEY is not configured — external course import is disabled",
+			})
+		}
 		var req ImportExternalCourseRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
@@ -916,6 +926,11 @@ func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fib
 // Blocked if an active round is using this course.
 func RefreshCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if !client.IsConfigured() {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "GOLF_COURSE_API_KEY is not configured — course refresh is disabled",
+			})
+		}
 		courseID, ok := parseCourseID(c)
 		if !ok {
 			return nil

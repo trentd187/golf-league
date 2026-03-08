@@ -131,7 +131,7 @@ export default function CoursePickerModal({
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    if (query.trim().length < 2) {
+    if (query.trim().length < 4) {
       setLocalResults([]);
       setLocalLoading(false);
       return;
@@ -163,7 +163,11 @@ export default function CoursePickerModal({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, getToken]);
+    // getToken is intentionally excluded: it is called inside an async callback,
+    // not synchronously in the effect body. Including it would cause an infinite
+    // loop because Clerk creates a new function reference on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
 
   // ── External search — only called when the user explicitly taps "Search Online" ─
   const searchExternal = async () => {
@@ -263,7 +267,7 @@ export default function CoursePickerModal({
 
   // ── Derived values ───────────────────────────────────────────────────────────
 
-  const hasQuery       = query.trim().length >= 2;
+  const hasQuery       = query.trim().length >= 4;
   const noLocalResults = hasQuery && !localLoading && localResults.length === 0;
   const busy           = !!importingId || !!selectingId;
 
@@ -320,7 +324,7 @@ export default function CoursePickerModal({
               {/* Prompt before the user has typed enough */}
               {!localLoading && !hasQuery && (
                 <Text className={`text-sm text-center mt-10 ${t.textTertiary}`}>
-                  Type at least 2 characters to search
+                  Type at least 4 characters to search
                 </Text>
               )}
             </>

@@ -134,6 +134,80 @@ type UpdateHoleRequest struct {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
+// parseCourseID parses the ":courseId" path parameter as a UUID.
+// Returns (id, true) on success; writes a 400 response and returns (Nil, false) on failure.
+// Callers should return nil immediately when the second value is false — the response
+// has already been written, so there is nothing left for the handler to do.
+func parseCourseID(c *fiber.Ctx) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Params("courseId"))
+	if err != nil {
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// parseTeeID parses the ":teeId" path parameter as a UUID.
+// Returns (id, true) on success; writes a 400 response and returns (Nil, false) on failure.
+func parseTeeID(c *fiber.Ctx) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Params("teeId"))
+	if err != nil {
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid tee ID"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// findCourse fetches a course by primary key.
+// Returns (course, true) on success; writes a 404 response and returns (zero, false) if not found.
+func findCourse(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (models.Course, bool) {
+	var course models.Course
+	if err := db.First(&course, "id = ?", courseID).Error; err != nil {
+		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+		return models.Course{}, false
+	}
+	return course, true
+}
+
+// findTee fetches a tee by primary key and confirms it belongs to courseID.
+// Returns (tee, true) on success; writes a 404 response and returns (zero, false) if not found.
+func findTee(c *fiber.Ctx, db *gorm.DB, teeID, courseID uuid.UUID) (models.Tee, bool) {
+	var tee models.Tee
+	if err := db.First(&tee, "id = ? AND course_id = ?", teeID, courseID).Error; err != nil {
+		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
+		return models.Tee{}, false
+	}
+	return tee, true
+}
+
+// buildHoleResponses converts a slice of Hole models into the JSON response shape.
+func buildHoleResponses(holes []models.Hole) []HoleResponse {
+	responses := make([]HoleResponse, 0, len(holes))
+	for _, h := range holes {
+		responses = append(responses, HoleResponse{
+			HoleNumber:  h.HoleNumber,
+			Par:         h.Par,
+			StrokeIndex: h.StrokeIndex,
+			Yardage:     h.Yardage,
+		})
+	}
+	return responses
+}
+
+// buildTeeResponse converts a Tee model and its pre-built hole responses into
+// the JSON response shape returned by the tee endpoints.
+func buildTeeResponse(tee models.Tee, holes []HoleResponse) TeeResponse {
+	return TeeResponse{
+		ID:           tee.ID.String(),
+		Name:         tee.Name,
+		Gender:       string(tee.Gender),
+		CourseRating: tee.CourseRating,
+		SlopeRating:  tee.SlopeRating,
+		Par:          tee.Par,
+		Holes:        holes,
+	}
+}
+
 // activeRoundGuard returns a 409 Conflict response if any active round references
 // the given course. Call this at the top of every mutating handler.
 func activeRoundGuard(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (stop bool) {
@@ -150,31 +224,55 @@ func activeRoundGuard(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (stop bool)
 	return false
 }
 
+// insertExternalTees creates tee and hole records from GolfCourseAPI data inside
+// an existing transaction. Extracted because ImportExternalCourse and RefreshCourse
+// share the identical insertion logic.
+func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, extTees []services.ExternalTee) error {
+	for _, extTee := range extTees {
+		tee := models.Tee{
+			CourseID:     courseID,
+			Name:         extTee.TeeType,
+			Gender:       mapExternalGender(extTee.Gender),
+			CourseRating: extTee.CourseRating,
+			SlopeRating:  extTee.SlopeRating,
+			Par:          extTee.Par,
+		}
+		if err := tx.Create(&tee).Error; err != nil {
+			return err
+		}
+		for _, extHole := range extTee.Holes {
+			// The external API uses 0 to mean "no yardage" — store as NULL.
+			var yardagePtr *int
+			if extHole.Yardage > 0 {
+				y := extHole.Yardage
+				yardagePtr = &y
+			}
+			hole := models.Hole{
+				TeeID:       tee.ID,
+				HoleNumber:  extHole.HoleNumber,
+				Par:         extHole.Par,
+				StrokeIndex: extHole.StrokeIndex,
+				Yardage:     yardagePtr,
+			}
+			if err := tx.Create(&hole).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // buildCourseDetail constructs a CourseDetailResponse from a loaded Course + Tees + Holes.
 func buildCourseDetail(course models.Course) CourseDetailResponse {
 	teeResponses := make([]TeeResponse, 0, len(course.Tees))
 	hasHoles := false
 
 	for _, tee := range course.Tees {
-		holes := make([]HoleResponse, 0, len(tee.Holes))
-		for _, h := range tee.Holes {
-			holes = append(holes, HoleResponse{
-				HoleNumber:  h.HoleNumber,
-				Par:         h.Par,
-				StrokeIndex: h.StrokeIndex,
-				Yardage:     h.Yardage,
-			})
+		holes := buildHoleResponses(tee.Holes)
+		if len(holes) > 0 {
 			hasHoles = true
 		}
-		teeResponses = append(teeResponses, TeeResponse{
-			ID:           tee.ID.String(),
-			Name:         tee.Name,
-			Gender:       string(tee.Gender),
-			CourseRating: tee.CourseRating,
-			SlopeRating:  tee.SlopeRating,
-			Par:          tee.Par,
-			Holes:        holes,
-		})
+		teeResponses = append(teeResponses, buildTeeResponse(tee, holes))
 	}
 
 	return CourseDetailResponse{
@@ -285,9 +383,9 @@ func GetCourses(db *gorm.DB) fiber.Handler {
 // Returns full course detail including all tees and their holes.
 func GetCourse(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
 
 		course, err := loadCourseWithTees(db, courseID)
@@ -337,14 +435,14 @@ func CreateCourse(db *gorm.DB) fiber.Handler {
 // Requires "admin" or "manager" role. Blocked if an active round uses this course.
 func UpdateCourse(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
 
-		var course models.Course
-		if err := db.First(&course, "id = ?", courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+		course, ok := findCourse(c, db, courseID)
+		if !ok {
+			return nil
 		}
 
 		if activeRoundGuard(c, db, courseID) {
@@ -392,14 +490,13 @@ func UpdateCourse(db *gorm.DB) fiber.Handler {
 // Requires "admin" or "manager" role. Blocked if an active round uses this course.
 func CreateTee(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
 
-		var course models.Course
-		if err := db.First(&course, "id = ?", courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+		if _, ok := findCourse(c, db, courseID); !ok {
+			return nil
 		}
 
 		if activeRoundGuard(c, db, courseID) {
@@ -445,15 +542,7 @@ func CreateTee(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create tee"})
 		}
 
-		return c.Status(fiber.StatusCreated).JSON(TeeResponse{
-			ID:           tee.ID.String(),
-			Name:         tee.Name,
-			Gender:       string(tee.Gender),
-			CourseRating: tee.CourseRating,
-			SlopeRating:  tee.SlopeRating,
-			Par:          tee.Par,
-			Holes:        []HoleResponse{},
-		})
+		return c.Status(fiber.StatusCreated).JSON(buildTeeResponse(tee, []HoleResponse{}))
 	}
 }
 
@@ -461,22 +550,22 @@ func CreateTee(db *gorm.DB) fiber.Handler {
 // Requires "admin" or "manager" role. Blocked if an active round uses this course.
 func UpdateTee(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
-		teeID, err := uuid.Parse(c.Params("teeId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid tee ID"})
+		teeID, ok := parseTeeID(c)
+		if !ok {
+			return nil
 		}
 
 		if activeRoundGuard(c, db, courseID) {
 			return nil
 		}
 
-		var tee models.Tee
-		if err := db.First(&tee, "id = ? AND course_id = ?", teeID, courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
+		tee, ok := findTee(c, db, teeID, courseID)
+		if !ok {
+			return nil
 		}
 
 		var req UpdateTeeRequest
@@ -520,25 +609,8 @@ func UpdateTee(db *gorm.DB) fiber.Handler {
 
 		var holes []models.Hole
 		db.Where("tee_id = ?", teeID).Order("hole_number ASC").Find(&holes)
-		holeResponses := make([]HoleResponse, 0, len(holes))
-		for _, h := range holes {
-			holeResponses = append(holeResponses, HoleResponse{
-				HoleNumber:  h.HoleNumber,
-				Par:         h.Par,
-				StrokeIndex: h.StrokeIndex,
-				Yardage:     h.Yardage,
-			})
-		}
 
-		return c.JSON(TeeResponse{
-			ID:           tee.ID.String(),
-			Name:         tee.Name,
-			Gender:       string(tee.Gender),
-			CourseRating: tee.CourseRating,
-			SlopeRating:  tee.SlopeRating,
-			Par:          tee.Par,
-			Holes:        holeResponses,
-		})
+		return c.JSON(buildTeeResponse(tee, buildHoleResponses(holes)))
 	}
 }
 
@@ -546,22 +618,22 @@ func UpdateTee(db *gorm.DB) fiber.Handler {
 // Cascades to all hole records. Blocked if an active round uses this course.
 func DeleteTee(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
-		teeID, err := uuid.Parse(c.Params("teeId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid tee ID"})
+		teeID, ok := parseTeeID(c)
+		if !ok {
+			return nil
 		}
 
 		if activeRoundGuard(c, db, courseID) {
 			return nil
 		}
 
-		var tee models.Tee
-		if err := db.First(&tee, "id = ? AND course_id = ?", teeID, courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
+		tee, ok := findTee(c, db, teeID, courseID)
+		if !ok {
+			return nil
 		}
 
 		// ON DELETE CASCADE in the DB removes holes automatically.
@@ -578,22 +650,22 @@ func DeleteTee(db *gorm.DB) fiber.Handler {
 // Sending all holes at once (not one by one) matches how scorecards are entered in practice.
 func UpsertHoles(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
-		teeID, err := uuid.Parse(c.Params("teeId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid tee ID"})
+		teeID, ok := parseTeeID(c)
+		if !ok {
+			return nil
 		}
 
 		if activeRoundGuard(c, db, courseID) {
 			return nil
 		}
 
-		var tee models.Tee
-		if err := db.First(&tee, "id = ? AND course_id = ?", teeID, courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
+		tee, ok := findTee(c, db, teeID, courseID)
+		if !ok {
+			return nil
 		}
 
 		var req UpsertHolesRequest
@@ -645,25 +717,8 @@ func UpsertHoles(db *gorm.DB) fiber.Handler {
 		// Return the tee with its freshly-saved holes.
 		var saved []models.Hole
 		db.Where("tee_id = ?", teeID).Order("hole_number ASC").Find(&saved)
-		holeResponses := make([]HoleResponse, 0, len(saved))
-		for _, h := range saved {
-			holeResponses = append(holeResponses, HoleResponse{
-				HoleNumber:  h.HoleNumber,
-				Par:         h.Par,
-				StrokeIndex: h.StrokeIndex,
-				Yardage:     h.Yardage,
-			})
-		}
 
-		return c.JSON(TeeResponse{
-			ID:           tee.ID.String(),
-			Name:         tee.Name,
-			Gender:       string(tee.Gender),
-			CourseRating: tee.CourseRating,
-			SlopeRating:  tee.SlopeRating,
-			Par:          tee.Par,
-			Holes:        holeResponses,
-		})
+		return c.JSON(buildTeeResponse(tee, buildHoleResponses(saved)))
 	}
 }
 
@@ -671,13 +726,13 @@ func UpsertHoles(db *gorm.DB) fiber.Handler {
 // Updates a single hole. Blocked if an active round uses this course.
 func UpdateHole(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
-		teeID, err := uuid.Parse(c.Params("teeId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid tee ID"})
+		teeID, ok := parseTeeID(c)
+		if !ok {
+			return nil
 		}
 
 		holeNumber, convErr := strconv.Atoi(c.Params("holeNumber"))
@@ -690,9 +745,8 @@ func UpdateHole(db *gorm.DB) fiber.Handler {
 		}
 
 		// Verify the tee belongs to the course.
-		var tee models.Tee
-		if err := db.First(&tee, "id = ? AND course_id = ?", teeID, courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
+		if _, ok := findTee(c, db, teeID, courseID); !ok {
+			return nil
 		}
 
 		var hole models.Hole
@@ -842,40 +896,7 @@ func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fib
 				return err
 			}
 
-			for _, extTee := range detail.Tees {
-				gender := mapExternalGender(extTee.Gender)
-				tee := models.Tee{
-					CourseID:     created.ID,
-					Name:         extTee.TeeType,
-					Gender:       gender,
-					CourseRating: extTee.CourseRating,
-					SlopeRating:  extTee.SlopeRating,
-					Par:          extTee.Par,
-				}
-				if err := tx.Create(&tee).Error; err != nil {
-					return err
-				}
-
-				for _, extHole := range extTee.Holes {
-					yardage := extHole.Yardage
-					var yardagePtr *int
-					if yardage > 0 {
-						yardagePtr = &yardage
-					}
-					hole := models.Hole{
-						TeeID:       tee.ID,
-						HoleNumber:  extHole.HoleNumber,
-						Par:         extHole.Par,
-						StrokeIndex: extHole.StrokeIndex,
-						Yardage:     yardagePtr,
-					}
-					if err := tx.Create(&hole).Error; err != nil {
-						return err
-					}
-				}
-			}
-
-			return nil
+			return insertExternalTees(tx, created.ID, detail.Tees)
 		})
 		if txErr != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to import course"})
@@ -895,14 +916,14 @@ func ImportExternalCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fib
 // Blocked if an active round is using this course.
 func RefreshCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		courseID, err := uuid.Parse(c.Params("courseId"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course ID"})
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
 		}
 
-		var course models.Course
-		if err := db.First(&course, "id = ?", courseID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+		course, ok := findCourse(c, db, courseID)
+		if !ok {
+			return nil
 		}
 		if course.ExternalSource == "" || course.ExternalID == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -924,40 +945,7 @@ func RefreshCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Hand
 			if err := tx.Where("course_id = ?", courseID).Delete(&models.Tee{}).Error; err != nil {
 				return err
 			}
-
-			for _, extTee := range detail.Tees {
-				tee := models.Tee{
-					CourseID:     courseID,
-					Name:         extTee.TeeType,
-					Gender:       mapExternalGender(extTee.Gender),
-					CourseRating: extTee.CourseRating,
-					SlopeRating:  extTee.SlopeRating,
-					Par:          extTee.Par,
-				}
-				if err := tx.Create(&tee).Error; err != nil {
-					return err
-				}
-
-				for _, extHole := range extTee.Holes {
-					yardage := extHole.Yardage
-					var yardagePtr *int
-					if yardage > 0 {
-						yardagePtr = &yardage
-					}
-					hole := models.Hole{
-						TeeID:       tee.ID,
-						HoleNumber:  extHole.HoleNumber,
-						Par:         extHole.Par,
-						StrokeIndex: extHole.StrokeIndex,
-						Yardage:     yardagePtr,
-					}
-					if err := tx.Create(&hole).Error; err != nil {
-						return err
-					}
-				}
-			}
-
-			return nil
+			return insertExternalTees(tx, courseID, detail.Tees)
 		})
 		if txErr != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to refresh course"})

@@ -52,6 +52,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // chunk: splits an array into equal-sized sub-arrays — used to render the scoring format
 // pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
+import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,12 @@ export default function EventDetailScreen() {
 
   // --- Schedule round form state ---
   const [roundName, setRoundName]         = useState("");
-  const [courseName, setCourseName]       = useState("");
+  // selectedCourse: the course picked via CoursePickerModal (null = none selected yet).
+  const [selectedCourse, setSelectedCourse] = useState<PickedCourse | null>(null);
+  // selectedTeeId: the tee selected for this round (required when the course has tees).
+  const [selectedTeeId, setSelectedTeeId]   = useState<string | null>(null);
+  // coursePickerVisible: controls the CoursePickerModal.
+  const [coursePickerVisible, setCoursePickerVisible] = useState(false);
   const [roundDate, setRoundDate]         = useState("");
   const [scoringFormat, setScoringFormat] = useState("stroke");
   const [groupCount, setGroupCount]         = useState(1);
@@ -295,10 +301,14 @@ export default function EventDetailScreen() {
   const scheduleRoundMutation = useMutation({
     mutationFn: async (data: {
       name: string;
-      course_name: string;
       scheduled_date: string;
       scoring_format: string;
       groups: { tee_time?: string }[];
+      // Preferred path: explicit UUIDs when the course has managed tees.
+      course_id?: string;
+      default_tee_id?: string;
+      // Legacy fallback: find-or-create by name when no tees are configured.
+      course_name?: string;
     }) => {
       const token = await getToken();
       const res = await fetch(`${API_URL}/api/v1/events/${id}/rounds`, {
@@ -319,7 +329,8 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["event", id, "rounds"] });
       setScheduleRoundModalVisible(false);
       setRoundName("");
-      setCourseName("");
+      setSelectedCourse(null);
+      setSelectedTeeId(null);
       setRoundDate("");
       setScoringFormat("stroke");
       setGroupCount(1);
@@ -433,25 +444,46 @@ export default function EventDetailScreen() {
       Alert.alert("Name required", "Please enter a name for this round.", [{ text: "OK" }]);
       return;
     }
-    if (!courseName.trim()) {
-      Alert.alert("Course name required", "Please enter the golf course name.", [{ text: "OK" }]);
+    if (!selectedCourse) {
+      Alert.alert("Course required", "Please select a golf course.", [{ text: "OK" }]);
+      return;
+    }
+    if (selectedCourse.tees.length > 0 && !selectedTeeId) {
+      Alert.alert("Tee required", "Please select a tee set for this course.", [{ text: "OK" }]);
       return;
     }
     if (!roundDate.trim()) {
       Alert.alert("Date required", "Please enter the round date (MM-DD-YY).", [{ text: "OK" }]);
       return;
     }
-    scheduleRoundMutation.mutate({
-      name: roundName.trim(),
-      course_name: courseName.trim(),
-      scheduled_date: displayToApi(roundDate.trim()),
-      scoring_format: scoringFormat,
-      // Omit tee_time entirely for blank entries so the backend creates the group with TeeTime = null.
-      groups: Array.from({ length: groupCount }, (_, i) => {
-        const t = groupTeeTimes[i]?.trim();
-        return t ? { tee_time: t } : {};
-      }),
+
+    // Build the payload — use course_id + default_tee_id when a tee is selected (preferred);
+    // fall back to course_name (legacy path) when the course has no tees yet.
+    const groups = Array.from({ length: groupCount }, (_, i) => {
+      // Omit tee_time entirely for blank entries so the backend stores TeeTime = null.
+      const tt = groupTeeTimes[i]?.trim();
+      return tt ? { tee_time: tt } : {};
     });
+
+    if (selectedTeeId) {
+      scheduleRoundMutation.mutate({
+        name:             roundName.trim(),
+        course_id:        selectedCourse.id,
+        default_tee_id:   selectedTeeId,
+        scheduled_date:   displayToApi(roundDate.trim()),
+        scoring_format:   scoringFormat,
+        groups,
+      });
+    } else {
+      // No tees on this course — backend will find-or-create and attach a default tee.
+      scheduleRoundMutation.mutate({
+        name:           roundName.trim(),
+        course_name:    selectedCourse.name,
+        scheduled_date: displayToApi(roundDate.trim()),
+        scoring_format: scoringFormat,
+        groups,
+      });
+    }
   };
 
   // --- Loading / error states ---
@@ -831,6 +863,8 @@ export default function EventDetailScreen() {
         onRequestClose={() => {
           setScheduleRoundModalVisible(false);
           setRoundName("");
+          setSelectedCourse(null);
+          setSelectedTeeId(null);
           setGroupCount(1);
           setGroupTeeTimes([""]);
           setOpenTeeTimePicker(null);
@@ -848,6 +882,8 @@ export default function EventDetailScreen() {
                 onClose={() => {
                   setScheduleRoundModalVisible(false);
                   setRoundName("");
+                  setSelectedCourse(null);
+                  setSelectedTeeId(null);
                   setGroupCount(1);
                   setGroupTeeTimes([""]);
                 }}
@@ -871,24 +907,96 @@ export default function EventDetailScreen() {
                 />
               </View>
 
+              {/* Course picker — opens CoursePickerModal; shows selected course + tee picker */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                  Course Name <Text className="text-red-500">*</Text>
+                  Course <Text className="text-red-500">*</Text>
                 </Text>
-                <TextInput
-                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                  placeholder="e.g. Pine Valley Golf Club"
-                  placeholderTextColor={t.colors.tabBarInactive}
-                  value={courseName}
-                  onChangeText={setCourseName}
-                  autoCapitalize="words"
-                  editable={!scheduleRoundMutation.isPending}
-                  returnKeyType="next"
-                />
-                <Text className={`text-xs mt-1 ml-1 ${t.textTertiary}`}>
-                  Existing courses are matched by name — no duplicates created.
-                </Text>
+                <TouchableOpacity
+                  className={`border rounded-xl px-4 py-3 flex-row items-center gap-3 ${t.borderInput} ${t.surfaceSunken}`}
+                  onPress={() => setCoursePickerVisible(true)}
+                  disabled={scheduleRoundMutation.isPending}
+                  activeOpacity={0.7}
+                >
+                  <View className="flex-1">
+                    {selectedCourse ? (
+                      <>
+                        <Text className={`text-base ${t.textPrimary}`}>{selectedCourse.name}</Text>
+                        {(selectedCourse.city || selectedCourse.state) && (
+                          <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
+                            {[selectedCourse.city, selectedCourse.state].filter(Boolean).join(", ")}
+                          </Text>
+                        )}
+                      </>
+                    ) : (
+                      <Text className={`text-base ${t.textTertiary}`}>Search for a course…</Text>
+                    )}
+                  </View>
+                  {selectedCourse ? (
+                    // Clear button — stops tap propagating so it doesn't reopen the picker
+                    <TouchableOpacity
+                      onPress={() => { setSelectedCourse(null); setSelectedTeeId(null); }}
+                      hitSlop={8}
+                      disabled={scheduleRoundMutation.isPending}
+                    >
+                      <Ionicons name="close-circle" size={18} color={t.colors.tabBarInactive} />
+                    </TouchableOpacity>
+                  ) : (
+                    <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
+                  )}
+                </TouchableOpacity>
               </View>
+
+              {/* Tee picker — only shown when the selected course has tees */}
+              {selectedCourse && selectedCourse.tees.length > 0 && (
+                <View className="mb-4">
+                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                    Tee <Text className="text-red-500">*</Text>
+                  </Text>
+                  <View className="gap-2">
+                    {chunk(selectedCourse.tees, 2).map((row, rowIdx) => (
+                      <View key={rowIdx} className="flex-row gap-2">
+                        {row.map((tee) => {
+                          const selected = selectedTeeId === tee.id;
+                          // Abbreviate gender so pills stay narrow on small screens.
+                          const genderLabel =
+                            tee.gender === "male"   ? "Men" :
+                            tee.gender === "female" ? "Women" : "All";
+                          return (
+                            <TouchableOpacity
+                              key={tee.id}
+                              className={`flex-1 rounded-xl py-2.5 px-2 items-center border ${
+                                selected
+                                  ? `${t.primaryBg} border-transparent`
+                                  : `${t.surface} ${t.borderInput}`
+                              }`}
+                              onPress={() => setSelectedTeeId(tee.id)}
+                              disabled={scheduleRoundMutation.isPending}
+                            >
+                              <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                                {tee.name}
+                              </Text>
+                              <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
+                                {genderLabel} · Par {tee.par}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              {/* Info chip when the course has no tees — backend will attach a default tee */}
+              {selectedCourse && selectedCourse.tees.length === 0 && (
+                <View className={`mb-4 flex-row items-center gap-2 rounded-xl px-3 py-2.5 border ${t.border}`}>
+                  <Ionicons name="information-circle-outline" size={16} color={t.colors.tabBarInactive} />
+                  <Text className={`text-xs flex-1 ${t.textTertiary}`}>
+                    No tees configured — a default tee will be created automatically.
+                  </Text>
+                </View>
+              )}
 
               <View className="mb-6">
                 <DateInput
@@ -1097,6 +1205,19 @@ export default function EventDetailScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* ── Course Picker Modal ─────────────────────────────────────────────── */}
+      {/* Nested inside the Schedule Round modal tree so it layers correctly. */}
+      <CoursePickerModal
+        visible={coursePickerVisible}
+        onClose={() => setCoursePickerVisible(false)}
+        onSelect={(course) => {
+          setSelectedCourse(course);
+          // Reset tee selection when the course changes.
+          setSelectedTeeId(null);
+          setCoursePickerVisible(false);
+        }}
+      />
 
     </View>
   );

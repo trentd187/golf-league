@@ -50,6 +50,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // chunk: splits an array into equal-sized sub-arrays — used to render the scoring
 // format pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
+import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -119,11 +120,15 @@ export default function RoundDetailScreen() {
   // memberSearch: owned here so it resets when the modal closes.
   const [memberSearch, setMemberSearch] = useState("");
 
-  const [editModalVisible, setEditModalVisible]   = useState(false);
-  const [editName, setEditName]                   = useState("");
-  const [editCourseName, setEditCourseName]       = useState("");
-  const [editDate, setEditDate]                   = useState(""); // MM-DD-YY display format
-  const [editScoringFormat, setEditScoringFormat] = useState("stroke");
+  const [editModalVisible, setEditModalVisible]       = useState(false);
+  const [editName, setEditName]                       = useState("");
+  const [editDate, setEditDate]                       = useState(""); // MM-DD-YY display format
+  const [editScoringFormat, setEditScoringFormat]     = useState("stroke");
+  // editNewCourse: set only if the user picks a different course via CoursePickerModal.
+  // Null means "don't change the course" — the PATCH body won't include course fields.
+  const [editNewCourse, setEditNewCourse]             = useState<PickedCourse | null>(null);
+  const [editNewTeeId, setEditNewTeeId]               = useState<string | null>(null);
+  const [coursePickerVisible, setCoursePickerVisible] = useState(false);
 
   // --- Queries ---
 
@@ -228,9 +233,13 @@ export default function RoundDetailScreen() {
   const updateRoundMutation = useMutation({
     mutationFn: async (data: {
       name?: string;
-      course_name?: string;
       scheduled_date?: string;
       scoring_format?: string;
+      // Preferred: explicit UUIDs when the user selects a course with managed tees.
+      course_id?: string;
+      default_tee_id?: string;
+      // Legacy fallback: by name when the course has no tees.
+      course_name?: string;
     }) => {
       const token = await getToken();
       const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
@@ -303,9 +312,11 @@ export default function RoundDetailScreen() {
   const openEditModal = () => {
     if (!round) return;
     setEditName(round.name);
-    setEditCourseName(round.course_name);
     setEditDate(apiToDisplay(round.scheduled_date));
     setEditScoringFormat(round.scoring_format);
+    // Reset course change state — user must explicitly pick a new course to change it.
+    setEditNewCourse(null);
+    setEditNewTeeId(null);
     setEditModalVisible(true);
   };
 
@@ -314,9 +325,30 @@ export default function RoundDetailScreen() {
       Alert.alert("Name required", "Round name cannot be empty.", [{ text: "OK" }]);
       return;
     }
+    if (editNewCourse && editNewCourse.tees.length > 0 && !editNewTeeId) {
+      Alert.alert("Tee required", "Please select a tee set for the new course.", [{ text: "OK" }]);
+      return;
+    }
+
+    // Build course portion of the payload — only included when the user changed the course.
+    let coursePatch: {
+      course_id?: string;
+      default_tee_id?: string;
+      course_name?: string;
+    } = {};
+
+    if (editNewCourse) {
+      if (editNewTeeId) {
+        coursePatch = { course_id: editNewCourse.id, default_tee_id: editNewTeeId };
+      } else {
+        // Course has no tees — use legacy name path so the backend attaches a default tee.
+        coursePatch = { course_name: editNewCourse.name };
+      }
+    }
+
     updateRoundMutation.mutate({
       name: editName.trim(),
-      course_name: editCourseName.trim() || undefined,
+      ...coursePatch,
       scheduled_date: displayToApi(editDate.trim()) || undefined,
       scoring_format: editScoringFormat,
     });
@@ -574,21 +606,91 @@ export default function RoundDetailScreen() {
                 />
               </View>
 
+              {/* Course section — shows current course, allows changing via picker */}
               <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                  Course Name
+                  Course
                 </Text>
-                <TextInput
-                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                  placeholder="e.g. Pine Valley Golf Club"
-                  placeholderTextColor={t.colors.tabBarInactive}
-                  value={editCourseName}
-                  onChangeText={setEditCourseName}
-                  autoCapitalize="words"
-                  editable={!updateRoundMutation.isPending}
-                  returnKeyType="next"
-                />
+
+                {/* Display-only chip showing the active course name */}
+                <View className={`flex-row items-center border rounded-xl px-4 py-3 mb-2 ${t.border}`}>
+                  <Ionicons name="golf-outline" size={14} color={t.colors.tabBarInactive} style={{ marginRight: 8 }} />
+                  <Text className={`flex-1 text-sm ${t.textSecondary}`} numberOfLines={1}>
+                    {editNewCourse ? editNewCourse.name : round.course_name}
+                  </Text>
+                  {editNewCourse && (
+                    <TouchableOpacity
+                      onPress={() => { setEditNewCourse(null); setEditNewTeeId(null); }}
+                      hitSlop={8}
+                      disabled={updateRoundMutation.isPending}
+                    >
+                      <Ionicons name="close-circle" size={16} color={t.colors.tabBarInactive} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Button to open the course picker */}
+                <TouchableOpacity
+                  className={`flex-row items-center justify-center gap-2 border rounded-xl py-2.5 ${t.borderInput}`}
+                  onPress={() => setCoursePickerVisible(true)}
+                  disabled={updateRoundMutation.isPending}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="search-outline" size={15} color={t.colors.tabBarActive} />
+                  {/* eslint-disable-next-line react-native/no-inline-styles */}
+                  <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
+                    {editNewCourse ? "Change Course" : "Change Course"}
+                  </Text>
+                </TouchableOpacity>
               </View>
+
+              {/* Tee picker — only shown when user has picked a new course that has tees */}
+              {editNewCourse && editNewCourse.tees.length > 0 && (
+                <View className="mb-4">
+                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                    Tee <Text className="text-red-500">*</Text>
+                  </Text>
+                  <View className="gap-2">
+                    {chunk(editNewCourse.tees, 2).map((row, rowIdx) => (
+                      <View key={rowIdx} className="flex-row gap-2">
+                        {row.map((tee) => {
+                          const selected = editNewTeeId === tee.id;
+                          const genderLabel =
+                            tee.gender === "male"   ? "Men" :
+                            tee.gender === "female" ? "Women" : "All";
+                          return (
+                            <TouchableOpacity
+                              key={tee.id}
+                              className={`flex-1 rounded-xl py-2.5 px-2 items-center border ${
+                                selected ? "bg-green-700 border-green-700" : `${t.surfaceSunken} ${t.borderInput}`
+                              }`}
+                              onPress={() => setEditNewTeeId(tee.id)}
+                              disabled={updateRoundMutation.isPending}
+                            >
+                              <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                                {tee.name}
+                              </Text>
+                              <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
+                                {genderLabel} · Par {tee.par}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              {/* Info chip when new course has no tees */}
+              {editNewCourse && editNewCourse.tees.length === 0 && (
+                <View className={`mb-4 flex-row items-center gap-2 rounded-xl px-3 py-2.5 border ${t.border}`}>
+                  <Ionicons name="information-circle-outline" size={16} color={t.colors.tabBarInactive} />
+                  <Text className={`text-xs flex-1 ${t.textTertiary}`}>
+                    No tees configured — a default tee will be created automatically.
+                  </Text>
+                </View>
+              )}
 
               <View className="mb-6">
                 <DateInput
@@ -710,6 +812,17 @@ export default function RoundDetailScreen() {
 
         </View>
       </Modal>
+
+      {/* ── Course Picker Modal ─────────────────────────────────────────────── */}
+      <CoursePickerModal
+        visible={coursePickerVisible}
+        onClose={() => setCoursePickerVisible(false)}
+        onSelect={(course) => {
+          setEditNewCourse(course);
+          setEditNewTeeId(null);
+          setCoursePickerVisible(false);
+        }}
+      />
 
     </View>
   );

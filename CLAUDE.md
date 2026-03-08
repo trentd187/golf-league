@@ -574,6 +574,16 @@ go test ./internal/handlers/ -run TestHealthCheck -v
 
 The minimum bar for a new handler: cover every validation path that can be reached without a real database (invalid UUIDs, missing required fields, out-of-range values). This alone is enough to hold coverage because those paths are the first code executed on any bad request.
 
+### Checklist When Modifying Existing Handlers or Models
+
+When changing existing code (not adding new handlers), always verify all three of these before committing:
+
+1. **Do existing tests still pass?** Run `go test ./...` and confirm no regressions.
+2. **Does the change add new Tier 1 testable paths?** For example, adding a new validation branch (new required field, new UUID param, new enum check) that returns before a DB call — add a test for it.
+3. **Is the validation DB-level only?** Some constraints (e.g. PostgreSQL enum values, FK constraints) are enforced by the database, not by Go code. No Tier 1 test exists for these — they require a real DB (Tier 2). Document this with a comment in the handler rather than leaving a test gap unexplained.
+
+**Scoring format validation** is the canonical example of case 3: the handler casts the raw string directly to `models.ScoringFormat` and GORM sends it to Postgres, which rejects unknown values via the enum constraint. There is no Go-level check to test without a DB.
+
 ### Two-Tier Test Strategy
 
 **Tier 1 — No database (fast, always runnable):**

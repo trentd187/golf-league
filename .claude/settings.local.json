@@ -9,7 +9,11 @@
       "Bash(npx tsc --noEmit)",
       "Bash(go test ./internal/handlers/ -run \"TestSearchExternal|TestImportExternal|TestRefreshCourse\" -v)",
       "WebFetch(domain:api.golfcourseapi.com)",
-      "Bash(go test ./internal/handlers/ -v)"
+      "Bash(go test ./internal/handlers/ -v)",
+      "Bash(xargs basename -a)",
+      "Bash(findstr /V \"Ionicons\")",
+      "Bash(awk '!/Ionicons/')",
+      "Bash(python -c \"import sys; [print\\(l, end=''''\\) for l in sys.stdin if ''Ionicons'' not in l]\")"
     ]
   }
 }

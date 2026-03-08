@@ -77,16 +77,17 @@ const (
 )
 
 // ScoringFormat describes how a round is scored.
+// Irish Rumble is a team format where the best net score on each hole counts;
+// the sub-variant determines whether holes are scored as stroke or stableford points.
 type ScoringFormat string
 
 const (
-	ScoringFormatStroke     ScoringFormat = "stroke"
-	ScoringFormatNetStroke  ScoringFormat = "net_stroke"
-	ScoringFormatStableford ScoringFormat = "stableford"
-	ScoringFormatSkins      ScoringFormat = "skins"
-	ScoringFormatMatchPlay  ScoringFormat = "match_play"
-	ScoringFormatScramble   ScoringFormat = "scramble"
-	ScoringFormatBestBall   ScoringFormat = "best_ball"
+	ScoringFormatStroke                ScoringFormat = "stroke"
+	ScoringFormatStableford            ScoringFormat = "stableford"
+	ScoringFormatIrishRumble           ScoringFormat = "irish_rumble"
+	ScoringFormatIrishRumbleStableford ScoringFormat = "irish_rumble_stableford"
+	ScoringFormatScramble              ScoringFormat = "scramble"
+	ScoringFormatMatchPlay             ScoringFormat = "match_play"
 )
 
 // RoundPlayerStatus tracks a player's state in a single round.

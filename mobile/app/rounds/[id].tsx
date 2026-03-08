@@ -51,20 +51,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // format pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-// All valid scoring formats — exposed in the Edit Round form so organizers can
-// change to any format after creation. The Schedule Round form shows a shorter list.
-const SCORING_FORMATS: { value: string; label: string }[] = [
-  { value: "stroke",     label: "Stroke" },
-  { value: "net_stroke", label: "Net Stroke" },
-  { value: "stableford", label: "Stableford" },
-  { value: "skins",      label: "Skins" },
-  { value: "match_play", label: "Match Play" },
-  { value: "scramble",   label: "Scramble" },
-  { value: "best_ball",  label: "Best Ball" },
-];
+import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -441,8 +428,8 @@ export default function RoundDetailScreen() {
           {/* capitalize converts "net_stroke" → "Net stroke" */}
           <View className="flex-row items-center gap-2">
             <Ionicons name="podium-outline" size={14} color={t.colors.tabBarInactive} />
-            <Text className={`text-sm capitalize ${t.textSecondary}`}>
-              {round.scoring_format.replace("_", " ")}
+            <Text className={`text-sm ${t.textSecondary}`}>
+              {formatLabel(round.scoring_format)}
             </Text>
           </View>
         </View>

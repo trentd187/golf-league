@@ -53,6 +53,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
+import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,13 +92,6 @@ type RoundSummary = {
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const SCORING_FORMATS: { value: string; label: string }[] = [
-  { value: "stroke",     label: "Stroke" },
-  { value: "net_stroke", label: "Net" },
-  { value: "stableford", label: "Stableford" },
-  { value: "scramble",   label: "Scramble" },
-];
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 // Tee times are stored as "HH:MM" (24-hour) strings internally. The native picker
@@ -660,8 +654,8 @@ export default function EventDetailScreen() {
                         {apiToDisplay(round.scheduled_date)}
                       </Text>
                     </View>
-                    <Text className={`text-xs capitalize ${t.textTertiary}`}>
-                      {round.scoring_format.replace("_", " ")}
+                    <Text className={`text-xs ${t.textTertiary}`}>
+                      {formatLabel(round.scoring_format)}
                       {" · "}
                       {round.group_count} {round.group_count === 1 ? "group" : "groups"}
                     </Text>
@@ -1009,8 +1003,7 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Scoring format picker — 2-column pill grid.
-                  chunk(SCORING_FORMATS, 2) → [[Stroke, Net], [Stableford, Scramble]] */}
+              {/* Scoring format picker — 2-column pill grid. 5 formats → 3 rows (2, 2, 1). */}
               <View className="mb-8">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Scoring Format

@@ -2,7 +2,8 @@
 // Full-screen modal for searching and selecting a golf course before scheduling a round.
 //
 // Search strategy (minimising external API calls):
-//   1. Local-first  — debounced query to GET /api/v1/courses?name=... (our DB, no cost).
+//   1. Local-first  — debounced query to GET /api/v1/courses?name=&location=... (our DB, no cost).
+//      Triggers when course name has 3+ chars OR location has 2+ chars.
 //   2. External on-demand — "Search Online" button calls POST /courses/search-external
 //      (one GolfCourseAPI call per user tap).
 //   3. Auto-import on select — tapping an external result calls POST /courses/import-external
@@ -136,10 +137,16 @@ export default function CoursePickerModal({
 
   // ── Local search — fires 500 ms after the user stops typing ─────────────────
   // Runs on both query and locationQuery changes so filtering updates when either field changes.
+  // Triggers when either the course name has 4+ chars OR the location has 2+ chars — so
+  // typing just "MI" or "Grand Rapids" in the location field returns results without needing
+  // a course name first.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    if (query.trim().length < 4) {
+    const nameReady = query.trim().length >= 3;
+    const locReady  = locationQuery.trim().length >= 2;
+
+    if (!nameReady && !locReady) {
       setLocalResults([]);
       setLocalLoading(false);
       return;
@@ -153,13 +160,12 @@ export default function CoursePickerModal({
     debounceRef.current = setTimeout(async () => {
       try {
         const token = await getToken();
-        // Build URL: always filter by name; ?location= does an OR across city and state
-        // so typing "MI" or "Grand Rapids" matches either column correctly.
-        let url = `${API_URL}/api/v1/courses?name=${encodeURIComponent(query.trim())}`;
-        const loc = locationQuery.trim();
-        if (loc) {
-          url += `&location=${encodeURIComponent(loc)}`;
-        }
+        // Build URL from whichever fields are filled.
+        // ?name= filters by course name; ?location= does an OR across city and state.
+        const params = new URLSearchParams();
+        if (query.trim())        params.set("name",     query.trim());
+        if (locationQuery.trim()) params.set("location", locationQuery.trim());
+        let url = `${API_URL}/api/v1/courses?${params.toString()}`;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         if (res.ok) {
           const data = await res.json();
@@ -288,8 +294,11 @@ export default function CoursePickerModal({
 
   // ── Derived values ───────────────────────────────────────────────────────────
 
-  const hasQuery       = query.trim().length >= 4;
-  const noLocalResults = hasQuery && !localLoading && localResults.length === 0;
+  // hasSearch: true when the user has typed enough in either field to trigger a search.
+  const hasSearch      = query.trim().length >= 3 || locationQuery.trim().length >= 2;
+  // canSearchOnline: external API requires a course name (location-only searches aren't supported).
+  const canSearchOnline = query.trim().length >= 3;
+  const noLocalResults = hasSearch && !localLoading && localResults.length === 0;
   const busy           = !!importingId || !!selectingId;
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -326,12 +335,12 @@ export default function CoursePickerModal({
             )}
           </View>
 
-          {/* Optional location filter — city, state abbreviation, or zip */}
+          {/* Optional location filter — city or state abbreviation */}
           <View className={`flex-row items-center border rounded-xl px-3 mt-2 gap-2 ${t.borderInput} ${t.surfaceSunken}`}>
             <Ionicons name="location-outline" size={18} color={t.colors.tabBarInactive} />
             <TextInput
               className={`flex-1 py-2.5 text-base ${t.textPrimary}`}
-              placeholder="City, state, or zip (optional)"
+              placeholder="City or state (optional)"
               placeholderTextColor={t.colors.tabBarInactive}
               value={locationQuery}
               onChangeText={setLocationQuery}
@@ -362,34 +371,44 @@ export default function CoursePickerModal({
                 />
               )}
               {/* Prompt before the user has typed enough */}
-              {!localLoading && !hasQuery && (
+              {!localLoading && !hasSearch && (
                 <Text className={`text-sm text-center mt-10 ${t.textTertiary}`}>
-                  Type at least 4 characters to search
+                  Type a course name (3+ chars) or location (2+ chars) to search
                 </Text>
               )}
             </>
           }
           ListFooterComponent={
-            // Footer only appears when local search returned nothing
-            noLocalResults ? (
+            // Footer is shown whenever a search is active (with or without local results).
+            // "Search Online" is always offered so users can find courses not yet in the DB.
+            hasSearch && !localLoading ? (
               <View className="mt-2">
-                <Text className={`text-sm text-center mb-4 ${t.textTertiary}`}>
-                  No courses found in your database.
-                </Text>
+                {/* "No local results" message — only when search returned nothing */}
+                {noLocalResults && (
+                  <Text className={`text-sm text-center mb-4 ${t.textTertiary}`}>
+                    No courses found in your database.
+                  </Text>
+                )}
 
                 {!showExternal ? (
-                  // Prompt to search the external GolfCourseAPI
-                  <TouchableOpacity
-                    className={`flex-row items-center justify-center gap-2 border rounded-xl py-3 px-4 ${t.borderInput}`}
-                    onPress={searchExternal}
-                    disabled={busy}
-                  >
-                    <Ionicons name="globe-outline" size={18} color={t.colors.tabBarActive} />
-                    {/* eslint-disable-next-line react-native/no-inline-styles */}
-                    <Text className="font-semibold text-sm" style={{ color: t.colors.tabBarActive }}>
-                      Search Online
+                  // External API requires a course name — show a hint if only location was entered.
+                  canSearchOnline ? (
+                    <TouchableOpacity
+                      className={`flex-row items-center justify-center gap-2 border rounded-xl py-3 px-4 mt-2 ${t.borderInput}`}
+                      onPress={searchExternal}
+                      disabled={busy}
+                    >
+                      <Ionicons name="globe-outline" size={18} color={t.colors.tabBarActive} />
+                      {/* eslint-disable-next-line react-native/no-inline-styles */}
+                      <Text className="font-semibold text-sm" style={{ color: t.colors.tabBarActive }}>
+                        Search Online
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text className={`text-xs text-center ${t.textTertiary}`}>
+                      Add a course name to search online.
                     </Text>
-                  </TouchableOpacity>
+                  )
                 ) : (
                   /* External results section */
                   <>

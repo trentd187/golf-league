@@ -13,7 +13,13 @@
       "Bash(xargs basename -a)",
       "Bash(findstr /V \"Ionicons\")",
       "Bash(awk '!/Ionicons/')",
-      "Bash(python -c \"import sys; [print\\(l, end=''''\\) for l in sys.stdin if ''Ionicons'' not in l]\")"
+      "Bash(python -c \"import sys; [print\\(l, end=''''\\) for l in sys.stdin if ''Ionicons'' not in l]\")",
+      "Bash(grep -n \"Schedule round form\\\\|handleSaveSchedule\" /c/Users/trent/git-repos/golf-league/mobile/app/events/[id].tsx)",
+      "Bash(go test ./internal/handlers/ -run TestCreateTee -v)",
+      "Bash(findstr /V \"vector-icons\")",
+      "Bash(python3 -c \"import sys; [print\\(l.rstrip\\(\\)\\) for l in sys.stdin if ''vector-icons'' not in l]\")",
+      "Bash(npx expo lint)",
+      "Bash(python3 -c \"import sys; lines=[l.rstrip\\(\\) for l in sys.stdin]; errors=[l for l in lines if ''error'' in l.lower\\(\\) and ''warning'' not in l.lower\\(\\)]; print\\(''\\\\n''.join\\(errors\\) if errors else ''No errors''\\)\")"
     ]
   }
 }

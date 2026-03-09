@@ -34,7 +34,6 @@ import ModalHeader from "@/components/ModalHeader";
 export interface CourseTeeSummary {
   id: string;
   name: string;
-  gender: string;       // "male" | "female" | "unisex"
   course_rating: number;
   slope_rating: number;
   par: number;
@@ -42,11 +41,14 @@ export interface CourseTeeSummary {
 
 // PickedCourse is returned to the parent when the user selects a course.
 // It includes tees so the parent can show a tee picker without a second fetch.
+// has_holes is true when at least one tee has all 18 holes populated — used
+// to warn the organizer before scheduling on an incomplete course.
 export interface PickedCourse {
   id: string;
   name: string;
   city: string;
   state: string;
+  has_holes: boolean;
   tees: CourseTeeSummary[];
 }
 
@@ -75,6 +77,7 @@ interface CourseDetailResponse {
   name: string;
   city: string;
   state: string;
+  has_holes: boolean;
   tees: CourseTeeSummary[];
 }
 
@@ -228,6 +231,7 @@ export default function CoursePickerModal({
       name: data.name,
       city: data.city ?? "",
       state: data.state ?? "",
+      has_holes: data.has_holes ?? false,
       tees: data.tees ?? [],
     };
   };
@@ -272,6 +276,7 @@ export default function CoursePickerModal({
         name: imported.name,
         city: imported.city ?? "",
         state: imported.state ?? "",
+        has_holes: imported.has_holes ?? false,
         tees: imported.tees ?? [],
       });
     } catch {

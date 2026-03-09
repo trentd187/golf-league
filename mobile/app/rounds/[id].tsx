@@ -642,9 +642,6 @@ export default function RoundDetailScreen() {
                       <View key={rowIdx} className="flex-row gap-2">
                         {row.map((tee) => {
                           const selected = editNewTeeId === tee.id;
-                          const genderLabel =
-                            tee.gender === "male"   ? "Men" :
-                            tee.gender === "female" ? "Women" : "All";
                           return (
                             <TouchableOpacity
                               key={tee.id}
@@ -658,7 +655,7 @@ export default function RoundDetailScreen() {
                                 {tee.name}
                               </Text>
                               <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
-                                {genderLabel} · Par {tee.par}
+                                Par {tee.par}
                               </Text>
                             </TouchableOpacity>
                           );

@@ -93,9 +93,11 @@ type UpdateCourseRequest struct {
 }
 
 // CreateTeeRequest is the body for POST /courses/:courseId/tees.
+// Gender is optional — defaults to "unisex" when omitted. The mobile UI does not
+// expose gender (tee names identify tees; par is the meaningful association).
 type CreateTeeRequest struct {
 	Name         string  `json:"name"`          // required, e.g. "Blue"
-	Gender       string  `json:"gender"`        // required: "mens", "womens", "unisex"
+	Gender       string  `json:"gender"`        // optional; defaults to "unisex"
 	CourseRating float64 `json:"course_rating"` // required
 	SlopeRating  int     `json:"slope_rating"`  // required
 	Par          int     `json:"par"`           // required
@@ -536,6 +538,11 @@ func CreateTee(db *gorm.DB) fiber.Handler {
 		req.Name = strings.TrimSpace(req.Name)
 		if req.Name == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
+		}
+		// Default gender to "unisex" when not provided. Gender is not exposed in the
+		// mobile UI — tee names (Blue, White, Red) are the identifier, not gender.
+		if req.Gender == "" {
+			req.Gender = "unisex"
 		}
 		switch req.Gender {
 		case "mens", "womens", "unisex":

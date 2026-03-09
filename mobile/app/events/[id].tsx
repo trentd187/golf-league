@@ -952,10 +952,6 @@ export default function EventDetailScreen() {
                       <View key={rowIdx} className="flex-row gap-2">
                         {row.map((tee) => {
                           const selected = selectedTeeId === tee.id;
-                          // Abbreviate gender so pills stay narrow on small screens.
-                          const genderLabel =
-                            tee.gender === "male"   ? "Men" :
-                            tee.gender === "female" ? "Women" : "All";
                           return (
                             <TouchableOpacity
                               key={tee.id}
@@ -971,7 +967,7 @@ export default function EventDetailScreen() {
                                 {tee.name}
                               </Text>
                               <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
-                                {genderLabel} · Par {tee.par}
+                                Par {tee.par}
                               </Text>
                             </TouchableOpacity>
                           );
@@ -988,6 +984,18 @@ export default function EventDetailScreen() {
                   <Ionicons name="information-circle-outline" size={16} color={t.colors.tabBarInactive} />
                   <Text className={`text-xs flex-1 ${t.textTertiary}`}>
                     No tees configured — a default tee will be created automatically.
+                  </Text>
+                </View>
+              )}
+
+              {/* Warning chip when the course has no hole data (no par / stroke index).
+                  Non-blocking — the round can still be scheduled, but the organiser is
+                  informed that scorecard data will be missing until holes are entered. */}
+              {selectedCourse && !selectedCourse.has_holes && (
+                <View className="mb-4 flex-row items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3">
+                  <Ionicons name="warning-outline" size={16} color="#d97706" />
+                  <Text className="text-xs text-amber-700 flex-1">
+                    This course has no hole data. Par and stroke index won{"'"}t be available on the scorecard.
                   </Text>
                 </View>
               )}

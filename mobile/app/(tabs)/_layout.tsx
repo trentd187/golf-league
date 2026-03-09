@@ -1,11 +1,12 @@
 // app/(tabs)/_layout.tsx
-// Layout for the main tab navigator — defines the bottom tab bar and its four tabs.
+// Layout for the main tab navigator — defines the bottom tab bar and its five tabs.
 // In Expo Router, _layout.tsx in a directory controls how all sibling screens are presented.
 //
-// The four tabs correspond to the four screen files in this directory:
+// The five tabs correspond to the five screen files in this directory:
 //   index.tsx    → Home
 //   events.tsx   → Events
 //   rounds.tsx   → Rounds
+//   courses.tsx  → Courses
 //   profile.tsx  → Profile
 //
 // Theme integration:
@@ -99,6 +100,17 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             // "flag" icons represent golf holes/flags — appropriate for the rounds screen
             <TabBarIcon name={focused ? "flag" : "flag-outline"} color={color} />
+          ),
+        }}
+      />
+
+      {/* Courses tab — browse course library, manage tees and hole data */}
+      <Tabs.Screen
+        name="courses"
+        options={{
+          title: "Courses",
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name={focused ? "golf" : "golf-outline"} color={color} />
           ),
         }}
       />

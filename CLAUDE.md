@@ -403,6 +403,35 @@ import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 - `RoleBadge` — "Organizer" pill; renders `null` for players (safe to always include)
 - `RoundStatusChip` — round lifecycle: scheduled (sky), active (green), completed (gray)
 
+**`CoursePickerModal`** (`components/CoursePickerModal.tsx`) — full-screen modal for searching and selecting a course:
+- Local-first search (GET /courses?name=...), external on-demand ("Search Online"), auto-import on select
+- Returns `PickedCourse` (id, name, city, state, has_holes, tees[]) via `onSelect` callback
+- `has_holes: bool` — true when at least one tee has complete hole data; parent uses this to show a warning
+
+**`HoleDataGrid`** (`components/HoleDataGrid.tsx`) — 18-hole scorecard grid for a single tee:
+- Props: `courseId`, `teeId`, `holes`, `editable`, `onSaved?`
+- Display mode: read-only table (hole #, par, SI, yards) with totals row
+- Edit mode (admin/manager): `TextInput` per cell; validates par (3–6), SI (1–18, unique), saves via `PUT /tees/:teeId/holes`
+- Types: `HoleRow` from `@/types/courses`
+
+**`TeeForm`** (`components/TeeForm.tsx`) — modal sheet for creating or editing a tee set:
+- Props: `courseId`, `existing?` (null = create mode), `onSaved`
+- Fields: name, course rating, slope rating, par — gender is omitted (backend defaults to "unisex")
+
+### TypeScript Shared Types
+
+Course-related interfaces live in `mobile/types/courses.ts` and are imported as:
+```tsx
+import type { CourseDetail, TeeDetail, HoleRow, CourseSummary } from "@/types/courses";
+```
+
+| Type | Used by |
+|---|---|
+| `CourseSummary` | Courses list tab (GET /courses response) |
+| `CourseDetail` | Course detail screen (GET /courses/:id response) |
+| `TeeDetail` | Course detail, HoleDataGrid, TeeForm |
+| `HoleRow` | HoleDataGrid |
+
 ### TypeScript Path Aliases
 
 The `@/` alias resolves to the `mobile/` root. Use it for all internal imports:
@@ -501,6 +530,8 @@ events (type: "league" | "tournament" | "casual")
                    → team_scores
 courses → tees → holes
 ```
+
+**Tee gender** — `tees.gender` (DB enum: `mens`/`womens`/`unisex`) is NOT exposed in the mobile UI. Tee names (Blue, White, Red) are the identifier; par is the meaningful association, not gender. The backend `CreateTee` handler defaults `gender` to `"unisex"` when the field is omitted from the request. External API imports retain the gender split from GolfCourseAPI's male/female arrays. Do not add a gender picker to the mobile tee forms.
 
 **Who can manage a specific event** (edit, invite members, schedule rounds) — two-tier check:
 - `admin` global role → can manage any event (full platform bypass)

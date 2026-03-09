@@ -318,7 +318,8 @@ func loadCourseWithTees(db *gorm.DB, courseID uuid.UUID) (models.Course, error) 
 
 // GetCourses returns a handler for GET /api/v1/courses.
 // Supports optional query params (all case-insensitive, partial match):
-//   - ?name=      — filter by course name
+//   - ?q=         — free-text OR across name, city, and state (preferred for single-input search)
+//   - ?name=      — filter by course name only
 //   - ?location=  — OR filter across city and state (use this for free-text location input)
 //   - ?city=      — filter by city only
 //   - ?state=     — filter by state only
@@ -326,6 +327,12 @@ func GetCourses(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		query := db.Model(&models.Course{})
 
+		// ?q= is the single-input search used by the Courses tab — matches any of name, city, or
+		// state so users can type a course name, city, or state abbreviation and get results.
+		if q := strings.TrimSpace(c.Query("q")); q != "" {
+			like := "%" + q + "%"
+			query = query.Where("name ILIKE ? OR city ILIKE ? OR state ILIKE ?", like, like, like)
+		}
 		if name := strings.TrimSpace(c.Query("name")); name != "" {
 			query = query.Where("name ILIKE ?", "%"+name+"%")
 		}

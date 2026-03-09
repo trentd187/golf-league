@@ -50,7 +50,7 @@ export default function CoursesScreen() {
     const token = await getToken();
     let url = `${API_URL}/api/v1/courses`;
     const q = searchQuery.trim();
-    if (q) url += `?name=${encodeURIComponent(q)}`;
+    if (q) url += `?q=${encodeURIComponent(q)}`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error("Failed to load courses");
     return res.json();
@@ -139,7 +139,7 @@ export default function CoursesScreen() {
             <Ionicons name="search-outline" size={18} color={t.colors.tabBarInactive} />
             <TextInput
               className={`flex-1 py-3 text-base ${t.textPrimary}`}
-              placeholder="Search courses…"
+              placeholder="Search by name, city, or state…"
               placeholderTextColor={t.colors.tabBarInactive}
               value={searchQuery}
               onChangeText={setSearchQuery}

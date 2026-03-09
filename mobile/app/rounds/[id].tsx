@@ -655,7 +655,7 @@ export default function RoundDetailScreen() {
                                 {tee.name}
                               </Text>
                               <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
-                                Par {tee.par}
+                                Par {tee.par} · Slope {tee.slope_rating} · {tee.course_rating}
                               </Text>
                             </TouchableOpacity>
                           );

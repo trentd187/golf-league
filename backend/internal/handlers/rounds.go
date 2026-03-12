@@ -392,6 +392,9 @@ type UpdateRoundRequest struct {
 	Name          *string `json:"name"`
 	ScheduledDate *string `json:"scheduled_date"` // "YYYY-MM-DD"
 	ScoringFormat *string `json:"scoring_format"`
+	// Status allows organizers to advance a round's lifecycle:
+	// "scheduled" → "active" (start the round) or "active" → "completed" (finish it).
+	Status *string `json:"status"`
 
 	// Preferred: switch to a pre-managed course by UUID.
 	// When course_id is set, default_tee_id is also required.
@@ -516,6 +519,15 @@ func UpdateRound(db *gorm.DB) fiber.Handler {
 					}
 				}
 				round.DefaultTeeID = tee.ID
+			}
+		}
+
+		if req.Status != nil {
+			switch models.RoundStatus(*req.Status) {
+			case models.RoundStatusScheduled, models.RoundStatusActive, models.RoundStatusCompleted:
+				round.Status = models.RoundStatus(*req.Status)
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid status value"})
 			}
 		}
 

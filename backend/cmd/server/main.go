@@ -77,6 +77,11 @@ func main() {
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))
 
+	// Score routes — permission enforced per-handler (group member, organizer, or admin)
+	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(db))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(db))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(db))
+
 	// Course routes — GET open to any authenticated user; mutations require admin or manager
 	api.Get("/courses", handlers.GetCourses(db))
 	api.Post("/courses", middleware.RequireRole("admin", "manager"), handlers.CreateCourse(db))

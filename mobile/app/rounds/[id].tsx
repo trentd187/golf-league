@@ -278,6 +278,30 @@ export default function RoundDetailScreen() {
     },
   });
 
+  // startRoundMutation advances the round status from "scheduled" → "active".
+  // Only shown to organizers when the round hasn't started yet.
+  const startRoundMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "active" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not start round", err.message, [{ text: "OK" }]);
+    },
+  });
+
   // --- Handlers ---
 
   const handleRemovePlayer = (group: RoundGroup, player: GroupMember) => {
@@ -432,6 +456,27 @@ export default function RoundDetailScreen() {
               {formatLabel(round.scoring_format)}
             </Text>
           </View>
+
+          {/* Start Round button — organizer only, only when round is still scheduled */}
+          {round.is_organizer && round.status === "scheduled" && (
+            <TouchableOpacity
+              className={`mt-3 flex-row items-center justify-center gap-2 rounded-xl py-2.5 ${
+                startRoundMutation.isPending ? "bg-green-700/40" : "bg-green-700"
+              }`}
+              onPress={() => startRoundMutation.mutate()}
+              disabled={startRoundMutation.isPending}
+              activeOpacity={0.8}
+            >
+              {startRoundMutation.isPending ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <>
+                  <Ionicons name="play-circle-outline" size={16} color="white" />
+                  <Text className="text-white font-semibold text-sm">Start Round</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* ── Groups section ──────────────────────────────────────────────────── */}
@@ -547,6 +592,28 @@ export default function RoundDetailScreen() {
                     className="text-sm font-semibold"
                   >
                     Add Player
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Scorecard — shown when the group has at least one player */}
+              {group.players.length > 0 && (
+                <TouchableOpacity
+                  className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
+                  onPress={() =>
+                    router.push(
+                      `/scorecard/${id}?groupId=${group.id}&groupNumber=${group.group_number}`
+                    )
+                  }
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="list-outline" size={16} color={t.colors.tabBarActive} />
+                  <Text
+                    // eslint-disable-next-line react-native/no-inline-styles
+                    style={{ color: t.colors.tabBarActive }}
+                    className="text-sm font-semibold"
+                  >
+                    Scorecard
                   </Text>
                 </TouchableOpacity>
               )}

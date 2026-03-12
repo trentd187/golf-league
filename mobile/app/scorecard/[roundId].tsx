@@ -1,19 +1,19 @@
 // app/scorecard/[roundId].tsx
 // Scorecard screen for a single tee-time group within a round.
 //
-// Route: /scorecard/:roundId?groupId=<groupId>
-// Navigate to this screen from the round detail screen by tapping "Scorecard"
-// on a group card.
+// Route: /scorecard/:roundId?groupId=<groupId>&groupNumber=<n>
+// Navigate here from the round detail screen by tapping "Scorecard" on a group card.
 //
 // What it does:
 //   1. Fetches GET /api/v1/rounds/:roundId/scorecard
 //   2. Filters to the group matching the `groupId` search param
 //   3. If the round requires handicaps and any player is missing one, shows a
 //      handicap entry section at the top before score entry is available
-//   4. Shows an 18-hole (or 9-hole) grid: rows = holes, columns = players
+//   4. Non-scramble formats: toggle between group view (all players in columns)
+//      and individual view (one player at a time, with net score column).
+//      Both views share the same `scores` state — switching never discards data.
 //   5. Allows any player in the group (or organizer/admin) to enter scores
-//   6. "Save Scores" submits all changes via PUT /rounds/:id/players/:rpId/scores
-//      for each player in parallel
+//   6. Scores are auto-saved on blur via PUT /rounds/:id/players/:rpId/scores
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
@@ -30,7 +30,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
@@ -68,6 +68,25 @@ function initHandicaps(players: ScorecardPlayer[]): LocalHandicaps {
   return out;
 }
 
+// handicapStrokes returns the number of strokes a player receives on a hole.
+// Mirrors the Go HandicapStrokes function in handlers/scores.go.
+// A 20-handicap player gets 2 strokes on SI 1–2 and 1 stroke on SI 3–18.
+function handicapStrokes(courseHandicap: number, strokeIndex: number): number {
+  const base = Math.floor(courseHandicap / 18);
+  const remainder = courseHandicap % 18;
+  return base + (strokeIndex <= remainder ? 1 : 0);
+}
+
+// scoreColor returns a NativeWind class string for a score relative to par.
+// Used in both group and individual views to keep color logic in one place.
+function scoreColor(diff: number, textPrimary: string): string {
+  if (diff <= -2) return "text-yellow-500"; // Eagle or better
+  if (diff === -1) return "text-green-600"; // Birdie
+  if (diff === 0)  return textPrimary;      // Par
+  if (diff === 1)  return "text-blue-500";  // Bogey
+  return "text-red-500";                    // Double+
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ScorecardScreen() {
@@ -77,19 +96,26 @@ export default function ScorecardScreen() {
     groupId: string;
     groupNumber: string;
   }>();
-  const router = useRouter();
-  const { getToken } = useAuth();
-  const t = useTheme();
-  const queryClient = useQueryClient();
+  const router        = useRouter();
+  const { getToken }  = useAuth();
+  const { user }      = useUser();
+  const t             = useTheme();
+  const queryClient   = useQueryClient();
 
-  // Local editable state — populated when data loads; reset on refresh.
+  // ── View mode ───────────────────────────────────────────────────────────────
+  // "group": all players shown in columns (default, always available).
+  // "individual": one player at a time with gross + net score columns.
+  // Only offered for non-scramble formats with 2+ players.
+  // Switching never resets scores — both views share the same `scores` state.
+  const [viewMode,         setViewMode]         = useState<"group" | "individual">("group");
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
+
+  // ── Score / handicap / UI state ─────────────────────────────────────────────
   const [scores,          setScores]          = useState<LocalScores>({});
   const [handicaps,       setHandicaps]       = useState<LocalHandicaps>({});
-  // savingHandicaps blocks the handicap form while the PUT request is in-flight.
   const [savingHandicaps, setSavingHandicaps] = useState(false);
-  // saveStatus tracks the auto-save state per player for the column header indicator.
-  const [saveStatus, setSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
-  const [endingRound, setEndingRound] = useState(false);
+  const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+  const [endingRound,     setEndingRound]     = useState(false);
 
   // ── Fetch scorecard ─────────────────────────────────────────────────────────
 
@@ -110,26 +136,37 @@ export default function ScorecardScreen() {
     isRefetching,
   } = useQuery<Scorecard>({
     queryKey: ["scorecard", roundId],
-    queryFn: fetchScorecard,
-    enabled: !!roundId,
+    queryFn:  fetchScorecard,
+    enabled:  !!roundId,
   });
 
-  // Find the target group — may be undefined while loading.
   const group: ScorecardGroup | undefined = scorecard?.groups.find(
     (g) => g.group_id === groupId
   );
 
-  // scoresRef mirrors scores state so autoSavePlayer reads the latest value without
-  // being recreated on every keystroke (which would cause onBlur prop churn).
-  const scoresRef = useRef(scores);
+  // ── Refs ────────────────────────────────────────────────────────────────────
+
+  // scoresRef mirrors scores state so autoSavePlayer reads the latest value
+  // without being recreated on every keystroke (avoids onBlur prop churn).
+  const scoresRef  = useRef(scores);
   useEffect(() => { scoresRef.current = scores; }, [scores]);
 
-  // saveTimers debounces per-player saves: rapid tabbing through cells collapses
-  // into a single request fired 400ms after the last blur on that player's cells.
+  // saveTimers debounces per-player saves: rapid tabbing collapses into one request.
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // autoSavePlayer collects all entered scores for one player and PUTs them to the API.
-  // Debounced so that tabbing through multiple cells only fires one request.
+  // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
+  const inputRefs  = useRef<Map<string, TextInput | null>>(new Map());
+
+  // indivInputRefs: individual view grid — key is hole_number (1-based).
+  const indivInputRefs = useRef<Map<number, TextInput | null>>(new Map());
+
+  // userIdRef lets the init effect read user.id without listing it as a dep,
+  // avoiding re-runs when Clerk refreshes user data mid-session.
+  const userIdRef  = useRef(user?.id);
+  useEffect(() => { userIdRef.current = user?.id; }, [user?.id]);
+
+  // ── Auto-save ───────────────────────────────────────────────────────────────
+
   const autoSavePlayer = useCallback(
     (roundPlayerId: string) => {
       const existing = saveTimers.current.get(roundPlayerId);
@@ -153,9 +190,9 @@ export default function ScorecardScreen() {
           const res = await fetch(
             `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
             {
-              method: "PUT",
+              method:  "PUT",
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ scores: entries }),
+              body:    JSON.stringify({ scores: entries }),
             }
           );
           if (!res.ok) {
@@ -165,7 +202,6 @@ export default function ScorecardScreen() {
             throw new Error(body?.error ?? "Save failed");
           }
           setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saved" }));
-          // Clear the checkmark after 2 s so it doesn't distract during further entry.
           setTimeout(
             () => setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "idle" })),
             2000
@@ -180,12 +216,9 @@ export default function ScorecardScreen() {
     [roundId, getToken]
   );
 
-  // inputRefs stores a TextInput ref for each score cell.
-  // Key: "<holeIndex>-<playerIndex>" matching the render order of holeRows × group.players.
-  const inputRefs = useRef<Map<string, TextInput | null>>(new Map());
+  // ── Focus helpers ────────────────────────────────────────────────────────────
 
-  // focusNext advances the keyboard cursor to the next player in the same hole, or
-  // wraps to the first player of the next hole at the end of a row.
+  // Group view: advance to next player in the same hole, then wrap to next hole.
   const focusNext = useCallback(
     (holeIdx: number, playerIdx: number, totalPlayers: number, totalHoles: number) => {
       const nextPlayer = playerIdx + 1;
@@ -198,14 +231,26 @@ export default function ScorecardScreen() {
     []
   );
 
-  // Initialise local score/handicap state once when the group first loads.
-  // A ref guard prevents re-initialisation on background refetches, which would
-  // clobber in-progress edits. A new mount (navigate away + back) resets the ref.
+  // Individual view: advance straight to the next hole.
+  const focusNextIndiv = useCallback((holeNumber: number, totalHoles: number) => {
+    if (holeNumber < totalHoles) {
+      indivInputRefs.current.get(holeNumber + 1)?.focus();
+    }
+  }, []);
+
+  // ── Initialisation ──────────────────────────────────────────────────────────
+
   const initializedRef = useRef(false);
   useEffect(() => {
     if (group && !initializedRef.current) {
       setScores(initScores(group.players));
       setHandicaps(initHandicaps(group.players));
+      // Default individual view to the current user's player, then first player.
+      // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
+      const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
+      setSelectedPlayerId(
+        myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""
+      );
       initializedRef.current = true;
     }
   }, [group]);
@@ -242,9 +287,6 @@ export default function ScorecardScreen() {
 
   // ── End round ───────────────────────────────────────────────────────────────
 
-  // handleEndRound marks the round completed and navigates back to the round detail.
-  // The button is only shown to organizers (is_organizer from the scorecard response);
-  // the backend also enforces this via isRoundOrganizer.
   const handleEndRound = () => {
     Alert.alert(
       "End Round?",
@@ -259,12 +301,9 @@ export default function ScorecardScreen() {
             try {
               const token = await getToken();
               const res = await fetch(`${API_URL}/api/v1/rounds/${roundId}`, {
-                method: "PATCH",
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ status: "completed" }),
+                method:  "PATCH",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body:    JSON.stringify({ status: "completed" }),
               });
               if (!res.ok) {
                 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -319,28 +358,58 @@ export default function ScorecardScreen() {
 
   // ── Derived state ───────────────────────────────────────────────────────────
 
+  // Scramble: all players play from the same ball — individual scorecards don't apply.
+  const isScramble = scorecard.scoring_format === "scramble";
+  const showToggle = !isScramble && group.players.length > 1;
+
+  // Resolve the selected player, falling back to the first player if stale.
+  const selectedPlayer =
+    group.players.find((p) => p.round_player_id === selectedPlayerId) ??
+    group.players[0];
+
   const needsHandicap = scorecard.requires_handicap &&
     group.players.some((p) => p.course_handicap == null);
 
-  // Column widths: fixed left columns + player columns.
-  // Player column width is fixed at 64px — fits 4 players on a 375px screen.
-  const leftColW = 38;  // Hole #
-  const parColW  = 32;  // Par
-  const siColW   = 32;  // SI
-  const playerColW = 64;
-  const totalWidth = leftColW + parColW + siColW + group.players.length * playerColW;
+  // Show Net column when the selected player has a handicap set.
+  const showNetCol = selectedPlayer?.course_handicap != null;
 
-  // Build hole rows. If there's no tee data, show 1..hole_count with blank par/SI.
+  // Column widths.
+  const leftColW       = 38;   // Hole #
+  const parColW        = 32;   // Par
+  const siColW         = 32;   // SI
+  const playerColW     = 64;   // Per-player column (group view)
+  const indivScoreColW = 84;   // Score column (individual view)
+  const indivNetColW   = 60;   // Net column (individual view)
+
+  const totalGroupWidth = leftColW + parColW + siColW + group.players.length * playerColW;
+
+  // Build hole rows. Without tee data, show 1..hole_count with blank par/SI.
   const holeCount = scorecard.hole_count || 18;
   type HoleRowData = { hole_number: number; par: number; stroke_index: number; yardage: number | null };
   const holeMap = new Map<number, HoleRowData>();
-  for (const h of scorecard.holes) {
-    holeMap.set(h.hole_number, h);
-  }
+  for (const h of scorecard.holes) holeMap.set(h.hole_number, h);
   const holeRows: HoleRowData[] = Array.from({ length: holeCount }, (_, i) => {
     const n = i + 1;
     return holeMap.get(n) ?? { hole_number: n, par: 0, stroke_index: 0, yardage: null };
   });
+
+  // Pre-compute individual view totals (trivially cheap; avoids IIFE in JSX).
+  let indivGrossTotal = 0, indivGrossCount = 0;
+  let indivNetTotal   = 0, indivNetCount   = 0;
+  if (selectedPlayer) {
+    const indivInputs = scores[selectedPlayer.round_player_id] ?? {};
+    for (const hole of holeRows) {
+      const g = parseInt(indivInputs[hole.hole_number] ?? "", 10);
+      if (!isNaN(g) && g >= 1) {
+        indivGrossTotal += g;
+        indivGrossCount++;
+        if (showNetCol && selectedPlayer.course_handicap != null && hole.stroke_index) {
+          indivNetTotal += g - handicapStrokes(selectedPlayer.course_handicap, hole.stroke_index);
+          indivNetCount++;
+        }
+      }
+    }
+  }
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -349,7 +418,8 @@ export default function ScorecardScreen() {
       className={`flex-1 ${t.screen}`}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      {/* Header */}
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <View className={`${t.surface} border-b ${t.divider} px-4 pt-14 pb-3 flex-row items-center gap-3`}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={t.colors.tabBarActive} />
@@ -362,6 +432,28 @@ export default function ScorecardScreen() {
             Group {groupNumber ?? group.group_number}
           </Text>
         </View>
+
+        {/* Group / Individual toggle — non-scramble, 2+ players only */}
+        {showToggle && (
+          <View className={`flex-row rounded-lg overflow-hidden border ${t.border}`}>
+            <TouchableOpacity
+              onPress={() => setViewMode("group")}
+              className={`px-3 py-1.5 ${viewMode === "group" ? "bg-green-700" : t.surface}`}
+            >
+              <Text className={`text-xs font-semibold ${viewMode === "group" ? "text-white" : t.textSecondary}`}>
+                Group
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setViewMode("individual")}
+              className={`px-3 py-1.5 ${viewMode === "individual" ? "bg-green-700" : t.surface}`}
+            >
+              <Text className={`text-xs font-semibold ${viewMode === "individual" ? "text-white" : t.textSecondary}`}>
+                Individual
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       <ScrollView
@@ -382,7 +474,7 @@ export default function ScorecardScreen() {
           <View className={`mx-4 mt-4 rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
             <View className={`px-4 py-3 border-b ${t.divider} flex-row items-center gap-2`}>
               <Ionicons name="information-circle-outline" size={16} color="#d97706" />
-              <Text className={`text-sm font-semibold text-amber-700`}>
+              <Text className="text-sm font-semibold text-amber-700">
                 Handicap required before entering scores
               </Text>
             </View>
@@ -426,175 +518,273 @@ export default function ScorecardScreen() {
           </View>
         )}
 
-        {/* ── Scorecard table ────────────────────────────────────────────────── */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-4">
-          <View style={{ width: totalWidth }}>
+        {/* ── Individual view: player selector pills ─────────────────────────── */}
+        {viewMode === "individual" && group.players.length > 1 && (
+          <View className="flex-row gap-2 px-4 mt-4 flex-wrap">
+            {group.players.map((p) => (
+              <TouchableOpacity
+                key={p.round_player_id}
+                onPress={() => setSelectedPlayerId(p.round_player_id)}
+                className={`px-3 py-1.5 rounded-full border ${
+                  selectedPlayerId === p.round_player_id
+                    ? "bg-green-700 border-green-700"
+                    : `${t.surface} ${t.border}`
+                }`}
+              >
+                <Text
+                  className={`text-sm font-semibold ${
+                    selectedPlayerId === p.round_player_id ? "text-white" : t.textPrimary
+                  }`}
+                  numberOfLines={1}
+                >
+                  {p.display_name.split(" ")[0]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
-            {/* Header row: Hole | Par | SI | [player names...] */}
-            <View
-              className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-b ${t.divider}`}
-            >
-              <Text
-                style={{ width: leftColW }}
-                className={`text-xs font-bold text-center ${t.textTertiary}`}
-              >
-                H
-              </Text>
-              <Text
-                style={{ width: parColW }}
-                className={`text-xs font-bold text-center ${t.textTertiary}`}
-              >
-                Par
-              </Text>
-              <Text
-                style={{ width: siColW }}
-                className={`text-xs font-bold text-center ${t.textTertiary}`}
-              >
-                SI
-              </Text>
-              {group.players.map((p) => {
-                const status = saveStatus[p.round_player_id] ?? "idle";
+        {/* ── Scorecard tables ───────────────────────────────────────────────── */}
+
+        {viewMode === "group" ? (
+
+          /* ── Group view: horizontal scroll, all players in columns ── */
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-4">
+            <View style={{ width: totalGroupWidth }}>
+
+              {/* Header row */}
+              <View className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-b ${t.divider}`}>
+                <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>H</Text>
+                <Text style={{ width: parColW }}  className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
+                <Text style={{ width: siColW }}   className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
+                {group.players.map((p) => {
+                  const status = saveStatus[p.round_player_id] ?? "idle";
+                  return (
+                    <View key={p.round_player_id} style={{ width: playerColW }} className="items-center">
+                      <Text className={`text-xs font-bold text-center ${t.textPrimary}`} numberOfLines={1}>
+                        {p.display_name.split(" ")[0]}
+                      </Text>
+                      {status === "saving" && (
+                        // eslint-disable-next-line react-native/no-inline-styles
+                        <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />
+                      )}
+                      {status === "saved"  && <Ionicons name="checkmark-circle" size={10} color="#16a34a" />}
+                      {status === "error"  && <Ionicons name="alert-circle"     size={10} color="#dc2626" />}
+                      {status === "idle"   && <View style={{ height: 10 }} />}
+                    </View>
+                  );
+                })}
+              </View>
+
+              {/* Score rows */}
+              {holeRows.map((hole, idx) => {
+                const isOdd = idx % 2 === 0;
                 return (
-                  <View key={p.round_player_id} style={{ width: playerColW }} className="items-center">
-                    <Text
-                      className={`text-xs font-bold text-center ${t.textPrimary}`}
-                      numberOfLines={1}
-                    >
-                      {p.display_name.split(" ")[0]}
+                  <View
+                    key={hole.hole_number}
+                    className={`flex-row items-center px-2 py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
+                  >
+                    <Text style={{ width: leftColW }} className={`text-sm font-semibold text-center ${t.textPrimary}`}>
+                      {hole.hole_number}
                     </Text>
-                    {status === "saving" && (
-                      <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />
-                    )}
-                    {status === "saved" && (
-                      <Ionicons name="checkmark-circle" size={10} color="#16a34a" />
-                    )}
-                    {status === "error" && (
-                      <Ionicons name="alert-circle" size={10} color="#dc2626" />
-                    )}
-                    {status === "idle" && <View style={{ height: 10 }} />}
+                    <Text style={{ width: parColW }} className={`text-xs text-center ${hole.par ? t.textSecondary : t.textTertiary}`}>
+                      {hole.par || "—"}
+                    </Text>
+                    <Text style={{ width: siColW }} className={`text-xs text-center ${t.textTertiary}`}>
+                      {hole.stroke_index || "—"}
+                    </Text>
+                    {group.players.map((player, playerIdx) => {
+                      const val   = scores[player.round_player_id]?.[hole.hole_number] ?? "";
+                      const gross = parseInt(val, 10);
+                      const color = (hole.par && !isNaN(gross))
+                        ? scoreColor(gross - hole.par, t.textPrimary)
+                        : t.textPrimary;
+                      const isLastCell =
+                        idx === holeRows.length - 1 &&
+                        playerIdx === group.players.length - 1;
+                      return (
+                        <View key={player.round_player_id} style={{ width: playerColW }} className="items-center px-1">
+                          <TextInput
+                            ref={(el) => { inputRefs.current.set(`${idx}-${playerIdx}`, el); }}
+                            className={`w-full border rounded-lg text-center text-sm py-1 ${t.borderInput} ${t.surfaceSunken} ${color}`}
+                            keyboardType="number-pad"
+                            maxLength={2}
+                            returnKeyType={isLastCell ? "done" : "next"}
+                            value={val}
+                            onChangeText={(v) =>
+                              setScores((prev) => ({
+                                ...prev,
+                                [player.round_player_id]: {
+                                  ...(prev[player.round_player_id] ?? {}),
+                                  [hole.hole_number]: v,
+                                },
+                              }))
+                            }
+                            onSubmitEditing={() =>
+                              focusNext(idx, playerIdx, group.players.length, holeRows.length)
+                            }
+                            onBlur={() => autoSavePlayer(player.round_player_id)}
+                            editable={!savingHandicaps && !needsHandicap}
+                            placeholder="–"
+                            placeholderTextColor={t.colors.tabBarInactive}
+                          />
+                        </View>
+                      );
+                    })}
                   </View>
                 );
               })}
+
+              {/* Totals row */}
+              <View className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-t-2 ${t.border}`}>
+                <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>TOT</Text>
+                <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
+                  {scorecard.holes.reduce((sum, h) => sum + h.par, 0) || "—"}
+                </Text>
+                <View style={{ width: siColW }} />
+                {group.players.map((player) => {
+                  const playerInputs = scores[player.round_player_id] ?? {};
+                  let total = 0, count = 0;
+                  for (const v of Object.values(playerInputs)) {
+                    const n = parseInt(v, 10);
+                    if (!isNaN(n) && n >= 1) { total += n; count++; }
+                  }
+                  return (
+                    <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-bold text-center ${t.textPrimary}`}>
+                      {count > 0 ? total : "—"}
+                    </Text>
+                  );
+                })}
+              </View>
+
+            </View>
+          </ScrollView>
+
+        ) : (
+
+          /* ── Individual view: single-player, optional net column ── */
+          <View className="mt-4 px-4">
+
+            {/* Header row */}
+            <View className={`flex-row items-center py-2 ${t.surfaceSunken} border-b ${t.divider} rounded-t-xl overflow-hidden`}>
+              <Text style={{ width: leftColW }}       className={`text-xs font-bold text-center ${t.textTertiary}`}>H</Text>
+              <Text style={{ width: parColW }}        className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
+              <Text style={{ width: siColW }}         className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
+              <Text style={{ width: indivScoreColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>Score</Text>
+              {showNetCol && (
+                <Text style={{ width: indivNetColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>Net</Text>
+              )}
             </View>
 
-            {/* Score rows — one per hole */}
+            {/* Score rows */}
             {holeRows.map((hole, idx) => {
-              // Alternating row background for readability.
-              const isOdd = idx % 2 === 0;
+              const isOdd    = idx % 2 === 0;
+              const val      = scores[selectedPlayer?.round_player_id]?.[hole.hole_number] ?? "";
+              const gross    = parseInt(val, 10);
+              const grossClr = (hole.par && !isNaN(gross))
+                ? scoreColor(gross - hole.par, t.textPrimary)
+                : t.textPrimary;
+
+              // Net score = gross − handicap strokes for this hole.
+              const hcp      = selectedPlayer?.course_handicap ?? null;
+              const strokes  = (hole.stroke_index && hcp != null)
+                ? handicapStrokes(hcp, hole.stroke_index)
+                : 0;
+              const net      = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
+              const netClr   = (net != null && hole.par)
+                ? scoreColor(net - hole.par, t.textPrimary)
+                : t.textPrimary;
+
               return (
                 <View
                   key={hole.hole_number}
-                  className={`flex-row items-center px-2 py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
+                  className={`flex-row items-center py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
                 >
-                  <Text
-                    style={{ width: leftColW }}
-                    className={`text-sm font-semibold text-center ${t.textPrimary}`}
-                  >
+                  <Text style={{ width: leftColW }} className={`text-sm font-semibold text-center ${t.textPrimary}`}>
                     {hole.hole_number}
                   </Text>
-                  <Text
-                    style={{ width: parColW }}
-                    className={`text-xs text-center ${hole.par ? t.textSecondary : t.textTertiary}`}
-                  >
+                  <Text style={{ width: parColW }} className={`text-xs text-center ${hole.par ? t.textSecondary : t.textTertiary}`}>
                     {hole.par || "—"}
                   </Text>
-                  <Text
-                    style={{ width: siColW }}
-                    className={`text-xs text-center ${hole.stroke_index ? t.textTertiary : t.textTertiary}`}
-                  >
+                  <Text style={{ width: siColW }} className={`text-xs text-center ${t.textTertiary}`}>
                     {hole.stroke_index || "—"}
                   </Text>
-                  {group.players.map((player, playerIdx) => {
-                    const val = scores[player.round_player_id]?.[hole.hole_number] ?? "";
-                    const gross = parseInt(val, 10);
-                    // Color-code relative to par when hole data exists.
-                    let scoreColor = t.textPrimary;
-                    if (hole.par && !isNaN(gross)) {
-                      const diff = gross - hole.par;
-                      if (diff <= -2) scoreColor = "text-yellow-500"; // Eagle or better
-                      else if (diff === -1) scoreColor = "text-green-600"; // Birdie
-                      else if (diff === 0) scoreColor = t.textPrimary;   // Par
-                      else if (diff === 1) scoreColor = "text-blue-500";  // Bogey
-                      else scoreColor = "text-red-500";                   // Double+
-                    }
-                    const isLastCell =
-                      idx === holeRows.length - 1 &&
-                      playerIdx === group.players.length - 1;
-                    return (
-                      <View key={player.round_player_id} style={{ width: playerColW }} className="items-center px-1">
-                        <TextInput
-                          ref={(el) => { inputRefs.current.set(`${idx}-${playerIdx}`, el); }}
-                          className={`w-full border rounded-lg text-center text-sm py-1 ${t.borderInput} ${t.surfaceSunken} ${scoreColor}`}
-                          keyboardType="number-pad"
-                          maxLength={2}
-                          returnKeyType={isLastCell ? "done" : "next"}
-                          value={val}
-                          onChangeText={(v) =>
-                            setScores((prev) => ({
-                              ...prev,
-                              [player.round_player_id]: {
-                                ...(prev[player.round_player_id] ?? {}),
-                                [hole.hole_number]: v,
-                              },
-                            }))
-                          }
-                          onSubmitEditing={() =>
-                            focusNext(idx, playerIdx, group.players.length, holeRows.length)
-                          }
-                          onBlur={() => autoSavePlayer(player.round_player_id)}
-                          editable={!savingHandicaps && !needsHandicap}
-                          placeholder="–"
-                          placeholderTextColor={t.colors.tabBarInactive}
-                        />
-                      </View>
-                    );
-                  })}
+                  <View style={{ width: indivScoreColW }} className="items-center px-2">
+                    <TextInput
+                      ref={(el) => { indivInputRefs.current.set(hole.hole_number, el); }}
+                      className={`w-full border rounded-lg text-center text-sm py-1 ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      returnKeyType={idx === holeRows.length - 1 ? "done" : "next"}
+                      value={val}
+                      onChangeText={(v) =>
+                        setScores((prev) => ({
+                          ...prev,
+                          [selectedPlayer.round_player_id]: {
+                            ...(prev[selectedPlayer.round_player_id] ?? {}),
+                            [hole.hole_number]: v,
+                          },
+                        }))
+                      }
+                      onSubmitEditing={() => focusNextIndiv(hole.hole_number, holeCount)}
+                      onBlur={() => autoSavePlayer(selectedPlayer.round_player_id)}
+                      editable={!savingHandicaps && !needsHandicap}
+                      placeholder="–"
+                      placeholderTextColor={t.colors.tabBarInactive}
+                    />
+                  </View>
+                  {showNetCol && (
+                    <Text style={{ width: indivNetColW }} className={`text-sm font-semibold text-center ${netClr}`}>
+                      {net != null ? net : "—"}
+                    </Text>
+                  )}
                 </View>
               );
             })}
 
             {/* Totals row */}
-            <View
-              className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-t-2 ${t.border}`}
-            >
-              <Text
-                style={{ width: leftColW }}
-                className={`text-xs font-bold text-center ${t.textTertiary}`}
-              >
-                TOT
-              </Text>
-              {/* Par total */}
-              <Text
-                style={{ width: parColW }}
-                className={`text-xs font-semibold text-center ${t.textSecondary}`}
-              >
+            <View className={`flex-row items-center py-2 ${t.surfaceSunken} border-t-2 ${t.border} rounded-b-xl overflow-hidden`}>
+              <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>TOT</Text>
+              <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
                 {scorecard.holes.reduce((sum, h) => sum + h.par, 0) || "—"}
               </Text>
-              {/* SI column — blank in totals row */}
               <View style={{ width: siColW }} />
-              {group.players.map((player) => {
-                // Calculate a running gross total from local state.
-                const playerInputs = scores[player.round_player_id] ?? {};
-                let total = 0;
-                let count = 0;
-                for (const v of Object.values(playerInputs)) {
-                  const n = parseInt(v, 10);
-                  if (!isNaN(n) && n >= 1) { total += n; count++; }
-                }
-                return (
-                  <Text
-                    key={player.round_player_id}
-                    style={{ width: playerColW }}
-                    className={`text-sm font-bold text-center ${t.textPrimary}`}
-                  >
-                    {count > 0 ? total : "—"}
-                  </Text>
-                );
-              })}
+              <Text style={{ width: indivScoreColW }} className={`text-sm font-bold text-center ${t.textPrimary}`}>
+                {indivGrossCount > 0 ? indivGrossTotal : "—"}
+              </Text>
+              {showNetCol && (
+                <Text style={{ width: indivNetColW }} className={`text-sm font-bold text-center ${t.textPrimary}`}>
+                  {indivNetCount > 0 ? indivNetTotal : "—"}
+                </Text>
+              )}
             </View>
 
+            {/* Save status indicator — shown below the individual table */}
+            {selectedPlayer && saveStatus[selectedPlayer.round_player_id] !== "idle" && (
+              <View className="flex-row items-center justify-center gap-2 mt-3">
+                {saveStatus[selectedPlayer.round_player_id] === "saving" && (
+                  <>
+                    <ActivityIndicator size="small" color={t.colors.tabBarActive} />
+                    <Text className={`text-xs ${t.textTertiary}`}>Saving…</Text>
+                  </>
+                )}
+                {saveStatus[selectedPlayer.round_player_id] === "saved" && (
+                  <>
+                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                    <Text className="text-xs text-green-700">Saved</Text>
+                  </>
+                )}
+                {saveStatus[selectedPlayer.round_player_id] === "error" && (
+                  <>
+                    <Ionicons name="alert-circle" size={14} color="#dc2626" />
+                    <Text className="text-xs text-red-600">Save failed — tap a cell to retry</Text>
+                  </>
+                )}
+              </View>
+            )}
+
           </View>
-        </ScrollView>
+        )}
 
         {/* ── End Round button — organizer only ──────────────────────────────── */}
         {scorecard.is_organizer && (

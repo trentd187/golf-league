@@ -68,9 +68,12 @@ type CourseSummaryResponse struct {
 }
 
 // CourseDetailResponse extends the summary with the full tee and hole data.
+// external_source is non-empty ("golfcourseapi") for imported courses — the mobile
+// client uses this to decide whether to show the "Refresh from API" button.
 type CourseDetailResponse struct {
 	CourseSummaryResponse
-	Tees []TeeResponse `json:"tees"`
+	ExternalSource string        `json:"external_source"`
+	Tees           []TeeResponse `json:"tees"`
 }
 
 // ─── Request types ─────────────────────────────────────────────────────────────
@@ -231,13 +234,23 @@ func activeRoundGuard(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (stop bool)
 // share the identical insertion logic.
 // GolfCourseAPI splits tees by gender into separate male/female arrays — gender is
 // implicit from which array the tee appears in, not a field on the tee itself.
+// Deduplication: male tees are inserted first; a female tee with the same name is
+// skipped to avoid duplicate entries when the same physical tee appears in both arrays.
 func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees services.ExternalCourseTees) error {
+	inserted := make(map[string]bool)
 	for _, extTee := range tees.Male {
 		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderMens); err != nil {
 			return err
 		}
+		inserted[extTee.TeeName] = true
 	}
 	for _, extTee := range tees.Female {
+		// Skip if the same tee name was already imported from the male array.
+		// Many courses list the same physical tee in both arrays with different ratings;
+		// we keep the male entry (generally more complete) to avoid confusing duplicates.
+		if inserted[extTee.TeeName] {
+			continue
+		}
 		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderWomens); err != nil {
 			return err
 		}
@@ -247,14 +260,22 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees services.ExternalC
 
 // insertOneTee inserts a single tee and all its holes inside an existing transaction.
 // Hole numbers are positional: array index + 1 (GolfCourseAPI has no hole_number field).
+// GolfCourseAPI sometimes returns par_total = 0 even when hole-level par data exists;
+// in that case we calculate par by summing the individual hole pars.
 func insertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee services.ExternalTeeBox, gender models.TeeGender) error {
+	par := extTee.Par
+	if par == 0 && len(extTee.Holes) > 0 {
+		for _, h := range extTee.Holes {
+			par += h.Par
+		}
+	}
 	tee := models.Tee{
 		CourseID:     courseID,
 		Name:         extTee.TeeName,
 		Gender:       gender,
 		CourseRating: extTee.CourseRating,
 		SlopeRating:  extTee.SlopeRating,
-		Par:          extTee.Par,
+		Par:          par,
 	}
 	if err := tx.Create(&tee).Error; err != nil {
 		return err
@@ -303,7 +324,8 @@ func buildCourseDetail(course models.Course) CourseDetailResponse {
 			TeeCount:  len(course.Tees),
 			HasHoles:  hasHoles,
 		},
-		Tees: teeResponses,
+		ExternalSource: course.ExternalSource,
+		Tees:           teeResponses,
 	}
 }
 

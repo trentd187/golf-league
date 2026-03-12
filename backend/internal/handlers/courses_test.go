@@ -229,6 +229,18 @@ func TestUpdateHole_InvalidHoleNumber(t *testing.T) {
 
 // ─── SearchExternalCourse ──────────────────────────────────────────────────────
 
+// TestSearchExternalCourse_InvalidBody verifies that a non-JSON body returns 400.
+// The IsConfigured check passes (stub key), then BodyParser fails before any DB or network call.
+func TestSearchExternalCourse_InvalidBody(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/courses/search-external",
+		handlers.SearchExternalCourse(stubClient()))
+	req := httptest.NewRequest(http.MethodPost, "/courses/search-external", nil)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // TestSearchExternalCourse_UnconfiguredClient verifies that a missing API key returns 503.
 // The handler checks IsConfigured() before touching the request body, so no valid search
 // term is needed — even an otherwise-valid request is blocked without a key.
@@ -261,6 +273,18 @@ func TestSearchExternalCourse_WhitespaceSearch(t *testing.T) {
 }
 
 // ─── ImportExternalCourse ──────────────────────────────────────────────────────
+
+// TestImportExternalCourse_InvalidBody verifies that a non-JSON body returns 400.
+// The IsConfigured check passes (stub key), then BodyParser fails before the duplicate-check DB call.
+func TestImportExternalCourse_InvalidBody(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/courses/import-external",
+		handlers.ImportExternalCourse(nil, stubClient()))
+	req := httptest.NewRequest(http.MethodPost, "/courses/import-external", nil)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
 
 // TestImportExternalCourse_UnconfiguredClient verifies that a missing API key returns 503.
 func TestImportExternalCourse_UnconfiguredClient(t *testing.T) {

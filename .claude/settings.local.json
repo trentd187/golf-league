@@ -32,7 +32,13 @@
       "Bash(go test ./internal/handlers/... -coverprofile=coverage.out -covermode=atomic)",
       "Bash(go tool cover -func=coverage.out)",
       "Bash(go test ./internal/handlers/... ./internal/middleware/... -coverprofile=coverage.out -covermode=count -count=1)",
-      "Bash(gofmt -l ./internal/handlers/courses_test.go)"
+      "Bash(gofmt -l ./internal/handlers/courses_test.go)",
+      "Bash(go test ./internal/handlers/ ./internal/middleware/ -coverprofile=coverage.out)",
+      "Bash(grep -v \" 100.0%$\")",
+      "Bash(grep -v \" 0.0%$\")",
+      "Bash(ls /c/Users/trent/git-repos/golf-league/backend/internal/handlers/*_test.go)",
+      "Bash(go test ./internal/handlers/ -run TestRound -v)",
+      "Bash(go test ./internal/handlers/ -run TestRound -v -count=1)"
     ]
   }
 }

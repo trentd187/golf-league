@@ -237,23 +237,48 @@ func activeRoundGuard(c *fiber.Ctx, db *gorm.DB, courseID uuid.UUID) (stop bool)
 // Deduplication: male tees are inserted first; a female tee with the same name is
 // skipped to avoid duplicate entries when the same physical tee appears in both arrays.
 func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees services.ExternalCourseTees) error {
-	inserted := make(map[string]bool)
-	for _, extTee := range tees.Male {
-		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderMens); err != nil {
-			return err
-		}
-		inserted[extTee.TeeName] = true
+	// Build a map from tee name → best male entry (prefer entries that have hole data).
+	// Some courses (e.g. Paradise Valley) list the same physical tee in both male[] and
+	// female[]; the female entry may carry the actual per-hole data while the male entry
+	// has none. We deduplicate by name and keep whichever copy has more complete data.
+	type candidate struct {
+		tee    services.ExternalTeeBox
+		gender models.TeeGender
 	}
-	for _, extTee := range tees.Female {
-		// Skip if the same tee name was already imported from the male array.
-		// Many courses list the same physical tee in both arrays with different ratings;
-		// we keep the male entry (generally more complete) to avoid confusing duplicates.
-		if inserted[extTee.TeeName] {
+	best := make(map[string]candidate)
+	for _, t := range tees.Male {
+		best[t.TeeName] = candidate{t, models.TeeGenderMens}
+	}
+	for _, t := range tees.Female {
+		existing, dup := best[t.TeeName]
+		if !dup {
+			best[t.TeeName] = candidate{t, models.TeeGenderWomens}
 			continue
 		}
-		if err := insertOneTee(tx, courseID, extTee, models.TeeGenderWomens); err != nil {
+		// Duplicate name: prefer whichever has holes; break ties in favour of the male entry.
+		if len(t.Holes) > len(existing.tee.Holes) {
+			best[t.TeeName] = candidate{t, models.TeeGenderWomens}
+		}
+	}
+
+	// Insert male tees first (preserves the display order courses typically expect),
+	// then any female-only tees.
+	inserted := make(map[string]bool)
+	for _, t := range tees.Male {
+		c := best[t.TeeName]
+		if err := insertOneTee(tx, courseID, c.tee, c.gender); err != nil {
 			return err
 		}
+		inserted[t.TeeName] = true
+	}
+	for _, t := range tees.Female {
+		if inserted[t.TeeName] {
+			continue // already handled above (either male or promoted female entry)
+		}
+		if err := insertOneTee(tx, courseID, t, models.TeeGenderWomens); err != nil {
+			return err
+		}
+		inserted[t.TeeName] = true
 	}
 	return nil
 }

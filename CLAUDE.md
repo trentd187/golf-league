@@ -660,6 +660,21 @@ Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test
 
 The baseline is stored in `.go-coverage-baseline` (repo root, committed). The hook auto-updates it upward when coverage improves — it can never go down. Measured packages: `internal/handlers`, `internal/middleware`.
 
+**When adding new handler code:** any new uncovered statements lower the percentage. Before committing, always run:
+```bash
+go test ./internal/handlers/ ./internal/middleware/ -coverprofile=coverage.out && go tool cover -func=coverage.out | grep "^total:"
+```
+Compare the result against `.go-coverage-baseline`. If it drops, add Tier 1 tests to compensate **in the same commit** — do not rely on the auto-update to paper over the regression.
+
+**Common Tier 1 test patterns (no DB needed):**
+- `uuid.Parse(c.Locals("userID"))` fails when no auth middleware is in the test → returns **401**. Handlers: `GetRound`, `UpdateRound`, `DeleteRound`, `AddGroupMember`, `RemoveGroupMember`, and any new handler that reads `c.Locals("userID")` first.
+- `parseCourseID` / `parseTeeID` reject bad UUIDs → returns **400** before the first DB call.
+- `IsConfigured()` check on `GolfCourseAPIClient` with an empty key → returns **503** before parsing the request body.
+- `BodyParser` with `Content-Type: text/plain` → returns **400** when the handler validates the body before any DB call.
+
+**When these patterns do NOT apply (require Tier 2/real DB):**
+- Any handler that calls `findCourse(c, db, ...)`, `findTee(c, db, ...)`, or `db.First(...)` before body or UUID validation — passing `nil` DB will panic. Document these gaps with a comment in the handler.
+
 ---
 
 ## Docker / Railway Deployment

@@ -360,6 +360,8 @@ export default function ScorecardScreen() {
 
   // Scramble: all players play from the same ball — individual scorecards don't apply.
   const isScramble = scorecard.scoring_format === "scramble";
+  // Single-player groups are always shown in individual view so the net column is available.
+  const effectiveViewMode = group.players.length === 1 ? "individual" : viewMode;
   const showToggle = !isScramble && group.players.length > 1;
 
   // Resolve the selected player, falling back to the first player if stale.
@@ -367,8 +369,13 @@ export default function ScorecardScreen() {
     group.players.find((p) => p.round_player_id === selectedPlayerId) ??
     group.players[0];
 
+  // Only BLOCK score entry when the round explicitly requires a handicap.
   const needsHandicap = scorecard.requires_handicap &&
     group.players.some((p) => p.course_handicap == null);
+
+  // Show the handicap section whenever any player is missing one — even when
+  // the round doesn't require it (optional entry so net scores become available).
+  const showHandicapSection = group.players.some((p) => p.course_handicap == null);
 
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
@@ -470,12 +477,18 @@ export default function ScorecardScreen() {
       >
 
         {/* ── Handicap entry section ─────────────────────────────────────────── */}
-        {needsHandicap && (
-          <View className={`mx-4 mt-4 rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
-            <View className={`px-4 py-3 border-b ${t.divider} flex-row items-center gap-2`}>
-              <Ionicons name="information-circle-outline" size={16} color="#d97706" />
-              <Text className="text-sm font-semibold text-amber-700">
-                Handicap required before entering scores
+        {/* Shows when any player is missing a handicap. Amber / blocking when the   */}
+        {/* round requires it; neutral / optional otherwise (lets net scores appear). */}
+        {showHandicapSection && (
+          <View className={`mx-4 mt-4 rounded-2xl overflow-hidden border ${needsHandicap ? "border-amber-200" : t.border} ${t.surface}`}>
+            <View className={`px-4 py-3 border-b ${needsHandicap ? "border-amber-200" : t.divider} flex-row items-center gap-2`}>
+              <Ionicons
+                name={needsHandicap ? "information-circle-outline" : "golf-outline"}
+                size={16}
+                color={needsHandicap ? "#d97706" : t.colors.tabBarInactive}
+              />
+              <Text className={`text-sm font-semibold ${needsHandicap ? "text-amber-700" : t.textSecondary}`}>
+                {needsHandicap ? "Handicap required before entering scores" : "Set Handicaps (optional)"}
               </Text>
             </View>
             <View className="px-4 py-3 gap-3">
@@ -519,7 +532,7 @@ export default function ScorecardScreen() {
         )}
 
         {/* ── Individual view: player selector pills ─────────────────────────── */}
-        {viewMode === "individual" && group.players.length > 1 && (
+        {effectiveViewMode === "individual" && group.players.length > 1 && (
           <View className="flex-row gap-2 px-4 mt-4 flex-wrap">
             {group.players.map((p) => (
               <TouchableOpacity
@@ -546,7 +559,7 @@ export default function ScorecardScreen() {
 
         {/* ── Scorecard tables ───────────────────────────────────────────────── */}
 
-        {viewMode === "group" ? (
+        {effectiveViewMode === "group" ? (
 
           /* ── Group view: horizontal scroll, all players in columns ── */
           <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-4">

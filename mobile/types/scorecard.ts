@@ -39,6 +39,9 @@ export interface Scorecard {
   hole_count: number;
   requires_handicap: boolean;
   scoring_format: string;
+  // is_organizer is true when the requesting user is an organizer of this round's event.
+  // The mobile client uses this to show/hide the "End Round" button.
+  is_organizer: boolean;
   // Hole data from the round's default tee. Empty array when no tee data has been entered yet.
   holes: ScorecardHole[];
   groups: ScorecardGroup[];

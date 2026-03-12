@@ -37,7 +37,7 @@ import {
 } from "react-native";
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
@@ -99,6 +99,7 @@ export default function RoundDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { getToken } = useAuth();
+  const { user } = useUser();
   const queryClient = useQueryClient();
   const t = useTheme();
 
@@ -296,6 +297,18 @@ export default function RoundDetailScreen() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
+      // Navigate to the scorecard for the organizer's group (if they're assigned to one),
+      // otherwise fall back to the first group that has players.
+      const userId = user?.id;
+      const myGroup = round?.groups.find((g) =>
+        g.players.some((p) => p.user_id === userId)
+      );
+      const targetGroup = myGroup ?? round?.groups.find((g) => g.players.length > 0);
+      if (targetGroup) {
+        router.push(
+          `/scorecard/${id}?groupId=${targetGroup.id}&groupNumber=${targetGroup.group_number}`
+        );
+      }
     },
     onError: (err: Error) => {
       Alert.alert("Could not start round", err.message, [{ text: "OK" }]);

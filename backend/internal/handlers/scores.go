@@ -68,14 +68,16 @@ type ScorecardGroupResponse struct {
 
 // ScorecardResponse is the full payload returned by GET /rounds/:roundId/scorecard.
 type ScorecardResponse struct {
-	RoundID          string                   `json:"round_id"`
-	RoundName        string                   `json:"round_name"`
-	Status           string                   `json:"status"`
-	HoleCount        int                      `json:"hole_count"`
-	RequiresHandicap bool                     `json:"requires_handicap"`
-	ScoringFormat    string                   `json:"scoring_format"`
-	Holes            []ScorecardHole          `json:"holes"`
-	Groups           []ScorecardGroupResponse `json:"groups"`
+	RoundID          string `json:"round_id"`
+	RoundName        string `json:"round_name"`
+	Status           string `json:"status"`
+	HoleCount        int    `json:"hole_count"`
+	RequiresHandicap bool   `json:"requires_handicap"`
+	ScoringFormat    string `json:"scoring_format"`
+	// IsOrganizer lets the mobile client show/hide the "End Round" button without a separate query.
+	IsOrganizer bool                     `json:"is_organizer"`
+	Holes       []ScorecardHole          `json:"holes"`
+	Groups      []ScorecardGroupResponse `json:"groups"`
 }
 
 // ─── Request types ────────────────────────────────────────────────────────────
@@ -172,6 +174,12 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
 		}
+
+		// Determine caller identity for is_organizer flag.
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, _ := uuid.Parse(userIDStr)
+		isOrg, _ := isRoundOrganizer(db, roundID, callerID, userRole)
 
 		// Load round with its default tee and tee's holes.
 		var round models.Round
@@ -279,6 +287,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 			HoleCount:        round.Course.HoleCount,
 			RequiresHandicap: round.RequiresHandicap,
 			ScoringFormat:    string(round.ScoringFormat),
+			IsOrganizer:      isOrg,
 			Holes:            holeRows,
 			Groups:           groupResponses,
 		})

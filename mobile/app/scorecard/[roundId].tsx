@@ -15,7 +15,7 @@
 //   6. "Save Scores" submits all changes via PUT /rounds/:id/players/:rpId/scores
 //      for each player in parallel
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -83,9 +83,13 @@ export default function ScorecardScreen() {
   const queryClient = useQueryClient();
 
   // Local editable state — populated when data loads; reset on refresh.
-  const [scores,    setScores]    = useState<LocalScores>({});
-  const [handicaps, setHandicaps] = useState<LocalHandicaps>({});
-  const [saving,    setSaving]    = useState(false);
+  const [scores,          setScores]          = useState<LocalScores>({});
+  const [handicaps,       setHandicaps]       = useState<LocalHandicaps>({});
+  // savingHandicaps blocks the handicap form while the PUT request is in-flight.
+  const [savingHandicaps, setSavingHandicaps] = useState(false);
+  // saveStatus tracks the auto-save state per player for the column header indicator.
+  const [saveStatus, setSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+  const [endingRound, setEndingRound] = useState(false);
 
   // ── Fetch scorecard ─────────────────────────────────────────────────────────
 
@@ -108,17 +112,6 @@ export default function ScorecardScreen() {
     queryKey: ["scorecard", roundId],
     queryFn: fetchScorecard,
     enabled: !!roundId,
-    // Populate local state each time fresh data arrives from the server.
-    // `select` runs after each successful fetch and lets us initialise scores
-    // from the server without a separate useEffect.
-    select: (data) => {
-      const group = data.groups.find((g) => g.group_id === groupId);
-      if (group) {
-        setScores(initScores(group.players));
-        setHandicaps(initHandicaps(group.players));
-      }
-      return data;
-    },
   });
 
   // Find the target group — may be undefined while loading.
@@ -126,11 +119,102 @@ export default function ScorecardScreen() {
     (g) => g.group_id === groupId
   );
 
+  // scoresRef mirrors scores state so autoSavePlayer reads the latest value without
+  // being recreated on every keystroke (which would cause onBlur prop churn).
+  const scoresRef = useRef(scores);
+  useEffect(() => { scoresRef.current = scores; }, [scores]);
+
+  // saveTimers debounces per-player saves: rapid tabbing through cells collapses
+  // into a single request fired 400ms after the last blur on that player's cells.
+  const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // autoSavePlayer collects all entered scores for one player and PUTs them to the API.
+  // Debounced so that tabbing through multiple cells only fires one request.
+  const autoSavePlayer = useCallback(
+    (roundPlayerId: string) => {
+      const existing = saveTimers.current.get(roundPlayerId);
+      if (existing) clearTimeout(existing);
+
+      const timer = setTimeout(async () => {
+        saveTimers.current.delete(roundPlayerId);
+        const playerScores = scoresRef.current[roundPlayerId] ?? {};
+        const entries = Object.entries(playerScores)
+          .map(([holeStr, valStr]) => ({
+            hole_number: parseInt(holeStr, 10),
+            gross_score: parseInt(valStr, 10),
+          }))
+          .filter((e) => !isNaN(e.gross_score) && e.gross_score >= 1);
+
+        if (entries.length === 0) return;
+
+        setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saving" }));
+        try {
+          const token = await getToken();
+          const res = await fetch(
+            `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
+            {
+              method: "PUT",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ scores: entries }),
+            }
+          );
+          if (!res.ok) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            const body = await res.json().catch(() => ({}));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            throw new Error(body?.error ?? "Save failed");
+          }
+          setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saved" }));
+          // Clear the checkmark after 2 s so it doesn't distract during further entry.
+          setTimeout(
+            () => setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "idle" })),
+            2000
+          );
+        } catch {
+          setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "error" }));
+        }
+      }, 400);
+
+      saveTimers.current.set(roundPlayerId, timer);
+    },
+    [roundId, getToken]
+  );
+
+  // inputRefs stores a TextInput ref for each score cell.
+  // Key: "<holeIndex>-<playerIndex>" matching the render order of holeRows × group.players.
+  const inputRefs = useRef<Map<string, TextInput | null>>(new Map());
+
+  // focusNext advances the keyboard cursor to the next player in the same hole, or
+  // wraps to the first player of the next hole at the end of a row.
+  const focusNext = useCallback(
+    (holeIdx: number, playerIdx: number, totalPlayers: number, totalHoles: number) => {
+      const nextPlayer = playerIdx + 1;
+      if (nextPlayer < totalPlayers) {
+        inputRefs.current.get(`${holeIdx}-${nextPlayer}`)?.focus();
+      } else if (holeIdx + 1 < totalHoles) {
+        inputRefs.current.get(`${holeIdx + 1}-0`)?.focus();
+      }
+    },
+    []
+  );
+
+  // Initialise local score/handicap state once when the group first loads.
+  // A ref guard prevents re-initialisation on background refetches, which would
+  // clobber in-progress edits. A new mount (navigate away + back) resets the ref.
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (group && !initializedRef.current) {
+      setScores(initScores(group.players));
+      setHandicaps(initHandicaps(group.players));
+      initializedRef.current = true;
+    }
+  }, [group]);
+
   // ── Handicap save ───────────────────────────────────────────────────────────
 
   const handleSaveHandicaps = async () => {
     if (!group) return;
-    setSaving(true);
+    setSavingHandicaps(true);
     try {
       const token = await getToken();
       await Promise.all(
@@ -152,66 +236,53 @@ export default function ScorecardScreen() {
     } catch {
       Alert.alert("Error", "Could not save handicaps. Check your connection and try again.");
     } finally {
-      setSaving(false);
+      setSavingHandicaps(false);
     }
   };
 
-  // ── Score save ──────────────────────────────────────────────────────────────
+  // ── End round ───────────────────────────────────────────────────────────────
 
-  const handleSaveScores = async () => {
-    if (!group || !scorecard) return;
-
-    // Build the payload for each player: only include holes that have a valid score entered.
-    const payloads = group.players.map((player) => {
-      const playerScores: { hole_number: number; gross_score: number }[] = [];
-      const holeInputs = scores[player.round_player_id] ?? {};
-      for (const [holeStr, valStr] of Object.entries(holeInputs)) {
-        const gross = parseInt(valStr, 10);
-        if (!isNaN(gross) && gross >= 1) {
-          playerScores.push({ hole_number: parseInt(holeStr, 10), gross_score: gross });
-        }
-      }
-      return { player, scoreEntries: playerScores };
-    });
-
-    // Require at least one score across all players before submitting.
-    const anyScore = payloads.some((p) => p.scoreEntries.length > 0);
-    if (!anyScore) {
-      Alert.alert("No scores", "Enter at least one score before saving.");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const token = await getToken();
-      const results = await Promise.all(
-        payloads
-          .filter((p) => p.scoreEntries.length > 0)
-          .map(({ player, scoreEntries }) =>
-            fetch(
-              `${API_URL}/api/v1/rounds/${roundId}/players/${player.round_player_id}/scores`,
-              {
-                method:  "PUT",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body:    JSON.stringify({ scores: scoreEntries }),
-              }
-            ).then(async (res) => {
+  // handleEndRound marks the round completed and navigates back to the round detail.
+  // The button is only shown to organizers (is_organizer from the scorecard response);
+  // the backend also enforces this via isRoundOrganizer.
+  const handleEndRound = () => {
+    Alert.alert(
+      "End Round?",
+      "This will mark the round as completed for all groups.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "End Round",
+          style: "destructive",
+          onPress: async () => {
+            setEndingRound(true);
+            try {
+              const token = await getToken();
+              const res = await fetch(`${API_URL}/api/v1/rounds/${roundId}`, {
+                method: "PATCH",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ status: "completed" }),
+              });
               if (!res.ok) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const body = await res.json().catch(() => ({}));
-                throw new Error(body.error ?? "Failed to save scores");
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                throw new Error(body?.error ?? "Failed to end round");
               }
-            })
-          )
-      );
-      void results; // suppress unused-variable lint warning
-      queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
-      Alert.alert("Saved", "Scores saved successfully.");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Check your connection and try again.";
-      Alert.alert("Error saving scores", msg);
-    } finally {
-      setSaving(false);
-    }
+              router.back();
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : "Check your connection and try again.";
+              Alert.alert("Could not end round", msg);
+            } finally {
+              setEndingRound(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // ── Loading / error ─────────────────────────────────────────────────────────
@@ -336,16 +407,16 @@ export default function ScorecardScreen() {
                     onChangeText={(v) =>
                       setHandicaps((prev) => ({ ...prev, [player.round_player_id]: v }))
                     }
-                    editable={!saving}
+                    editable={!savingHandicaps}
                   />
                 </View>
               ))}
               <TouchableOpacity
-                className={`rounded-xl py-3 items-center mt-1 ${saving ? "bg-green-700/40" : "bg-green-700"}`}
+                className={`rounded-xl py-3 items-center mt-1 ${savingHandicaps ? "bg-green-700/40" : "bg-green-700"}`}
                 onPress={handleSaveHandicaps}
-                disabled={saving}
+                disabled={savingHandicaps}
               >
-                {saving ? (
+                {savingHandicaps ? (
                   <ActivityIndicator color="white" />
                 ) : (
                   <Text className="text-white font-semibold text-sm">Set Handicaps</Text>
@@ -381,16 +452,29 @@ export default function ScorecardScreen() {
               >
                 SI
               </Text>
-              {group.players.map((p) => (
-                <Text
-                  key={p.round_player_id}
-                  style={{ width: playerColW }}
-                  className={`text-xs font-bold text-center ${t.textPrimary}`}
-                  numberOfLines={1}
-                >
-                  {p.display_name.split(" ")[0]}
-                </Text>
-              ))}
+              {group.players.map((p) => {
+                const status = saveStatus[p.round_player_id] ?? "idle";
+                return (
+                  <View key={p.round_player_id} style={{ width: playerColW }} className="items-center">
+                    <Text
+                      className={`text-xs font-bold text-center ${t.textPrimary}`}
+                      numberOfLines={1}
+                    >
+                      {p.display_name.split(" ")[0]}
+                    </Text>
+                    {status === "saving" && (
+                      <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />
+                    )}
+                    {status === "saved" && (
+                      <Ionicons name="checkmark-circle" size={10} color="#16a34a" />
+                    )}
+                    {status === "error" && (
+                      <Ionicons name="alert-circle" size={10} color="#dc2626" />
+                    )}
+                    {status === "idle" && <View style={{ height: 10 }} />}
+                  </View>
+                );
+              })}
             </View>
 
             {/* Score rows — one per hole */}
@@ -420,7 +504,7 @@ export default function ScorecardScreen() {
                   >
                     {hole.stroke_index || "—"}
                   </Text>
-                  {group.players.map((player) => {
+                  {group.players.map((player, playerIdx) => {
                     const val = scores[player.round_player_id]?.[hole.hole_number] ?? "";
                     const gross = parseInt(val, 10);
                     // Color-code relative to par when hole data exists.
@@ -433,12 +517,17 @@ export default function ScorecardScreen() {
                       else if (diff === 1) scoreColor = "text-blue-500";  // Bogey
                       else scoreColor = "text-red-500";                   // Double+
                     }
+                    const isLastCell =
+                      idx === holeRows.length - 1 &&
+                      playerIdx === group.players.length - 1;
                     return (
                       <View key={player.round_player_id} style={{ width: playerColW }} className="items-center px-1">
                         <TextInput
+                          ref={(el) => { inputRefs.current.set(`${idx}-${playerIdx}`, el); }}
                           className={`w-full border rounded-lg text-center text-sm py-1 ${t.borderInput} ${t.surfaceSunken} ${scoreColor}`}
                           keyboardType="number-pad"
                           maxLength={2}
+                          returnKeyType={isLastCell ? "done" : "next"}
                           value={val}
                           onChangeText={(v) =>
                             setScores((prev) => ({
@@ -449,7 +538,11 @@ export default function ScorecardScreen() {
                               },
                             }))
                           }
-                          editable={!saving && !needsHandicap}
+                          onSubmitEditing={() =>
+                            focusNext(idx, playerIdx, group.players.length, holeRows.length)
+                          }
+                          onBlur={() => autoSavePlayer(player.round_player_id)}
+                          editable={!savingHandicaps && !needsHandicap}
                           placeholder="–"
                           placeholderTextColor={t.colors.tabBarInactive}
                         />
@@ -503,20 +596,28 @@ export default function ScorecardScreen() {
           </View>
         </ScrollView>
 
-        {/* ── Save button ─────────────────────────────────────────────────────── */}
-        <View className="px-4 mt-5">
-          <TouchableOpacity
-            className={`rounded-xl py-4 items-center ${saving || needsHandicap ? "bg-green-700/40" : "bg-green-700"}`}
-            onPress={handleSaveScores}
-            disabled={saving || needsHandicap}
-          >
-            {saving ? (
-              <ActivityIndicator color="white" />
-            ) : (
-              <Text className="text-white font-semibold text-base">Save Scores</Text>
-            )}
-          </TouchableOpacity>
-        </View>
+        {/* ── End Round button — organizer only ──────────────────────────────── */}
+        {scorecard.is_organizer && (
+          <View className="px-4 mt-5 mb-2">
+            <TouchableOpacity
+              className={`rounded-xl py-4 items-center flex-row justify-center gap-2 ${
+                endingRound ? "bg-green-700/40" : "bg-green-700"
+              }`}
+              onPress={handleEndRound}
+              disabled={endingRound}
+              activeOpacity={0.8}
+            >
+              {endingRound ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <>
+                  <Ionicons name="flag-outline" size={16} color="white" />
+                  <Text className="text-white font-semibold text-base">End Round</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
       </ScrollView>
     </KeyboardAvoidingView>

@@ -23,7 +23,9 @@
       "Bash(go test ./internal/handlers/ -run \"TestScore\\\\|TestHandicap\\\\|TestGetRoundScore\\\\|TestSetPlayer\\\\|TestUpsert\" -v)",
       "Bash(go test ./internal/handlers/ -run \"TestScore\\\\|TestHandicap\\\\|TestGetRound\\\\|TestSetPlayer\\\\|TestUpsert\" -v)",
       "Bash(go test ./internal/handlers/)",
-      "Bash(grep -n \"startRoundMutation\\\\|Scorecard\\\\|scorecard\" /c/Users/trent/git-repos/golf-league/mobile/app/rounds/[id].tsx)"
+      "Bash(grep -n \"startRoundMutation\\\\|Scorecard\\\\|scorecard\" /c/Users/trent/git-repos/golf-league/mobile/app/rounds/[id].tsx)",
+      "Bash(gofmt -l ./internal/handlers/scores.go)",
+      "Bash(gofmt -w ./internal/handlers/scores.go)"
     ]
   }
 }

@@ -440,23 +440,23 @@ export default function ScorecardScreen() {
           </Text>
         </View>
 
-        {/* Group / Individual toggle — non-scramble, 2+ players only */}
+        {/* Individual / Group toggle — non-scramble, 2+ players only */}
         {showToggle && (
           <View className={`flex-row rounded-lg overflow-hidden border ${t.border}`}>
-            <TouchableOpacity
-              onPress={() => setViewMode("group")}
-              className={`px-3 py-1.5 ${viewMode === "group" ? "bg-green-700" : t.surface}`}
-            >
-              <Text className={`text-xs font-semibold ${viewMode === "group" ? "text-white" : t.textSecondary}`}>
-                Group
-              </Text>
-            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setViewMode("individual")}
               className={`px-3 py-1.5 ${viewMode === "individual" ? "bg-green-700" : t.surface}`}
             >
               <Text className={`text-xs font-semibold ${viewMode === "individual" ? "text-white" : t.textSecondary}`}>
                 Individual
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setViewMode("group")}
+              className={`px-3 py-1.5 ${viewMode === "group" ? "bg-green-700" : t.surface}`}
+            >
+              <Text className={`text-xs font-semibold ${viewMode === "group" ? "text-white" : t.textSecondary}`}>
+                Group
               </Text>
             </TouchableOpacity>
           </View>
@@ -532,7 +532,7 @@ export default function ScorecardScreen() {
         )}
 
         {/* ── Individual view: player selector pills ─────────────────────────── */}
-        {effectiveViewMode === "individual" && group.players.length > 1 && (
+        {effectiveViewMode === "individual" && (
           <View className="flex-row gap-2 px-4 mt-4 flex-wrap">
             {group.players.map((p) => (
               <TouchableOpacity
@@ -550,7 +550,8 @@ export default function ScorecardScreen() {
                   }`}
                   numberOfLines={1}
                 >
-                  {p.display_name.split(" ")[0]}
+                  {/* Playing handicap shown in parens; (-) when not yet entered */}
+                  {p.display_name.split(" ")[0]} {p.course_handicap != null ? `(${p.course_handicap})` : "(-)"}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -576,6 +577,10 @@ export default function ScorecardScreen() {
                     <View key={p.round_player_id} style={{ width: playerColW }} className="items-center">
                       <Text className={`text-xs font-bold text-center ${t.textPrimary}`} numberOfLines={1}>
                         {p.display_name.split(" ")[0]}
+                      </Text>
+                      {/* Playing handicap for this round; (-) when not yet entered */}
+                      <Text className={`text-xs text-center ${t.textTertiary}`} numberOfLines={1}>
+                        {p.course_handicap != null ? `(${p.course_handicap})` : "(-)"}
                       </Text>
                       {status === "saving" && (
                         // eslint-disable-next-line react-native/no-inline-styles

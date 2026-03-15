@@ -28,8 +28,6 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 > **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
 
-The user is **learning TypeScript** and has **intermediate Go knowledge**. Follow the Comments rule below — file-level comment always, explain *why* and non-obvious features, skip comments that restate the code.
-
 ---
 
 ## Universal Rules

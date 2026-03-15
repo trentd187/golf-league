@@ -1,10 +1,9 @@
 // app/(tabs)/_layout.tsx
-// Layout for the main tab navigator — defines the bottom tab bar and its five tabs.
+// Layout for the main tab navigator — defines the bottom tab bar and its four tabs.
 // In Expo Router, _layout.tsx in a directory controls how all sibling screens are presented.
 //
-// The five tabs correspond to the five screen files in this directory:
-//   index.tsx    → Home
-//   events.tsx   → Events
+// The four tabs correspond to the screen files in this directory:
+//   events.tsx   → Events (default landing tab)
 //   rounds.tsx   → Rounds
 //   courses.tsx  → Courses
 //   profile.tsx  → Profile
@@ -68,18 +67,8 @@ export default function TabLayout() {
         },
       }}
     >
-      {/* Home tab — the landing screen after sign-in */}
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Home",
-          // tabBarIcon receives "color" (active/inactive tint) and "focused" (boolean) from the navigator
-          tabBarIcon: ({ color, focused }) => (
-            // Show filled icon when active, outlined when inactive
-            <TabBarIcon name={focused ? "home" : "home-outline"} color={color} />
-          ),
-        }}
-      />
+      {/* Hide index from the tab bar — it exists only to redirect /(tabs) → events */}
+      <Tabs.Screen name="index" options={{ href: null }} />
 
       {/* Events tab — browse and manage leagues and tournaments */}
       <Tabs.Screen

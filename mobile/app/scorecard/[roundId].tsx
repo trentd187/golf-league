@@ -14,6 +14,8 @@
 //      Both views share the same `scores` state — switching never discards data.
 //   5. Allows any player in the group (or organizer/admin) to enter scores
 //   6. Scores are auto-saved on blur via PUT /rounds/:id/players/:rpId/scores
+//   7. Individual view: expandable "Advanced Stats" panel per hole (GIR, FIR, putts,
+//      first putt distance, putt distance made) saved via PUT /hole-stats
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
@@ -35,6 +37,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import type { Scorecard, ScorecardGroup, ScorecardPlayer } from "@/types/scorecard";
+import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,43 @@ type LocalScores = Record<string, Record<number, string>>;
 
 // LocalHandicaps maps round_player_id → handicap string input.
 type LocalHandicaps = Record<string, string>;
+
+// HoleStatEntry holds the editable state for one hole's advanced stats.
+// Putts and distances use strings so TextInput fields can be blank.
+type HoleStatEntry = {
+  gir: string | null;               // "hit" | "miss" | "na" | null
+  gir_miss_direction: string | null; // "short" | "left" | "right" | "long" | null
+  fir: boolean | null;
+  fir_miss_direction: string | null;
+  putts: string;
+  first_putt_distance: string; // feet
+  putt_distance_made: string;  // feet
+};
+
+// LocalStats maps round_player_id → hole_number → HoleStatEntry.
+type LocalStats = Record<string, Record<number, HoleStatEntry>>;
+
+// IoniconsName is used to type the icon prop on stat option buttons.
+type IoniconsName = ComponentProps<typeof Ionicons>["name"];
+
+// GIR and FIR option descriptors — defined outside the component so they are
+// not recreated on every render.
+const GIR_OPTIONS: { key: string; label: string; icon: IoniconsName | null }[] = [
+  { key: "hit",        label: "Hit",   icon: "checkmark"     },
+  { key: "miss:short", label: "Short", icon: "arrow-down"    },
+  { key: "miss:left",  label: "Left",  icon: "arrow-back"    },
+  { key: "miss:right", label: "Right", icon: "arrow-forward" },
+  { key: "miss:long",  label: "Long",  icon: "arrow-up"      },
+  { key: "na",         label: "N/A",   icon: null            },
+];
+
+const FIR_OPTIONS: { key: string; label: string; icon: IoniconsName | null }[] = [
+  { key: "hit",        label: "Hit",   icon: "checkmark"     },
+  { key: "miss:short", label: "Short", icon: "arrow-down"    },
+  { key: "miss:left",  label: "Left",  icon: "arrow-back"    },
+  { key: "miss:right", label: "Right", icon: "arrow-forward" },
+  { key: "miss:long",  label: "Long",  icon: "arrow-up"      },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +116,52 @@ function handicapStrokes(courseHandicap: number, strokeIndex: number): number {
   const remainder = courseHandicap % 18;
   return base + (strokeIndex <= remainder ? 1 : 0);
 }
+
+// initStats builds the initial LocalStats state from server-loaded hole_stats.
+function initStats(players: ScorecardPlayer[]): LocalStats {
+  const out: LocalStats = {};
+  for (const p of players) {
+    out[p.round_player_id] = {};
+    for (const s of p.hole_stats) {
+      out[p.round_player_id][s.hole_number] = {
+        gir:                 s.gir,
+        gir_miss_direction:  s.gir_miss_direction,
+        fir:                 s.fir,
+        fir_miss_direction:  s.fir_miss_direction,
+        putts:               s.putts != null ? String(s.putts) : "",
+        first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
+        putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
+      };
+    }
+  }
+  return out;
+}
+
+// girKey converts a HoleStatEntry's GIR fields into the compound key used by
+// GIR_OPTIONS so the correct button can be highlighted.
+function girKey(entry: HoleStatEntry | undefined): string | null {
+  if (!entry?.gir) return null;
+  if (entry.gir === "hit") return "hit";
+  if (entry.gir === "na")  return "na";
+  if (entry.gir === "miss" && entry.gir_miss_direction) return `miss:${entry.gir_miss_direction}`;
+  return null;
+}
+
+// firKey converts a HoleStatEntry's FIR fields into the compound key used by
+// FIR_OPTIONS so the correct button can be highlighted.
+function firKey(entry: HoleStatEntry | undefined): string | null {
+  if (entry?.fir === null || entry?.fir === undefined) return null;
+  if (entry.fir === true) return "hit";
+  if (entry.fir_miss_direction) return `miss:${entry.fir_miss_direction}`;
+  return null;
+}
+
+// emptyHoleStat is the default state for a hole with no stats entered yet.
+const emptyHoleStat: HoleStatEntry = {
+  gir: null, gir_miss_direction: null,
+  fir: null, fir_miss_direction: null,
+  putts: "", first_putt_distance: "", putt_distance_made: "",
+};
 
 // scoreColor returns a NativeWind class string for a score relative to par.
 // Used in both group and individual views to keep color logic in one place.
@@ -117,6 +203,11 @@ export default function ScorecardScreen() {
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
   const [endingRound,     setEndingRound]     = useState(false);
 
+  // ── Advanced stats state ─────────────────────────────────────────────────────
+  const [stats,            setStats]           = useState<LocalStats>({});
+  const [showStats,        setShowStats]        = useState(false);
+  const [selectedStatHole, setSelectedStatHole] = useState(1);
+
   // ── Fetch scorecard ─────────────────────────────────────────────────────────
 
   const fetchScorecard = useCallback(async (): Promise<Scorecard> => {
@@ -151,8 +242,15 @@ export default function ScorecardScreen() {
   const scoresRef  = useRef(scores);
   useEffect(() => { scoresRef.current = scores; }, [scores]);
 
-  // saveTimers debounces per-player saves: rapid tabbing collapses into one request.
-  const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // statsRef mirrors stats state so autoSaveStats reads the latest value
+  // without being recreated on every button tap or keystroke.
+  const statsRef   = useRef(stats);
+  useEffect(() => { statsRef.current = stats; }, [stats]);
+
+  // saveTimers debounces per-player score saves.
+  const saveTimers     = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // statSaveTimers debounces per-hole stat saves (key: "<rpId>-<holeNumber>").
+  const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
   const inputRefs  = useRef<Map<string, TextInput | null>>(new Map());
@@ -216,6 +314,58 @@ export default function ScorecardScreen() {
     [roundId, getToken]
   );
 
+  // ── Advanced stats auto-save ─────────────────────────────────────────────────
+
+  // autoSaveStats debounces a PUT /hole-stats call for a single hole.
+  // Used for both button taps (short delay = feels instant) and text inputs (longer delay).
+  const autoSaveStats = useCallback(
+    (roundPlayerId: string, holeNumber: number, delay = 300) => {
+      const key = `${roundPlayerId}-${holeNumber}`;
+      const existing = statSaveTimers.current.get(key);
+      if (existing) clearTimeout(existing);
+
+      const timer = setTimeout(async () => {
+        statSaveTimers.current.delete(key);
+        const entry = statsRef.current[roundPlayerId]?.[holeNumber];
+        if (!entry) return;
+
+        // Convert string inputs to numbers, treating empty or invalid as null.
+        const toInt = (v: string): number | null => {
+          const n = parseInt(v, 10);
+          return !isNaN(n) && n >= 0 ? n : null;
+        };
+
+        const stat = {
+          hole_number:          holeNumber,
+          gir:                  entry.gir,
+          gir_miss_direction:   entry.gir_miss_direction,
+          fir:                  entry.fir,
+          fir_miss_direction:   entry.fir_miss_direction,
+          putts:                toInt(entry.putts),
+          first_putt_distance:  toInt(entry.first_putt_distance),
+          putt_distance_made:   toInt(entry.putt_distance_made),
+        };
+
+        try {
+          const token = await getToken();
+          await fetch(
+            `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
+            {
+              method:  "PUT",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body:    JSON.stringify({ stats: [stat] }),
+            }
+          );
+        } catch {
+          // Silent failure — stats are best-effort and don't block score entry.
+        }
+      }, delay);
+
+      statSaveTimers.current.set(key, timer);
+    },
+    [roundId, getToken]
+  );
+
   // ── Focus helpers ────────────────────────────────────────────────────────────
 
   // Group view: advance to next player in the same hole, then wrap to next hole.
@@ -245,6 +395,8 @@ export default function ScorecardScreen() {
     if (group && !initializedRef.current) {
       setScores(initScores(group.players));
       setHandicaps(initHandicaps(group.players));
+      setStats(initStats(group.players));
+      setSelectedStatHole(1);
       // Default individual view to the current user's player, then first player.
       // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
       const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
@@ -801,6 +953,205 @@ export default function ScorecardScreen() {
               </View>
             )}
 
+          </View>
+        )}
+
+        {/* ── Advanced Stats panel (individual view only) ─────────────────────── */}
+        {effectiveViewMode === "individual" && selectedPlayer && (
+          <View className="px-4 mt-5">
+
+            {/* Toggle header */}
+            <TouchableOpacity
+              className={`flex-row items-center justify-between py-3 px-4 rounded-xl border ${t.border} ${t.surface}`}
+              onPress={() => setShowStats((prev) => !prev)}
+              activeOpacity={0.7}
+            >
+              <View className="flex-row items-center gap-2">
+                <Ionicons name="stats-chart-outline" size={16} color={t.colors.tabBarActive} />
+                <Text className={`text-sm font-semibold ${t.textPrimary}`}>Advanced Stats</Text>
+              </View>
+              <Ionicons
+                name={showStats ? "chevron-up" : "chevron-down"}
+                size={16}
+                color={t.colors.tabBarInactive}
+              />
+            </TouchableOpacity>
+
+            {showStats && (() => {
+              const rpId       = selectedPlayer.round_player_id;
+              const holeStat   = stats[rpId]?.[selectedStatHole] ?? emptyHoleStat;
+              const currentGir = girKey(holeStat);
+              const currentFir = firKey(holeStat);
+
+              // handleGIRTap toggles the GIR selection. Tapping the active button clears it.
+              const handleGIRTap = (key: string) => {
+                const isActive = currentGir === key;
+                let gir: string | null = null;
+                let dir: string | null = null;
+                if (!isActive) {
+                  if (key === "hit")       { gir = "hit"; }
+                  else if (key === "na")   { gir = "na"; }
+                  else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
+                }
+                setStats((prev) => ({
+                  ...prev,
+                  [rpId]: {
+                    ...(prev[rpId] ?? {}),
+                    [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), gir, gir_miss_direction: dir },
+                  },
+                }));
+                autoSaveStats(rpId, selectedStatHole, 0);
+              };
+
+              // handleFIRTap toggles the FIR selection. Tapping the active button clears it.
+              const handleFIRTap = (key: string) => {
+                const isActive = currentFir === key;
+                let fir: boolean | null = null;
+                let dir: string | null = null;
+                if (!isActive) {
+                  if (key === "hit") { fir = true; }
+                  else if (key.startsWith("miss:")) { fir = false; dir = key.slice(5); }
+                }
+                setStats((prev) => ({
+                  ...prev,
+                  [rpId]: {
+                    ...(prev[rpId] ?? {}),
+                    [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), fir, fir_miss_direction: dir },
+                  },
+                }));
+                autoSaveStats(rpId, selectedStatHole, 0);
+              };
+
+              return (
+                <View className="mt-3 gap-4">
+
+                  {/* Hole selector pills */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View className="flex-row gap-2 py-1">
+                      {holeRows.map((hole) => (
+                        <TouchableOpacity
+                          key={hole.hole_number}
+                          onPress={() => setSelectedStatHole(hole.hole_number)}
+                          className={`w-9 h-9 rounded-full items-center justify-center border ${
+                            selectedStatHole === hole.hole_number
+                              ? "bg-green-700 border-green-700"
+                              : `${t.surface} ${t.border}`
+                          }`}
+                        >
+                          <Text className={`text-xs font-bold ${selectedStatHole === hole.hole_number ? "text-white" : t.textPrimary}`}>
+                            {hole.hole_number}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+
+                  {/* Stat entry card */}
+                  <View className={`rounded-2xl border ${t.border} ${t.surface} p-4 gap-5`}>
+
+                    {/* GIR */}
+                    <View className="gap-2">
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                        Green in Regulation
+                      </Text>
+                      <View className="flex-row flex-wrap gap-2">
+                        {GIR_OPTIONS.map(({ key, label, icon }) => {
+                          const active = currentGir === key;
+                          return (
+                            <TouchableOpacity
+                              key={key}
+                              onPress={() => handleGIRTap(key)}
+                              className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                              }`}
+                              activeOpacity={0.7}
+                            >
+                              {icon && (
+                                <Ionicons
+                                  name={icon}
+                                  size={12}
+                                  color={active ? "white" : t.colors.tabBarActive}
+                                />
+                              )}
+                              <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
+                                {label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+
+                    {/* FIR */}
+                    <View className="gap-2">
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                        Fairway in Regulation
+                      </Text>
+                      <View className="flex-row flex-wrap gap-2">
+                        {FIR_OPTIONS.map(({ key, label, icon }) => {
+                          const active = currentFir === key;
+                          return (
+                            <TouchableOpacity
+                              key={key}
+                              onPress={() => handleFIRTap(key)}
+                              className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                              }`}
+                              activeOpacity={0.7}
+                            >
+                              {icon && (
+                                <Ionicons
+                                  name={icon}
+                                  size={12}
+                                  color={active ? "white" : t.colors.tabBarActive}
+                                />
+                              )}
+                              <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
+                                {label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+
+                    {/* Numeric stats row */}
+                    {(
+                      [
+                        { field: "putts" as const,               label: "Putts",              unit: null  },
+                        { field: "first_putt_distance" as const, label: "First Putt",         unit: "ft"  },
+                        { field: "putt_distance_made" as const,  label: "Made Putt",          unit: "ft"  },
+                      ] as const
+                    ).map(({ field, label, unit }) => (
+                      <View key={field} className="flex-row items-center justify-between">
+                        <Text className={`text-sm ${t.textSecondary}`}>
+                          {label}{unit ? ` (${unit})` : ""}
+                        </Text>
+                        <TextInput
+                          className={`w-20 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                          keyboardType="number-pad"
+                          maxLength={3}
+                          placeholder="—"
+                          placeholderTextColor={t.colors.tabBarInactive}
+                          value={holeStat[field]}
+                          onChangeText={(v) =>
+                            setStats((prev) => ({
+                              ...prev,
+                              [rpId]: {
+                                ...(prev[rpId] ?? {}),
+                                [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), [field]: v },
+                              },
+                            }))
+                          }
+                          onBlur={() => autoSaveStats(rpId, selectedStatHole, 400)}
+                        />
+                      </View>
+                    ))}
+
+                  </View>
+                </View>
+              );
+            })()}
           </View>
         )}
 

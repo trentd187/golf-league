@@ -228,6 +228,30 @@ type Score struct {
 	UpdatedAt     time.Time   `gorm:"autoUpdateTime"`
 }
 
+// HoleStat records advanced per-hole statistics for one player during a round.
+// Stored in a separate table from scores so stats can be entered without a
+// gross score existing for that hole.
+// The uniqueIndex ensures one stat row per player per hole.
+type HoleStat struct {
+	ID            uuid.UUID   `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	RoundPlayerID uuid.UUID   `gorm:"type:uuid;not null;uniqueIndex:idx_hole_stat_player_hole"`
+	RoundPlayer   RoundPlayer `gorm:"foreignKey:RoundPlayerID"`
+	HoleNumber    int         `gorm:"not null;uniqueIndex:idx_hole_stat_player_hole"` // 1–18
+	// GIR (Green in Regulation): "hit", "miss", or "na" (not applicable)
+	GIR *string `gorm:"column:gir;type:text"`
+	// GIRMissDirection: which side the approach missed — "short", "left", "right", "long"
+	GIRMissDirection *string `gorm:"column:gir_miss_direction;type:text"`
+	// FIR (Fairway in Regulation): true = hit the fairway, false = missed
+	FIR *bool `gorm:"column:fir;type:boolean"`
+	// FIRMissDirection: which side the drive missed
+	FIRMissDirection  *string   `gorm:"column:fir_miss_direction;type:text"`
+	Putts             *int      `gorm:"column:putts;type:int"`
+	FirstPuttDistance *int      `gorm:"column:first_putt_distance;type:int"` // feet
+	PuttDistanceMade  *int      `gorm:"column:putt_distance_made;type:int"`  // feet
+	EnteredAt         time.Time `gorm:"autoCreateTime"`
+	UpdatedAt         time.Time `gorm:"autoUpdateTime"`
+}
+
 // Group represents a tee-time group — players who tee off together.
 type Group struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`

@@ -81,6 +81,7 @@ func main() {
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(db))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(db))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(db))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(db))
 
 	// Course routes — GET open to any authenticated user; mutations require admin or manager
 	api.Get("/courses", handlers.GetCourses(db))

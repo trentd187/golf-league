@@ -138,6 +138,110 @@ func TestUpsertPlayerScores_MissingScoresField(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── UpsertHoleStats ──────────────────────────────────────────────────────────
+
+// TestUpsertHoleStats_InvalidRoundUUID verifies that a malformed round ID returns 400.
+func TestUpsertHoleStats_InvalidRoundUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	gir := "hit"
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/not-a-uuid/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": gir}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_InvalidPlayerUUID verifies that a malformed round_player ID returns 400.
+func TestUpsertHoleStats_InvalidPlayerUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/not-a-uuid/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "hit"}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_EmptyStats verifies that an empty stats array returns 400.
+func TestUpsertHoleStats_EmptyStats(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []any{}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_MissingBody verifies that a non-JSON body returns 400.
+func TestUpsertHoleStats_MissingBody(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	req := httptest.NewRequest(http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats", nil)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_InvalidGIRValue verifies that an unrecognised GIR value returns 400.
+func TestUpsertHoleStats_InvalidGIRValue(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "sideways"}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_InvalidGIRMissDirection verifies that an unrecognised miss direction returns 400.
+func TestUpsertHoleStats_InvalidGIRMissDirection(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "miss", "gir_miss_direction": "diagonal"}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_InvalidFIRMissDirection verifies that a bad FIR direction returns 400.
+func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	fir := false
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "fir": fir, "fir_miss_direction": "diagonal"}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_NoUserID verifies that a missing auth context returns 401.
+// UUID validation and body validation both pass; the handler then tries to parse
+// c.Locals("userID") which is absent, so uuid.Parse returns an error → 401.
+func TestUpsertHoleStats_NoUserID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "hit"}}})
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 // ─── HandicapStrokes unit tests ───────────────────────────────────────────────
 
 // TestHandicapStrokes_ZeroHandicap verifies that a scratch golfer receives no

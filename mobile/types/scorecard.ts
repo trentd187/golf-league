@@ -1,6 +1,7 @@
 // types/scorecard.ts
-// TypeScript interfaces for the GET /api/v1/rounds/:roundId/scorecard response.
-// These mirror the Go ScorecardResponse struct in handlers/scores.go.
+// TypeScript interfaces for the GET /api/v1/rounds/:roundId/scorecard response
+// and the PUT /hole-stats request body.
+// These mirror the Go ScorecardResponse and UpsertHoleStatsRequest structs in handlers/scores.go.
 
 export interface ScorecardHole {
   hole_number: number;
@@ -15,12 +16,25 @@ export interface ScorecardScore {
   net_score: number;
 }
 
+// ScorecardHoleStat holds the advanced per-hole stats returned for each player on the scorecard.
+export interface ScorecardHoleStat {
+  hole_number: number;
+  gir: "hit" | "miss" | "na" | null;
+  gir_miss_direction: "short" | "left" | "right" | "long" | null;
+  fir: boolean | null;
+  fir_miss_direction: "short" | "left" | "right" | "long" | null;
+  putts: number | null;
+  first_putt_distance: number | null; // feet
+  putt_distance_made: number | null;  // feet
+}
+
 export interface ScorecardPlayer {
   round_player_id: string;
   user_id: string;
   display_name: string;
   course_handicap: number | null;
   scores: ScorecardScore[];
+  hole_stats: ScorecardHoleStat[];
   // Null when fewer holes have been scored than hole_count — prevents showing partial totals.
   total_gross: number | null;
   total_net: number | null;

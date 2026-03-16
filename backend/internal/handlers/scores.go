@@ -1,11 +1,11 @@
 // handlers/scores.go
-// HTTP handlers for scorecard retrieval and score entry.
+// HTTP handlers for scorecard retrieval, score entry, and advanced hole statistics.
 //
 // Endpoints:
 //
 //	GET  /api/v1/rounds/:roundId/scorecard
 //	  → Full scorecard: round metadata, hole data from the default tee, and all
-//	    groups with each player's handicap and per-hole scores.
+//	    groups with each player's handicap, per-hole scores, and hole stats.
 //	    Any authenticated event member can call this.
 //
 //	PUT  /api/v1/rounds/:roundId/players/:roundPlayerId/handicap
@@ -19,6 +19,11 @@
 //	    Net scores are calculated from the player's course_handicap and the
 //	    hole's stroke_index at save time.
 //	    Same permission rule as the handicap endpoint.
+//
+//	PUT  /api/v1/rounds/:roundId/players/:roundPlayerId/hole-stats
+//	  → Bulk upsert of advanced per-hole stats (GIR, FIR, putts, putt distances).
+//	    Stats are stored separately from scores and can be entered independently.
+//	    Same permission rule as the score endpoints.
 package handlers
 
 import (
@@ -46,13 +51,26 @@ type ScorecardScore struct {
 	NetScore   int `json:"net_score"`
 }
 
-// ScorecardPlayer is a player in a group with their handicap and all hole scores.
+// ScorecardHoleStat holds the advanced per-hole statistics for one player on one hole.
+type ScorecardHoleStat struct {
+	HoleNumber        int     `json:"hole_number"`
+	GIR               *string `json:"gir"`                // "hit" | "miss" | "na"
+	GIRMissDirection  *string `json:"gir_miss_direction"` // "short" | "left" | "right" | "long"
+	FIR               *bool   `json:"fir"`                // true=hit, false=miss
+	FIRMissDirection  *string `json:"fir_miss_direction"`
+	Putts             *int    `json:"putts"`
+	FirstPuttDistance *int    `json:"first_putt_distance"` // feet
+	PuttDistanceMade  *int    `json:"putt_distance_made"`  // feet
+}
+
+// ScorecardPlayer is a player in a group with their handicap, all hole scores, and hole stats.
 type ScorecardPlayer struct {
-	RoundPlayerID  string           `json:"round_player_id"`
-	UserID         string           `json:"user_id"`
-	DisplayName    string           `json:"display_name"`
-	CourseHandicap *int             `json:"course_handicap"`
-	Scores         []ScorecardScore `json:"scores"`
+	RoundPlayerID  string              `json:"round_player_id"`
+	UserID         string              `json:"user_id"`
+	DisplayName    string              `json:"display_name"`
+	CourseHandicap *int                `json:"course_handicap"`
+	Scores         []ScorecardScore    `json:"scores"`
+	HoleStats      []ScorecardHoleStat `json:"hole_stats"`
 	// TotalGross / TotalNet are null when fewer holes have been scored than the
 	// round's hole_count — preventing partial totals from being misleading.
 	TotalGross *int `json:"total_gross"`
@@ -96,6 +114,23 @@ type ScoreInput struct {
 // UpsertScoresRequest is the JSON body for PUT /rounds/:roundId/players/:roundPlayerId/scores.
 type UpsertScoresRequest struct {
 	Scores []ScoreInput `json:"scores"`
+}
+
+// HoleStatInput is a single hole's advanced stats for one player.
+type HoleStatInput struct {
+	HoleNumber       int     `json:"hole_number"`
+	GIR              *string `json:"gir"`                // "hit" | "miss" | "na"
+	GIRMissDirection *string `json:"gir_miss_direction"` // "short" | "left" | "right" | "long"
+	FIR              *bool   `json:"fir"`                // true=hit, false=miss
+	FIRMissDirection *string `json:"fir_miss_direction"`
+	Putts            *int    `json:"putts"`
+	FirstPuttDist    *int    `json:"first_putt_distance"` // feet
+	PuttDistMade     *int    `json:"putt_distance_made"`  // feet
+}
+
+// UpsertHoleStatsRequest is the JSON body for PUT /rounds/:roundId/players/:roundPlayerId/hole-stats.
+type UpsertHoleStatsRequest struct {
+	Stats []HoleStatInput `json:"stats"`
 }
 
 // ─── Permission helper ────────────────────────────────────────────────────────
@@ -262,12 +297,31 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 					tn = &totalNet
 				}
 
+				// Load advanced hole stats for this round_player.
+				var dbStats []models.HoleStat
+				db.Where("round_player_id = ?", rpID).Order("hole_number ASC").Find(&dbStats)
+
+				holeStats := make([]ScorecardHoleStat, 0, len(dbStats))
+				for _, s := range dbStats {
+					holeStats = append(holeStats, ScorecardHoleStat{
+						HoleNumber:        s.HoleNumber,
+						GIR:               s.GIR,
+						GIRMissDirection:  s.GIRMissDirection,
+						FIR:               s.FIR,
+						FIRMissDirection:  s.FIRMissDirection,
+						Putts:             s.Putts,
+						FirstPuttDistance: s.FirstPuttDistance,
+						PuttDistanceMade:  s.PuttDistanceMade,
+					})
+				}
+
 				players = append(players, ScorecardPlayer{
 					RoundPlayerID:  pr.RoundPlayerID,
 					UserID:         pr.UserID,
 					DisplayName:    pr.DisplayName,
 					CourseHandicap: pr.CourseHandicap,
 					Scores:         scores,
+					HoleStats:      holeStats,
 					TotalGross:     tg,
 					TotalNet:       tn,
 				})
@@ -450,6 +504,101 @@ func UpsertPlayerScores(db *gorm.DB) fiber.Handler {
 
 		if result.Error != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save scores"})
+		}
+
+		return c.JSON(fiber.Map{"saved": len(records)})
+	}
+}
+
+// UpsertHoleStats returns a handler for PUT /api/v1/rounds/:roundId/players/:roundPlayerId/hole-stats.
+// Bulk upserts advanced per-hole stats (GIR, FIR, putts, distances) for one player.
+// Stats are stored in a separate table from scores so they can be entered independently.
+// Uses ON CONFLICT DO UPDATE so calling multiple times is safe (idempotent per hole).
+// Permission: same group member, OR organizer/admin (mirrors the score endpoint).
+func UpsertHoleStats(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// UUID validation first — lets Tier-1 tests reach 400 without auth context.
+		roundID, err := uuid.Parse(c.Params("roundId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+		}
+		roundPlayerID, err := uuid.Parse(c.Params("roundPlayerId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round player ID"})
+		}
+
+		var req UpsertHoleStatsRequest
+		if err := c.BodyParser(&req); err != nil || len(req.Stats) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "stats array is required"})
+		}
+
+		// Validate enum field values before auth so Tier-1 tests can reach these paths.
+		validGIR := map[string]bool{"hit": true, "miss": true, "na": true}
+		validDirection := map[string]bool{"short": true, "left": true, "right": true, "long": true}
+		for _, s := range req.Stats {
+			if s.GIR != nil && !validGIR[*s.GIR] {
+				return c.Status(fiber.StatusBadRequest).JSON(
+					fiber.Map{"error": "gir must be one of: hit, miss, na"},
+				)
+			}
+			if s.GIRMissDirection != nil && !validDirection[*s.GIRMissDirection] {
+				return c.Status(fiber.StatusBadRequest).JSON(
+					fiber.Map{"error": "gir_miss_direction must be one of: short, left, right, long"},
+				)
+			}
+			if s.FIRMissDirection != nil && !validDirection[*s.FIRMissDirection] {
+				return c.Status(fiber.StatusBadRequest).JSON(
+					fiber.Map{"error": "fir_miss_direction must be one of: short, left, right, long"},
+				)
+			}
+		}
+
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		if !canModifyScores(db, roundID, roundPlayerID, callerID, userRole) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		}
+
+		// Verify the round_player belongs to this round.
+		var rp models.RoundPlayer
+		if err := db.First(&rp, "id = ? AND round_id = ?", roundPlayerID, roundID).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round player not found"})
+		}
+
+		records := make([]models.HoleStat, 0, len(req.Stats))
+		for _, s := range req.Stats {
+			records = append(records, models.HoleStat{
+				RoundPlayerID:     roundPlayerID,
+				HoleNumber:        s.HoleNumber,
+				GIR:               s.GIR,
+				GIRMissDirection:  s.GIRMissDirection,
+				FIR:               s.FIR,
+				FIRMissDirection:  s.FIRMissDirection,
+				Putts:             s.Putts,
+				FirstPuttDistance: s.FirstPuttDist,
+				PuttDistanceMade:  s.PuttDistMade,
+			})
+		}
+
+		// Upsert: on conflict (round_player_id, hole_number) update all stat columns.
+		// Sending null for a field explicitly clears it in the database.
+		result := db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "round_player_id"}, {Name: "hole_number"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"gir", "gir_miss_direction",
+				"fir", "fir_miss_direction",
+				"putts", "first_putt_distance", "putt_distance_made",
+				"updated_at",
+			}),
+		}).Create(&records)
+
+		if result.Error != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save stats"})
 		}
 
 		return c.JSON(fiber.Map{"saved": len(records)})

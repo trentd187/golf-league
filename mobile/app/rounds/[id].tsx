@@ -19,6 +19,7 @@
 //   GET    /api/v1/events/:eventId/members                    → event members for add-player picker
 //   PATCH  /api/v1/rounds/:id                                 → edit round fields
 //   DELETE /api/v1/rounds/:id                                 → delete round
+//   POST   /api/v1/rounds/:id/groups                          → add a new empty group
 //   POST   /api/v1/rounds/:id/groups/:groupId/members         → add player
 //   DELETE /api/v1/rounds/:id/groups/:groupId/members/:userId → remove player
 
@@ -253,6 +254,27 @@ export default function RoundDetailScreen() {
     },
     onError: (err: Error) => {
       Alert.alert("Could not update round", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  const addGroupMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not add group", err.message, [{ text: "OK" }]);
     },
   });
 
@@ -495,9 +517,9 @@ export default function RoundDetailScreen() {
         {/* ── Groups section ──────────────────────────────────────────────────── */}
         <SectionHeader
           title={`Groups (${round.groups.length})`}
-          actionLabel=""
-          onAction={() => {}}
-          showAction={false}
+          actionLabel={addGroupMutation.isPending ? "Adding…" : "+ Group"}
+          onAction={() => addGroupMutation.mutate()}
+          showAction={round.is_organizer}
         />
 
         <View className="gap-4 mb-8">

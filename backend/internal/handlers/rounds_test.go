@@ -5,8 +5,8 @@
 // call, so nil can be safely passed as *gorm.DB.
 //
 // All round-mutation handlers (GetRound, UpdateRound, DeleteRound,
-// AddGroupMember, RemoveGroupMember) start by parsing the caller's user ID
-// from c.Locals("userID"). Without auth middleware that local is always "",
+// CreateGroup, AddGroupMember, RemoveGroupMember) start by parsing the caller's
+// user ID from c.Locals("userID"). Without auth middleware that local is always "",
 // so uuid.Parse("") fails and the handler returns 401 before touching the DB.
 //
 // Run:
@@ -57,6 +57,21 @@ func TestDeleteRound_MissingAuth(t *testing.T) {
 	app := newSingleRouteApp(http.MethodDelete, "/rounds/:roundId", handlers.DeleteRound(nil))
 	resp, err := app.Test(
 		httptest.NewRequest(http.MethodDelete, "/rounds/"+validUUID, nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// ─── CreateGroup ──────────────────────────────────────────────────────────────
+
+// TestCreateGroup_MissingAuth verifies that a request with no auth context
+// returns 401 before any database call.
+func TestCreateGroup_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost,
+		"/rounds/:roundId/groups",
+		handlers.CreateGroup(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPost,
+			"/rounds/"+validUUID+"/groups", nil), -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }

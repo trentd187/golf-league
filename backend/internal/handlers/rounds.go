@@ -7,6 +7,10 @@
 //	  → Round details including all groups and their assigned players.
 //	    Any authenticated event member can call this.
 //
+//	POST /api/v1/rounds/:roundId/groups
+//	  → Creates a new empty tee-time group for the round, numbered one higher
+//	    than the current maximum. Organizer-only.
+//
 //	POST /api/v1/rounds/:roundId/groups/:groupId/members
 //	  → Adds an event member to a tee-time group. Creates a RoundPlayer record
 //	    if one doesn't already exist. Enforces a 4-player maximum per group.
@@ -176,6 +180,52 @@ func GetRound(db *gorm.DB) fiber.Handler {
 			IsOrganizer:   isOrg,
 			Groups:        groupResponses,
 		})
+	}
+}
+
+// CreateGroup returns a handler for POST /api/v1/rounds/:roundId/groups.
+// Creates a new empty tee-time group numbered one higher than the current maximum.
+// Organizer-only.
+func CreateGroup(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		roundID, err := uuid.Parse(c.Params("roundId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+		}
+
+		isOrg, eventID := isRoundOrganizer(db, roundID, callerID, userRole)
+		if !isOrg {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		}
+		// uuid.Nil means the round wasn't found (admin bypass still hits the DB to get eventID).
+		if eventID == uuid.Nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
+		}
+
+		// Auto-number: one higher than the current maximum, or 1 for the first group.
+		var maxGroupNum int
+		db.Model(&models.Group{}).
+			Where("round_id = ?", roundID).
+			Select("COALESCE(MAX(group_number), 0)").
+			Scan(&maxGroupNum)
+
+		group := models.Group{
+			RoundID:      roundID,
+			GroupNumber:  maxGroupNum + 1,
+			StartingHole: 1,
+		}
+		if err := db.Create(&group).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create group"})
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(buildGroupResponse(db, group))
 	}
 }
 

@@ -33,8 +33,15 @@ import type { Scorecard, ScorecardPlayer } from "@/types/scorecard";
 // Minimal shape from GET /api/v1/rounds — only the fields we need here.
 type RoundSummary = {
   id: string;
+  name: string;
+  event_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
   status: string;
+  course_name: string;
+  tee_name: string;
+  tee_par: number;
+  course_rating: number;
+  slope_rating: number;
 };
 
 // FilterValue is "last20" | "all" | a 4-digit year string like "2026".
@@ -123,7 +130,8 @@ function StatSection({ label }: { label: string }) {
   );
 }
 
-// ScoreRow renders one round's gross score in the Scores tab list.
+// ScoreRow renders one round's score card in the Scores tab list.
+// Shows event + round name, course details (tee, par, rating, slope), date, and gross score.
 // Tapping navigates to the full scorecard screen.
 function ScoreRow({
   round,
@@ -149,19 +157,41 @@ function ScoreRow({
 
   return (
     <TouchableOpacity
-      className={`flex-row items-center justify-between ${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}
+      className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}
       onPress={onPress}
       activeOpacity={0.8}
     >
-      <View className="flex-1 gap-0.5">
-        <Text className={`text-sm font-semibold ${t.textPrimary}`}>
-          {scorecard?.round_name ?? "Round"}
-        </Text>
-        <Text className={`text-xs ${t.textTertiary}`}>{date}</Text>
+      {/* Title row: "Event Name – Round Name" + gross score */}
+      <View className="flex-row items-start justify-between gap-3">
+        <View className="flex-1">
+          <Text className={`text-sm font-bold ${t.textPrimary}`} numberOfLines={1}>
+            {round.event_name} – {round.name}
+          </Text>
+          <Text className={`text-xs ${t.textTertiary} mt-0.5`}>{date}</Text>
+        </View>
+        <View className="flex-row items-center gap-1">
+          <Text className={`text-2xl font-bold ${t.textPrimary}`}>{scoreDisplay}</Text>
+          <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
+        </View>
       </View>
-      <View className="flex-row items-center gap-2">
-        <Text className={`text-xl font-bold ${t.textPrimary}`}>{scoreDisplay}</Text>
-        <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
+
+      {/* Course detail row */}
+      <View className={`mt-3 pt-3 border-t ${t.border} flex-row flex-wrap gap-x-4 gap-y-1`}>
+        <Text className={`text-xs ${t.textSecondary}`}>
+          <Text className={`font-semibold ${t.textPrimary}`}>{round.course_name}</Text>
+        </Text>
+        <Text className={`text-xs ${t.textSecondary}`}>
+          Tees: <Text className={`font-semibold ${t.textPrimary}`}>{round.tee_name}</Text>
+        </Text>
+        <Text className={`text-xs ${t.textSecondary}`}>
+          Par: <Text className={`font-semibold ${t.textPrimary}`}>{round.tee_par}</Text>
+        </Text>
+        <Text className={`text-xs ${t.textSecondary}`}>
+          Rating: <Text className={`font-semibold ${t.textPrimary}`}>{round.course_rating.toFixed(1)}</Text>
+        </Text>
+        <Text className={`text-xs ${t.textSecondary}`}>
+          Slope: <Text className={`font-semibold ${t.textPrimary}`}>{round.slope_rating}</Text>
+        </Text>
       </View>
     </TouchableOpacity>
   );

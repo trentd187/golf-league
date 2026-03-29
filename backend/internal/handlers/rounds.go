@@ -80,16 +80,20 @@ type RoundDetailResponse struct {
 // MyRoundResponse extends RoundSummaryResponse with event context so the
 // Rounds tab can display both round name and event name without a second query.
 type MyRoundResponse struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	EventID       string `json:"event_id"`
-	EventName     string `json:"event_name"`
-	CourseName    string `json:"course_name"`
-	ScheduledDate string `json:"scheduled_date"`
-	Status        string `json:"status"`
-	ScoringFormat string `json:"scoring_format"`
-	RoundNumber   int    `json:"round_number"`
-	GroupCount    int    `json:"group_count"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	EventID       string  `json:"event_id"`
+	EventName     string  `json:"event_name"`
+	CourseName    string  `json:"course_name"`
+	TeeName       string  `json:"tee_name"`
+	TeePar        int     `json:"tee_par"`
+	CourseRating  float64 `json:"course_rating"`
+	SlopeRating   int     `json:"slope_rating"`
+	ScheduledDate string  `json:"scheduled_date"`
+	Status        string  `json:"status"`
+	ScoringFormat string  `json:"scoring_format"`
+	RoundNumber   int     `json:"round_number"`
+	GroupCount    int     `json:"group_count"`
 }
 
 // ─── Shared helper ────────────────────────────────────────────────────────────
@@ -149,7 +153,7 @@ func GetMyRounds(db *gorm.DB) fiber.Handler {
 		}
 
 		var rounds []models.Round
-		if err := db.Preload("Course").Preload("Event").
+		if err := db.Preload("Course").Preload("Event").Preload("DefaultTee").
 			Where("event_id IN ?", eventIDs).
 			Order("scheduled_date DESC").
 			Find(&rounds).Error; err != nil {
@@ -186,6 +190,10 @@ func GetMyRounds(db *gorm.DB) fiber.Handler {
 				EventID:       r.EventID.String(),
 				EventName:     r.Event.Name,
 				CourseName:    r.Course.Name,
+				TeeName:       r.DefaultTee.Name,
+				TeePar:        r.DefaultTee.Par,
+				CourseRating:  r.DefaultTee.CourseRating,
+				SlopeRating:   r.DefaultTee.SlopeRating,
 				ScheduledDate: r.ScheduledDate.UTC().Format("2006-01-02"),
 				Status:        string(r.Status),
 				ScoringFormat: string(r.ScoringFormat),

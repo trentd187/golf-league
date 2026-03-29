@@ -3,6 +3,10 @@
 //
 // Endpoints:
 //
+//	GET  /api/v1/rounds
+//	  → All rounds in events the authenticated user is a member of.
+//	    Ordered by scheduled_date descending.
+//
 //	GET  /api/v1/rounds/:roundId
 //	  → Round details including all groups and their assigned players.
 //	    Any authenticated event member can call this.
@@ -73,6 +77,21 @@ type RoundDetailResponse struct {
 	Groups      []GroupResponse `json:"groups"`
 }
 
+// MyRoundResponse extends RoundSummaryResponse with event context so the
+// Rounds tab can display both round name and event name without a second query.
+type MyRoundResponse struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	EventID       string `json:"event_id"`
+	EventName     string `json:"event_name"`
+	CourseName    string `json:"course_name"`
+	ScheduledDate string `json:"scheduled_date"`
+	Status        string `json:"status"`
+	ScoringFormat string `json:"scoring_format"`
+	RoundNumber   int    `json:"round_number"`
+	GroupCount    int    `json:"group_count"`
+}
+
 // ─── Shared helper ────────────────────────────────────────────────────────────
 
 // isRoundOrganizer checks whether the caller has organizer rights over the event
@@ -103,6 +122,80 @@ func isRoundOrganizer(db *gorm.DB, roundID, userID uuid.UUID, userRole string) (
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
+
+// GetMyRounds returns a handler for GET /api/v1/rounds.
+// Returns all rounds in events the authenticated user is a member of,
+// ordered by scheduled_date descending (most recent first).
+func GetMyRounds(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userIDStr, _ := c.Locals("userID").(string)
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		// Find all event IDs the user belongs to as an event_player.
+		var eventPlayers []models.EventPlayer
+		if err := db.Select("event_id").Where("user_id = ?", userID).Find(&eventPlayers).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch events"})
+		}
+		if len(eventPlayers) == 0 {
+			return c.JSON([]MyRoundResponse{})
+		}
+
+		eventIDs := make([]uuid.UUID, len(eventPlayers))
+		for i, ep := range eventPlayers {
+			eventIDs[i] = ep.EventID
+		}
+
+		var rounds []models.Round
+		if err := db.Preload("Course").Preload("Event").
+			Where("event_id IN ?", eventIDs).
+			Order("scheduled_date DESC").
+			Find(&rounds).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch rounds"})
+		}
+
+		// Batch-fetch group counts in one query rather than N individual COUNTs.
+		roundIDs := make([]string, len(rounds))
+		for i, r := range rounds {
+			roundIDs[i] = r.ID.String()
+		}
+		type groupCountRow struct {
+			RoundID string
+			Count   int
+		}
+		var groupCountRows []groupCountRow
+		if len(roundIDs) > 0 {
+			db.Model(&models.Group{}).
+				Select("round_id, COUNT(*) as count").
+				Where("round_id IN ?", roundIDs).
+				Group("round_id").
+				Scan(&groupCountRows)
+		}
+		groupCountMap := make(map[string]int, len(groupCountRows))
+		for _, row := range groupCountRows {
+			groupCountMap[row.RoundID] = row.Count
+		}
+
+		response := make([]MyRoundResponse, 0, len(rounds))
+		for _, r := range rounds {
+			response = append(response, MyRoundResponse{
+				ID:            r.ID.String(),
+				Name:          r.Name,
+				EventID:       r.EventID.String(),
+				EventName:     r.Event.Name,
+				CourseName:    r.Course.Name,
+				ScheduledDate: r.ScheduledDate.UTC().Format("2006-01-02"),
+				Status:        string(r.Status),
+				ScoringFormat: string(r.ScoringFormat),
+				RoundNumber:   r.RoundNumber,
+				GroupCount:    groupCountMap[r.ID.String()],
+			})
+		}
+		return c.JSON(response)
+	}
+}
 
 // GetRound returns a handler for GET /api/v1/rounds/:roundId.
 // Returns full round details including all tee-time groups and their assigned players.

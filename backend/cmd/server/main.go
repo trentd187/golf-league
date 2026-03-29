@@ -71,6 +71,9 @@ func main() {
 	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db))
 
 	// Round routes — round IDs are globally unique, so these are top-level
+	// GET /rounds must be registered before /rounds/:roundId so Fiber's router
+	// doesn't treat "rounds" as a roundId parameter.
+	api.Get("/rounds", handlers.GetMyRounds(db))
 	api.Get("/rounds/:roundId", handlers.GetRound(db))
 	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))
 	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))

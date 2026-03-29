@@ -35,6 +35,17 @@ const (
 	memberByIDRoute = "/rounds/:roundId/groups/:groupId/members/:userId"
 )
 
+// ─── GetMyRounds ──────────────────────────────────────────────────────────────
+
+// TestGetMyRounds_MissingAuth verifies GET /rounds returns 401 without auth context.
+func TestGetMyRounds_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, "/rounds", handlers.GetMyRounds(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodGet, "/rounds", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 // ─── GetRound ─────────────────────────────────────────────────────────────────
 
 // TestGetRound_MissingAuth verifies that a request with no auth context

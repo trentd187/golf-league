@@ -32,7 +32,8 @@ import {
 
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth, useUser } from "@clerk/clerk-expo";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 
@@ -223,6 +224,37 @@ export default function EventDetailScreen() {
     },
     enabled: addMemberModalVisible, // only fetch when the Add Member modal is open
   });
+
+  // completedRoundIds: IDs of rounds to aggregate for leaderboard/stats.
+  // Empty array while rounds are still loading — useQueries handles the empty case gracefully.
+  const completedRoundIds = (rounds ?? [])
+    .filter((r) => r.status === "completed")
+    .map((r) => r.id);
+
+  // scorecardQueries: one query per completed round.
+  // Lazy — only enabled when the user opens the Leaderboard or Stats tab to avoid
+  // fetching N scorecard payloads while just browsing Members or Rounds.
+  const scorecardQueries = useQueries({
+    queries: completedRoundIds.map((roundId) => ({
+      queryKey: ["scorecard", roundId],
+      queryFn: async () => {
+        const token = await getToken();
+        const res = await fetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
+        return res.json() as Promise<Scorecard>;
+      },
+      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats"),
+    })),
+  });
+
+  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
+  const scorecardsError   = scorecardQueries.some((q) => q.isError);
+  // Only include scorecards that have fully loaded — partial results would skew the aggregate.
+  const scorecards        = scorecardQueries
+    .map((q) => q.data)
+    .filter((sc): sc is Scorecard => sc !== undefined);
 
   // --- Derived values ---
 
@@ -486,6 +518,177 @@ export default function EventDetailScreen() {
     }
   };
 
+  // --- Leaderboard + stats helpers ---
+
+  // EventLeaderboardEntry: per-player aggregate across all completed rounds.
+  type EventLeaderboardEntry = {
+    user_id: string;
+    display_name: string;
+    rank: string;
+    roundsPlayed: number;    // completed rounds the player participated in
+    grossTotal: number;      // sum of gross scores across all completed rounds
+    netTotal: number;        // sum of net scores across all completed rounds
+    grossToPar: number | null; // null when any round lacks hole par data
+    netToPar: number | null;
+  };
+
+  // buildEventLeaderboard: aggregates scores across all completed scorecards by user_id,
+  // sorts by net (lowest first), and assigns rank strings.
+  function buildEventLeaderboard(scs: Scorecard[]): EventLeaderboardEntry[] {
+    const map = new Map<string, Omit<EventLeaderboardEntry, "rank">>();
+
+    for (const sc of scs) {
+      const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
+      const hasHoles = sc.holes.length > 0;
+
+      for (const group of sc.groups) {
+        for (const p of group.players) {
+          if (p.scores.length === 0) continue;
+          const gross = p.scores.reduce((s, x) => s + x.gross_score, 0);
+          const net   = p.scores.reduce((s, x) => s + x.net_score, 0);
+          const parPlayed = hasHoles
+            ? p.scores.reduce((s, x) => s + (holeMap.get(x.hole_number) ?? 0), 0)
+            : 0;
+          const roundGross = hasHoles ? gross - parPlayed : null;
+          const roundNet   = hasHoles ? net   - parPlayed : null;
+
+          const existing = map.get(p.user_id);
+          if (existing) {
+            existing.roundsPlayed++;
+            existing.grossTotal += gross;
+            existing.netTotal   += net;
+            // If any round lacks hole par data, toPar becomes unavailable for the whole aggregate.
+            if (existing.grossToPar !== null && roundGross !== null) {
+              existing.grossToPar += roundGross;
+              existing.netToPar = (existing.netToPar ?? 0) + roundNet!;
+            } else {
+              existing.grossToPar = null;
+              existing.netToPar   = null;
+            }
+          } else {
+            map.set(p.user_id, {
+              user_id: p.user_id,
+              display_name: p.display_name,
+              roundsPlayed: 1,
+              grossTotal: gross,
+              netTotal: net,
+              grossToPar: roundGross,
+              netToPar: roundNet,
+            });
+          }
+        }
+      }
+    }
+
+    const entries = [...map.values()].sort((a, b) => {
+      const aScore = a.netToPar ?? a.netTotal;
+      const bScore = b.netToPar ?? b.netTotal;
+      return aScore - bScore;
+    });
+
+    // Assign rank strings: tied players share a "T1" prefix.
+    let rank = 1;
+    return entries.map((e, i, arr) => {
+      if (i > 0) {
+        const prev = arr[i - 1];
+        if ((e.netToPar ?? e.netTotal) !== (prev.netToPar ?? prev.netTotal)) rank = i + 1;
+      }
+      const isTied = entries.filter(
+        (x) => (x.netToPar ?? x.netTotal) === (e.netToPar ?? e.netTotal)
+      ).length > 1;
+      return { ...e, rank: isTied ? `T${rank}` : `${rank}` };
+    });
+  }
+
+  // formatToPar: converts a score-vs-par integer to display string ("E", "+2", "-3").
+  function formatToPar(toPar: number | null): string {
+    if (toPar === null) return "—";
+    if (toPar === 0) return "E";
+    return toPar > 0 ? `+${toPar}` : `${toPar}`;
+  }
+
+  // StatRow / StatSummary: same shape as in rounds/[id].tsx.
+  type StatRow     = { rank: string; names: string[]; value: number };
+  type StatSummary = { category: string; unit: string; top3: StatRow[] };
+
+  // buildEventStats: aggregates per-player birdie/putt/GIR/FIR counts across all
+  // completed scorecards, then returns the top 3 leaders in each category.
+  function buildEventStats(scs: Scorecard[]): StatSummary[] {
+    const playerMap = new Map<string, {
+      display_name: string;
+      birdies: number;
+      putts: number | null;
+      greens: number;
+      fairways: number;
+    }>();
+
+    for (const sc of scs) {
+      const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
+      for (const group of sc.groups) {
+        for (const p of group.players) {
+          const birdies  = p.scores.filter(
+            (s) => (holeMap.get(s.hole_number) ?? -99) === s.gross_score + 1
+          ).length;
+          const validPutts = p.hole_stats.filter((hs) => hs.putts !== null);
+          const roundPutts = validPutts.length > 0
+            ? validPutts.reduce((s, hs) => s + (hs.putts ?? 0), 0)
+            : null;
+          const greens   = p.hole_stats.filter((hs) => hs.gir === "hit").length;
+          const fairways = p.hole_stats.filter((hs) => hs.fir === true).length;
+
+          const existing = playerMap.get(p.user_id);
+          if (existing) {
+            existing.birdies  += birdies;
+            // Only add putts if this round has putt data — null means no data for this round.
+            existing.putts = existing.putts !== null || roundPutts !== null
+              ? (existing.putts ?? 0) + (roundPutts ?? 0)
+              : null;
+            existing.greens   += greens;
+            existing.fairways += fairways;
+          } else {
+            playerMap.set(p.user_id, {
+              display_name: p.display_name,
+              birdies,
+              putts: roundPutts,
+              greens,
+              fairways,
+            });
+          }
+        }
+      }
+    }
+
+    function findTop3(nameValMap: Map<string, number | null>, higherIsBetter: boolean): StatRow[] {
+      const valid = [...nameValMap.entries()]
+        .filter((e): e is [string, number] => e[1] !== null)
+        .sort(([, a], [, b]) => higherIsBetter ? b - a : a - b);
+      const rows: StatRow[] = [];
+      let playerRank = 1;
+      let i = 0;
+      while (i < valid.length && rows.length < 3) {
+        const value = valid[i][1];
+        if (higherIsBetter && value === 0) break;
+        const names: string[] = [];
+        while (i < valid.length && valid[i][1] === value) { names.push(valid[i][0]); i++; }
+        rows.push({ rank: names.length > 1 ? `T${playerRank}` : `${playerRank}`, names, value });
+        playerRank += names.length;
+      }
+      return rows;
+    }
+
+    const birdies  = new Map([...playerMap.values()].map((d) => [d.display_name, d.birdies]));
+    const putts    = new Map([...playerMap.values()].map((d) => [d.display_name, d.putts]));
+    const greens   = new Map([...playerMap.values()].map((d) => [d.display_name, d.greens]));
+    const fairways = new Map([...playerMap.values()].map((d) => [d.display_name, d.fairways]));
+
+    return [
+      { category: "Birdies",  unit: "birdies", top3: findTop3(birdies,  true)  },
+      { category: "Putts",    unit: "putts",   top3: findTop3(putts,    false) },
+      { category: "Greens",   unit: "GIR",     top3: findTop3(greens,   true)  },
+      { category: "Fairways", unit: "FIR",     top3: findTop3(fairways, true)  },
+    ];
+  }
+
   // --- Loading / error states ---
 
   if (eventLoading) {
@@ -716,25 +919,158 @@ export default function EventDetailScreen() {
           )}
         </View>}
 
-        {/* ── Leaderboard placeholder ─────────────────────────────────────────── */}
+        {/* ── Leaderboard tab ─────────────────────────────────────────────────── */}
         {activeTab === "leaderboard" && (
-          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2 mb-8`}>
-            <Ionicons name="trophy-outline" size={32} color={t.colors.tabBarInactive} />
-            <Text className={`text-sm font-semibold ${t.textPrimary}`}>Event Standings</Text>
-            <Text className={`text-sm text-center ${t.textSecondary}`}>
-              Event leaderboard will be available once rounds are completed and scored.
-            </Text>
+          <View className="mb-8">
+            {completedRoundIds.length === 0 ? (
+              <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                <Ionicons name="trophy-outline" size={32} color={t.colors.tabBarInactive} />
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
+                  No completed rounds yet. Standings will appear once a round is finished.
+                </Text>
+              </View>
+            ) : scorecardsLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardsError ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load scores.
+              </Text>
+            ) : (() => {
+              const entries = buildEventLeaderboard(scorecards);
+              const hasParData = entries.some((e) => e.grossToPar !== null);
+              if (entries.length === 0) {
+                return (
+                  <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                    <Ionicons name="trophy-outline" size={32} color={t.colors.tabBarInactive} />
+                    <Text className={`text-sm text-center ${t.textSecondary}`}>No scores yet.</Text>
+                  </View>
+                );
+              }
+              return (
+                <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
+                  {/* Column headers */}
+                  <View className={`flex-row px-3 py-2 border-b ${t.divider}`}>
+                    <Text className={`w-9 text-xs font-semibold ${t.textTertiary}`}> </Text>
+                    <Text className={`flex-1 text-xs font-semibold ${t.textTertiary}`}>Player</Text>
+                    <Text className={`w-10 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Rnds
+                    </Text>
+                    <Text className={`w-12 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Gross
+                    </Text>
+                    <Text className={`w-12 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Net
+                    </Text>
+                  </View>
+                  {entries.map((entry, idx) => {
+                    const grossStr = hasParData
+                      ? formatToPar(entry.grossToPar)
+                      : String(entry.grossTotal);
+                    const netStr = hasParData
+                      ? formatToPar(entry.netToPar)
+                      : String(entry.netTotal);
+                    const netUnder = entry.netToPar !== null && entry.netToPar < 0;
+                    const netOver  = entry.netToPar !== null && entry.netToPar > 0;
+                    return (
+                      <View
+                        key={entry.user_id}
+                        className={`flex-row items-center px-3 py-3 ${
+                          idx < entries.length - 1 ? `border-b ${t.divider}` : ""
+                        }`}
+                      >
+                        <Text className={`w-9 text-sm font-semibold ${t.textTertiary}`}>
+                          {entry.rank}
+                        </Text>
+                        <Text
+                          className={`flex-1 text-sm font-semibold ${t.textPrimary}`}
+                          numberOfLines={1}
+                        >
+                          {entry.display_name}
+                        </Text>
+                        <Text className={`w-10 text-sm text-right ${t.textSecondary}`}>
+                          {entry.roundsPlayed}
+                        </Text>
+                        <Text className={`w-12 text-sm text-right ${t.textSecondary}`}>
+                          {grossStr}
+                        </Text>
+                        <Text
+                          className={`w-12 text-sm font-bold text-right ${
+                            netUnder
+                              ? "text-green-600"
+                              : netOver
+                              ? "text-red-500"
+                              : t.textPrimary
+                          }`}
+                        >
+                          {netStr}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })()}
           </View>
         )}
 
-        {/* ── Stats placeholder ──────────────────────────────────────────────── */}
+        {/* ── Stats tab ──────────────────────────────────────────────────────── */}
         {activeTab === "stats" && (
-          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2 mb-8`}>
-            <Ionicons name="bar-chart-outline" size={32} color={t.colors.tabBarInactive} />
-            <Text className={`text-sm font-semibold ${t.textPrimary}`}>Event Stats</Text>
-            <Text className={`text-sm text-center ${t.textSecondary}`}>
-              Aggregate stats across all rounds will appear here once scoring is complete.
-            </Text>
+          <View className="mb-8">
+            {completedRoundIds.length === 0 ? (
+              <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                <Ionicons name="bar-chart-outline" size={32} color={t.colors.tabBarInactive} />
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
+                  No completed rounds yet. Stats will appear once a round is finished.
+                </Text>
+              </View>
+            ) : scorecardsLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardsError ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load stats.
+              </Text>
+            ) : (() => {
+              const stats = buildEventStats(scorecards);
+              return (
+                <View className="gap-3">
+                  {stats.map((stat) => (
+                    <View
+                      key={stat.category}
+                      className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
+                    >
+                      <View className={`px-4 py-2.5 border-b ${t.divider} ${t.surfaceSunken}`}>
+                        <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
+                          {stat.category}
+                        </Text>
+                      </View>
+                      {stat.top3.length === 0 ? (
+                        <Text className={`text-sm italic px-4 py-3 ${t.textTertiary}`}>No data yet</Text>
+                      ) : (
+                        stat.top3.map((row, idx) => (
+                          <View
+                            key={row.rank}
+                            className={`flex-row items-center px-4 py-3 gap-3 ${
+                              idx < stat.top3.length - 1 ? `border-b ${t.divider}` : ""
+                            }`}
+                          >
+                            <Text className={`w-7 text-sm font-bold ${t.textTertiary}`}>{row.rank}</Text>
+                            <Text
+                              className={`flex-1 text-sm font-semibold ${t.textPrimary}`}
+                              numberOfLines={1}
+                            >
+                              {row.names.join(", ")}
+                            </Text>
+                            <Text className={`text-sm ${t.textSecondary}`}>
+                              {row.value} {stat.unit}
+                            </Text>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
           </View>
         )}
 

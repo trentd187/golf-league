@@ -55,6 +55,33 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
 import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
+import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
+
+// ─── Tee time helpers ─────────────────────────────────────────────────────────
+
+// teeTimeToDate: "HH:MM" → JS Date (today's date, only the time component matters).
+function teeTimeToDate(hhmm: string): Date {
+  const d = new Date();
+  if (!hhmm) return d;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (!isNaN(h) && !isNaN(m)) d.setHours(h, m, 0, 0);
+  return d;
+}
+
+// dateToTeeTime: Date → "HH:MM". padStart ensures single digits are zero-padded (7 → "07").
+function dateToTeeTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// formatTeeTime: "HH:MM" → "h:mm AM/PM" for display. e.g. "07:30" → "7:30 AM".
+function formatTeeTime(hhmm: string): string {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  if (isNaN(h) || isNaN(m)) return hhmm;
+  const ampm = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12;
+  return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,9 +140,10 @@ export default function RoundDetailScreen() {
   const [memberSearch, setMemberSearch] = useState("");
 
   // editGroupModal: open when organizer taps the pencil on a group card.
-  const [editGroupId,      setEditGroupId]      = useState<string | null>(null);
-  const [editGroupName,    setEditGroupName]    = useState("");
-  const [editGroupTeeTime, setEditGroupTeeTime] = useState(""); // free-text, e.g. "7:30 AM"
+  const [editGroupId,          setEditGroupId]          = useState<string | null>(null);
+  const [editGroupName,        setEditGroupName]        = useState("");
+  const [editGroupTeeTime,     setEditGroupTeeTime]     = useState(""); // "HH:MM" 24-hour internal
+  const [teeTimePickerOpen,    setTeeTimePickerOpen]    = useState(false);
 
   const [editModalVisible, setEditModalVisible]       = useState(false);
   const [editName, setEditName]                       = useState("");
@@ -304,6 +332,7 @@ export default function RoundDetailScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
       setEditGroupId(null);
+      setTeeTimePickerOpen(false);
     },
     onError: (err: Error) => {
       Alert.alert("Could not update group", err.message, [{ text: "OK" }]);
@@ -392,9 +421,24 @@ export default function RoundDetailScreen() {
   // --- Handlers ---
 
   const openEditGroup = (group: RoundGroup) => {
+    // Convert "7:30 AM" display format back to "HH:MM" for the picker.
+    // Groups from the API send tee_time as "h:mm AM/PM"; we need "HH:MM" internally.
+    let hhmm = "";
+    if (group.tee_time) {
+      const match = group.tee_time.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (match) {
+        let h = parseInt(match[1], 10);
+        const m = match[2];
+        const ampm = match[3].toUpperCase();
+        if (ampm === "PM" && h !== 12) h += 12;
+        if (ampm === "AM" && h === 12) h = 0;
+        hhmm = `${String(h).padStart(2, "0")}:${m}`;
+      }
+    }
     setEditGroupId(group.id);
     setEditGroupName(group.name ?? "");
-    setEditGroupTeeTime(group.tee_time ?? "");
+    setEditGroupTeeTime(hhmm);
+    setTeeTimePickerOpen(false);
   };
 
   const handleDeleteGroup = (group: RoundGroup) => {
@@ -1037,15 +1081,84 @@ export default function RoundDetailScreen() {
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Tee Time (optional)
                 </Text>
-                <TextInput
-                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                  placeholder="e.g. 7:30 AM"
-                  placeholderTextColor={t.colors.tabBarInactive}
-                  value={editGroupTeeTime}
-                  onChangeText={setEditGroupTeeTime}
-                  editable={!updateGroupMutation.isPending}
-                  returnKeyType="done"
-                />
+                <TouchableOpacity
+                  className={`flex-row items-center border rounded-xl px-4 py-3 gap-2 ${t.borderInput} ${t.surfaceSunken}`}
+                  onPress={() => setTeeTimePickerOpen(true)}
+                  disabled={updateGroupMutation.isPending}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="time-outline" size={16} color={t.colors.tabBarInactive} />
+                  <Text className={`flex-1 text-base ${editGroupTeeTime ? t.textPrimary : ""}`}
+                    style={!editGroupTeeTime ? { color: t.colors.tabBarInactive } : undefined}
+                  >
+                    {editGroupTeeTime ? formatTeeTime(editGroupTeeTime) : "Set tee time (optional)"}
+                  </Text>
+                  {editGroupTeeTime ? (
+                    <TouchableOpacity
+                      onPress={() => setEditGroupTeeTime("")}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="close-circle" size={16} color={t.colors.tabBarInactive} />
+                    </TouchableOpacity>
+                  ) : null}
+                </TouchableOpacity>
+
+                {/* Native time picker — Android: system dialog; iOS: bottom sheet */}
+                {Platform.OS === "android" && teeTimePickerOpen && (
+                  <DateTimePicker
+                    value={teeTimeToDate(editGroupTeeTime)}
+                    mode="time"
+                    display="default"
+                    is24Hour={false}
+                    onChange={(event: DateTimePickerEvent, date?: Date) => {
+                      setTeeTimePickerOpen(false);
+                      if (event.type === "set" && date) {
+                        setEditGroupTeeTime(dateToTeeTime(date));
+                      }
+                    }}
+                  />
+                )}
+
+                {Platform.OS === "ios" && (
+                  <Modal
+                    visible={teeTimePickerOpen}
+                    transparent
+                    animationType="slide"
+                    onRequestClose={() => setTeeTimePickerOpen(false)}
+                  >
+                    <View className="flex-1">
+                      <TouchableOpacity
+                        className="absolute inset-0 bg-black/40"
+                        activeOpacity={1}
+                        onPress={() => setTeeTimePickerOpen(false)}
+                      />
+                      <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
+                        <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
+                          <Text className={`font-semibold ${t.textSecondary}`}>Tee Time</Text>
+                          <TouchableOpacity onPress={() => setTeeTimePickerOpen(false)}>
+                            <Text
+                              className="font-semibold text-base"
+                              // eslint-disable-next-line react-native/no-inline-styles
+                              style={{ color: t.colors.tabBarActive }}
+                            >
+                              Done
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                        <DateTimePicker
+                          value={teeTimeToDate(editGroupTeeTime)}
+                          mode="time"
+                          display="spinner"
+                          onChange={(_event: DateTimePickerEvent, date?: Date) => {
+                            if (date) setEditGroupTeeTime(dateToTeeTime(date));
+                          }}
+                          // eslint-disable-next-line react-native/no-inline-styles
+                          style={{ height: 200 }}
+                        />
+                      </View>
+                    </View>
+                  </Modal>
+                )}
               </View>
 
               <TouchableOpacity

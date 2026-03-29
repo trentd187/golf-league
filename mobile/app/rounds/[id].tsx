@@ -2,9 +2,10 @@
 // Round detail screen — shown when a user taps a round card in the Event detail screen.
 // This is a stack screen (no tab bar) at the route /rounds/:id.
 //
-// It shows:
-//   1. Round info    — name, course, date, scoring format, status
-//   2. Groups        — each tee-time group with its assigned players (0–4)
+// It shows three tabs:
+//   1. Groups      — each tee-time group with its assigned players (0–4)
+//   2. Leaderboard — live rankings by net score to par; shows gross and net columns
+//   3. Stats       — category leaders: birdies, putts, greens (GIR), fairways (FIR)
 //
 // Organizer actions (edit icon in header):
 //   - Edit Round modal: change name, course, date, or scoring format
@@ -16,6 +17,7 @@
 //
 // Data flow:
 //   GET    /api/v1/rounds/:id                                 → round detail (includes is_organizer)
+//   GET    /api/v1/rounds/:id/scorecard                       → scores + stats (leaderboard/stats tabs; lazy)
 //   GET    /api/v1/events/:eventId/members                    → event members for add-player picker
 //   PATCH  /api/v1/rounds/:id                                 → edit round fields
 //   DELETE /api/v1/rounds/:id                                 → delete round
@@ -56,6 +58,7 @@ import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
 import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
+import type { Scorecard } from "@/types/scorecard";
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 
@@ -155,6 +158,9 @@ export default function RoundDetailScreen() {
   const [editNewTeeId, setEditNewTeeId]               = useState<string | null>(null);
   const [coursePickerVisible, setCoursePickerVisible] = useState(false);
 
+  // activeTab: which content panel is shown below the round info card.
+  const [activeTab, setActiveTab] = useState<"groups" | "leaderboard" | "stats">("groups");
+
   // --- Queries ---
 
   const {
@@ -187,6 +193,26 @@ export default function RoundDetailScreen() {
     },
     // Only fetch when the Add Player modal is open and we have the event_id.
     enabled: !!selectedGroupId && !!round?.event_id,
+  });
+
+  // scorecardQuery: fetches scores and per-hole stats for leaderboard + stats tabs.
+  // Lazy — only enabled when the user leaves the Groups tab to avoid an unnecessary
+  // request while just viewing group assignments.
+  const {
+    data: scorecard,
+    isLoading: scorecardLoading,
+    isError: scorecardError,
+  } = useQuery<Scorecard>({
+    queryKey: ["scorecard", id],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/scorecard`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!id && activeTab !== "groups",
   });
 
   // --- Derived values ---
@@ -532,6 +558,150 @@ export default function RoundDetailScreen() {
     );
   };
 
+  // --- Leaderboard + stats helpers ---
+
+  // LeaderboardEntry: per-player aggregate for the Leaderboard tab.
+  type LeaderboardEntry = {
+    round_player_id: string;
+    display_name: string;
+    rank: string;
+    holesPlayed: number;
+    grossTotal: number;
+    netTotal: number;
+    grossToPar: number | null; // null when scorecard has no hole par data
+    netToPar: number | null;
+  };
+
+  // buildLeaderboard: flattens all players from the scorecard, computes running
+  // totals vs par, sorts by net score, and assigns rank strings (T1, T1, T3…).
+  function buildLeaderboard(sc: Scorecard): LeaderboardEntry[] {
+    const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
+    const hasHoles = sc.holes.length > 0;
+
+    const entries = sc.groups.flatMap((g) =>
+      g.players.map((p) => {
+        const grossTotal = p.scores.reduce((s, x) => s + x.gross_score, 0);
+        const netTotal   = p.scores.reduce((s, x) => s + x.net_score, 0);
+        const parPlayed  = hasHoles
+          ? p.scores.reduce((s, x) => s + (holeMap.get(x.hole_number) ?? 0), 0)
+          : 0;
+        return {
+          round_player_id: p.round_player_id,
+          display_name: p.display_name,
+          rank: "—",
+          holesPlayed: p.scores.length,
+          grossTotal,
+          netTotal,
+          grossToPar: hasHoles ? grossTotal - parPlayed : null,
+          netToPar:   hasHoles ? netTotal   - parPlayed : null,
+        };
+      })
+    ).sort((a, b) => {
+      // Players with 0 holes sink to the bottom of the board.
+      if (a.holesPlayed === 0 && b.holesPlayed !== 0) return 1;
+      if (b.holesPlayed === 0 && a.holesPlayed !== 0) return -1;
+      const aScore = a.netToPar ?? a.netTotal;
+      const bScore = b.netToPar ?? b.netTotal;
+      if (aScore !== bScore) return aScore - bScore;
+      // Tiebreaker: more holes played ranks higher (further along = precedence in a live round).
+      return b.holesPlayed - a.holesPlayed;
+    });
+
+    // Assign rank strings: solo leader → "1"; tied → "T1", "T1", "T3"…
+    let rank = 1;
+    return entries.map((e, i, arr) => {
+      if (e.holesPlayed === 0) return { ...e, rank: "—" };
+      if (i > 0 && arr[i - 1].holesPlayed > 0) {
+        const prev = arr[i - 1];
+        const prevScore = prev.netToPar ?? prev.netTotal;
+        const curScore  = e.netToPar   ?? e.netTotal;
+        if (curScore !== prevScore) rank = i + 1;
+      }
+      const isTied =
+        entries.filter(
+          (x) => x.holesPlayed > 0 && (x.netToPar ?? x.netTotal) === (e.netToPar ?? e.netTotal)
+        ).length > 1;
+      return { ...e, rank: isTied ? `T${rank}` : `${rank}` };
+    });
+  }
+
+  // formatToPar: converts a score-vs-par integer to display string ("E", "+2", "-3").
+  function formatToPar(toPar: number | null, holesPlayed: number): string {
+    if (holesPlayed === 0 || toPar === null) return "—";
+    if (toPar === 0) return "E";
+    return toPar > 0 ? `+${toPar}` : `${toPar}`;
+  }
+
+  // formatThru: holes played → "F" (finished), "9", or "—" (not started).
+  function formatThru(holesPlayed: number, holeCount: number): string {
+    if (holesPlayed === 0) return "—";
+    return holesPlayed >= holeCount ? "F" : `${holesPlayed}`;
+  }
+
+  // StatSummary: one category card for the Stats tab.
+  type StatSummary = {
+    category: string;
+    unit: string;
+    leaders: string[];
+    value: number | null;
+    higherIsBetter: boolean;
+  };
+
+  // buildStats: computes per-player birdie/putt/GIR/FIR aggregates and returns
+  // the category leader(s) for each. Returns null value when no data has been entered.
+  function buildStats(sc: Scorecard): StatSummary[] {
+    const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
+    const all = sc.groups.flatMap((g) => g.players);
+
+    const birdies = new Map(
+      all.map((p) => [
+        p.display_name,
+        p.scores.filter((s) => (holeMap.get(s.hole_number) ?? -99) === s.gross_score + 1).length,
+      ])
+    );
+    const putts = new Map(
+      all.map((p) => {
+        const valid = p.hole_stats.filter((hs) => hs.putts !== null);
+        return [
+          p.display_name,
+          valid.length > 0 ? valid.reduce((s, hs) => s + (hs.putts ?? 0), 0) : null,
+        ] as [string, number | null];
+      })
+    );
+    const greens = new Map(
+      all.map((p) => [p.display_name, p.hole_stats.filter((hs) => hs.gir === "hit").length])
+    );
+    const fairways = new Map(
+      all.map((p) => [p.display_name, p.hole_stats.filter((hs) => hs.fir === true).length])
+    );
+
+    // findLeaders: returns the best value across all players and who achieved it.
+    // Returns null when no player has data, or when the best value is 0 for higher-is-better
+    // categories (0 birdies/greens/fairways is not a meaningful leader).
+    function findLeaders(
+      map: Map<string, number | null>,
+      higherIsBetter: boolean
+    ): { leaders: string[]; value: number | null } {
+      const valid = [...map.entries()].filter((e): e is [string, number] => e[1] !== null);
+      if (valid.length === 0) return { leaders: [], value: null };
+      const best = higherIsBetter
+        ? Math.max(...valid.map(([, v]) => v))
+        : Math.min(...valid.map(([, v]) => v));
+      if (higherIsBetter && best === 0) return { leaders: [], value: null };
+      return {
+        leaders: valid.filter(([, v]) => v === best).map(([n]) => n),
+        value: best,
+      };
+    }
+
+    return [
+      { category: "Birdies",  unit: "birdies", higherIsBetter: true,  ...findLeaders(birdies,  true)  },
+      { category: "Putts",    unit: "putts",   higherIsBetter: false, ...findLeaders(putts,    false) },
+      { category: "Greens",   unit: "GIR",     higherIsBetter: true,  ...findLeaders(greens,   true)  },
+      { category: "Fairways", unit: "FIR",     higherIsBetter: true,  ...findLeaders(fairways, true)  },
+    ];
+  }
+
   // --- Loading / error states ---
 
   if (roundLoading) {
@@ -631,7 +801,32 @@ export default function RoundDetailScreen() {
           )}
         </View>
 
-        {/* ── Groups section ──────────────────────────────────────────────────── */}
+        {/* ── Tab bar ──────────────────────────────────────────────────────── */}
+        <View className="flex-row gap-2 mb-5">
+          {(["groups", "leaderboard", "stats"] as const).map((tab) => {
+            const isActive = activeTab === tab;
+            return (
+              <TouchableOpacity
+                key={tab}
+                className={`flex-1 rounded-full py-2 items-center border ${
+                  isActive ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.border}`
+                }`}
+                onPress={() => setActiveTab(tab)}
+                activeOpacity={0.8}
+              >
+                <Text
+                  className={`text-sm font-semibold ${isActive ? "text-white" : t.textSecondary}`}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* ── Groups tab ───────────────────────────────────────────────────── */}
+        {activeTab === "groups" && <>
+
         <SectionHeader
           title={`Groups (${round.groups.length})`}
           actionLabel={addGroupMutation.isPending ? "Adding…" : "Group"}
@@ -796,6 +991,156 @@ export default function RoundDetailScreen() {
             </View>
           ))}
         </View>
+
+        </>}
+
+        {/* ── Leaderboard tab ──────────────────────────────────────────────── */}
+        {activeTab === "leaderboard" && (
+          <View className="mb-8">
+            {scorecardLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardError || !scorecard ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load scores.
+              </Text>
+            ) : (() => {
+              const entries = buildLeaderboard(scorecard);
+              if (entries.every((e) => e.holesPlayed === 0)) {
+                return (
+                  <View
+                    className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}
+                  >
+                    <Ionicons name="trophy-outline" size={32} color={t.colors.tabBarInactive} />
+                    <Text className={`text-sm text-center ${t.textSecondary}`}>
+                      {round.status === "scheduled"
+                        ? "No scores yet. Start the round to begin scoring."
+                        : "No scores yet."}
+                    </Text>
+                  </View>
+                );
+              }
+              return (
+                <View
+                  className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
+                >
+                  {/* Column headers */}
+                  <View className={`flex-row px-3 py-2 border-b ${t.divider}`}>
+                    <Text className={`w-9 text-xs font-semibold ${t.textTertiary}`}> </Text>
+                    <Text className={`flex-1 text-xs font-semibold ${t.textTertiary}`}>Player</Text>
+                    <Text className={`w-10 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Thru
+                    </Text>
+                    <Text className={`w-12 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Gross
+                    </Text>
+                    <Text className={`w-12 text-xs font-semibold text-right ${t.textTertiary}`}>
+                      Net
+                    </Text>
+                  </View>
+                  {entries.map((entry, idx) => {
+                    const hasHoles = scorecard.holes.length > 0;
+                    const grossStr =
+                      entry.holesPlayed > 0
+                        ? hasHoles
+                          ? formatToPar(entry.grossToPar, entry.holesPlayed)
+                          : String(entry.grossTotal)
+                        : "—";
+                    const netStr =
+                      entry.holesPlayed > 0
+                        ? hasHoles
+                          ? formatToPar(entry.netToPar, entry.holesPlayed)
+                          : String(entry.netTotal)
+                        : "—";
+                    const netUnder = entry.netToPar !== null && entry.netToPar < 0;
+                    const netOver  = entry.netToPar !== null && entry.netToPar > 0;
+                    return (
+                      <View
+                        key={entry.round_player_id}
+                        className={`flex-row items-center px-3 py-3 ${
+                          idx < entries.length - 1 ? `border-b ${t.divider}` : ""
+                        }`}
+                      >
+                        <Text className={`w-9 text-sm font-semibold ${t.textTertiary}`}>
+                          {entry.rank}
+                        </Text>
+                        <Text
+                          className={`flex-1 text-sm font-semibold ${t.textPrimary}`}
+                          numberOfLines={1}
+                        >
+                          {entry.display_name}
+                        </Text>
+                        <Text className={`w-10 text-sm text-right ${t.textSecondary}`}>
+                          {formatThru(entry.holesPlayed, scorecard.hole_count)}
+                        </Text>
+                        <Text className={`w-12 text-sm text-right ${t.textSecondary}`}>
+                          {grossStr}
+                        </Text>
+                        {/* Net score — green when under par, red when over, default when even */}
+                        <Text
+                          className={`w-12 text-sm font-bold text-right ${
+                            netUnder
+                              ? "text-green-600"
+                              : netOver
+                              ? "text-red-500"
+                              : t.textPrimary
+                          }`}
+                        >
+                          {netStr}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })()}
+          </View>
+        )}
+
+        {/* ── Stats tab ────────────────────────────────────────────────────── */}
+        {activeTab === "stats" && (
+          <View className="mb-8">
+            {scorecardLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardError || !scorecard ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load stats.
+              </Text>
+            ) : (() => {
+              const stats = buildStats(scorecard);
+              return (
+                <View className="gap-3">
+                  {stats.map((stat) => (
+                    <View
+                      key={stat.category}
+                      className={`${t.surface} rounded-2xl border ${t.border} p-4`}
+                    >
+                      <Text
+                        className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}
+                      >
+                        {stat.category}
+                      </Text>
+                      {stat.value === null ? (
+                        <Text className={`text-sm italic ${t.textTertiary}`}>No data yet</Text>
+                      ) : (
+                        <>
+                          <Text
+                            className={`text-base font-bold ${t.textPrimary}`}
+                            numberOfLines={2}
+                          >
+                            {stat.leaders.join(", ")}
+                          </Text>
+                          <Text className={`text-sm mt-0.5 ${t.textSecondary}`}>
+                            {stat.value} {stat.unit}
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
+          </View>
+        )}
 
       </ScrollView>
 

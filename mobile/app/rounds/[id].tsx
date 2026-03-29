@@ -408,6 +408,48 @@ export default function RoundDetailScreen() {
     },
   });
 
+  // endRoundMutation advances the round status from "active" → "completed".
+  // Only shown to organizers (event managers/admins) when the round is in progress.
+  const endRoundMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+      if (round?.event_id) {
+        queryClient.invalidateQueries({ queryKey: ["event", round.event_id, "rounds"] });
+      }
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not end round", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  const handleEndRound = () => {
+    Alert.alert(
+      "End Round?",
+      "This will mark the round as completed for all groups.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "End Round",
+          style: "destructive",
+          onPress: () => endRoundMutation.mutate(),
+        },
+      ]
+    );
+  };
+
   // startRoundMutation advances the round status from "scheduled" → "active".
   // Only shown to organizers when the round hasn't started yet.
   const startRoundMutation = useMutation({
@@ -795,6 +837,27 @@ export default function RoundDetailScreen() {
                 <>
                   <Ionicons name="play-circle-outline" size={16} color="white" />
                   <Text className="text-white font-semibold text-sm">Start Round</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* End Round button — organizer only, only when round is active */}
+          {round.is_organizer && round.status === "active" && (
+            <TouchableOpacity
+              className={`mt-3 flex-row items-center justify-center gap-2 rounded-xl py-2.5 border ${
+                endRoundMutation.isPending ? `opacity-50 ${t.border} ${t.surface}` : `${t.border} ${t.surface}`
+              }`}
+              onPress={handleEndRound}
+              disabled={endRoundMutation.isPending}
+              activeOpacity={0.8}
+            >
+              {endRoundMutation.isPending ? (
+                <ActivityIndicator size="small" color={t.colors.tabBarInactive} />
+              ) : (
+                <>
+                  <Ionicons name="flag-outline" size={15} color={t.colors.tabBarInactive} />
+                  <Text className={`font-medium text-sm ${t.textSecondary}`}>End Round</Text>
                 </>
               )}
             </TouchableOpacity>

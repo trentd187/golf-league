@@ -205,7 +205,6 @@ export default function ScorecardScreen() {
   // Hides the section for the rest of the session even if handicaps are missing.
   const [handicapDismissed, setHandicapDismissed] = useState(false);
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
-  const [endingRound,     setEndingRound]     = useState(false);
 
   // ── Advanced stats + hole navigation state ───────────────────────────────────
   const [stats,       setStats]       = useState<LocalStats>({});
@@ -449,45 +448,6 @@ export default function ScorecardScreen() {
     } finally {
       setSavingHandicaps(false);
     }
-  };
-
-  // ── End round ───────────────────────────────────────────────────────────────
-
-  const handleEndRound = () => {
-    Alert.alert(
-      "End Round?",
-      "This will mark the round as completed for all groups.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "End Round",
-          style: "destructive",
-          onPress: async () => {
-            setEndingRound(true);
-            try {
-              const token = await getToken();
-              const res = await fetch(`${API_URL}/api/v1/rounds/${roundId}`, {
-                method:  "PATCH",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body:    JSON.stringify({ status: "completed" }),
-              });
-              if (!res.ok) {
-                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-                const body = await res.json().catch(() => ({}));
-                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-                throw new Error(body?.error ?? "Failed to end round");
-              }
-              router.back();
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : "Check your connection and try again.";
-              Alert.alert("Could not end round", msg);
-            } finally {
-              setEndingRound(false);
-            }
-          },
-        },
-      ]
-    );
   };
 
   // ── Loading / error ─────────────────────────────────────────────────────────
@@ -1166,7 +1126,12 @@ export default function ScorecardScreen() {
                             // ensuring the inset has been applied and there is room to move.
                             setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
                           }}
-                          onBlur={() => autoSaveStats(rpId, currentHole, 400)}
+                          onBlur={() => {
+                            autoSaveStats(rpId, currentHole, 400);
+                            // Return the view to the top so the blank keyboard inset space
+                            // doesn't linger after the keyboard dismisses.
+                            setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+                          }}
                         />
                       </View>
                     ))}
@@ -1228,28 +1193,6 @@ export default function ScorecardScreen() {
           </View>
         )}
 
-        {/* ── End Round button — organizer only ──────────────────────────────── */}
-        {scorecard.is_organizer && (
-          <View className="px-4 mt-5 mb-2">
-            <TouchableOpacity
-              className={`rounded-xl py-3 items-center flex-row justify-center gap-2 border ${
-                endingRound ? `opacity-50 ${t.border} ${t.surface}` : `${t.border} ${t.surface}`
-              }`}
-              onPress={handleEndRound}
-              disabled={endingRound}
-              activeOpacity={0.8}
-            >
-              {endingRound ? (
-                <ActivityIndicator color={t.colors.tabBarInactive} />
-              ) : (
-                <>
-                  <Ionicons name="flag-outline" size={15} color={t.colors.tabBarInactive} />
-                  <Text className={`font-medium text-sm ${t.textSecondary}`}>End Round</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
 
       </ScrollView>
     </KeyboardAvoidingView>

@@ -882,6 +882,8 @@ export default function ScorecardScreen() {
               const currentFir = firKey(holeStat);
 
               // handleGIRTap toggles GIR. Tapping the active option clears it.
+              // When GIR becomes "hit" and the score is par, auto-set putts to 2
+              // (only when putts is blank — don't overwrite a value the user entered).
               const handleGIRTap = (key: string) => {
                 const isActive = currentGir === key;
                 let gir: string | null = null;
@@ -891,11 +893,13 @@ export default function ScorecardScreen() {
                   else if (key === "na")            { gir = "na"; }
                   else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
                 }
+                const isParScore = !isNaN(gross) && holeData.par != null && gross === holeData.par;
+                const autoPutts = gir === "hit" && isParScore && holeStat.putts === "" ? { putts: "2" } : {};
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
                     ...(prev[rpId] ?? {}),
-                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), gir, gir_miss_direction: dir },
+                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), gir, gir_miss_direction: dir, ...autoPutts },
                   },
                 }));
                 autoSaveStats(rpId, currentHole, 0);
@@ -954,12 +958,30 @@ export default function ScorecardScreen() {
                         keyboardType="number-pad"
                         maxLength={2}
                         value={val}
-                        onChangeText={(v) =>
+                        onChangeText={(v) => {
                           setScores((prev) => ({
                             ...prev,
                             [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: v },
-                          }))
-                        }
+                          }));
+                          // Auto-set putts to 2 when the score becomes par and GIR is
+                          // already "hit", but only if putts hasn't been entered yet.
+                          const newGross = parseInt(v, 10);
+                          if (
+                            !isNaN(newGross) &&
+                            holeData.par != null &&
+                            newGross === holeData.par &&
+                            currentGir === "hit" &&
+                            holeStat.putts === ""
+                          ) {
+                            setStats((prev) => ({
+                              ...prev,
+                              [rpId]: {
+                                ...(prev[rpId] ?? {}),
+                                [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: "2" },
+                              },
+                            }));
+                          }
+                        }}
                         onBlur={() => autoSavePlayer(rpId)}
                         editable={!savingHandicaps && !needsHandicap}
                         placeholder="—"
@@ -1079,8 +1101,8 @@ export default function ScorecardScreen() {
                     {(
                       [
                         { field: "putts" as const,               label: "Putts",      unit: null },
-                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft" },
                         { field: "putt_distance_made" as const,  label: "Made Putt",  unit: "ft" },
+                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft" },
                       ] as const
                     ).map(({ field, label, unit }) => (
                       <View key={field} className="flex-row items-center justify-between">
@@ -1094,15 +1116,25 @@ export default function ScorecardScreen() {
                           placeholder="—"
                           placeholderTextColor={t.colors.tabBarInactive}
                           value={holeStat[field]}
-                          onChangeText={(v) =>
-                            setStats((prev) => ({
-                              ...prev,
-                              [rpId]: {
-                                ...(prev[rpId] ?? {}),
-                                [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), [field]: v },
-                              },
-                            }))
-                          }
+                          onChangeText={(v) => {
+                            setStats((prev) => {
+                              const current = prev[rpId]?.[currentHole] ?? emptyHoleStat;
+                              // When putts = 1 and the user types into Made Putt, mirror
+                              // the value into First Putt — if you only putted once, the
+                              // first putt distance is the same as the made putt distance.
+                              const extra =
+                                field === "putt_distance_made" && current.putts === "1"
+                                  ? { first_putt_distance: v }
+                                  : {};
+                              return {
+                                ...prev,
+                                [rpId]: {
+                                  ...(prev[rpId] ?? {}),
+                                  [currentHole]: { ...current, [field]: v, ...extra },
+                                },
+                              };
+                            });
+                          }}
                           onFocus={() => {
                             // Delay lets the keyboard animation start before we scroll,
                             // ensuring the inset has been applied and there is room to move.

@@ -32,7 +32,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
-import { EventTypeBadge } from "@/components/badges";
+import { EventTypeBadge, StatusChip } from "@/components/badges";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,8 +51,8 @@ type EventResponse = {
 
 type TypeFilter = "all" | EventResponse["event_type"];
 
-// "upcoming" was removed — events now start as "active".
-type StatusFilter = "all" | "active" | "completed" | "cancelled";
+// Only "active" and "completed" are valid event statuses — cancel was removed.
+type StatusFilter = "all" | "active" | "completed";
 
 type SortKey =
   | "start_date_asc"
@@ -80,7 +80,6 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "all",       label: "All Status" },
   { value: "active",    label: "Active" },
   { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
 ];
 
 // shortLabel is shown on the sort button; label is shown inside the sort modal.
@@ -107,7 +106,10 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
         <Text className={`font-semibold text-base flex-1 mr-2 ${t.textPrimary}`} numberOfLines={1}>
           {event.name}
         </Text>
-        <EventTypeBadge type={event.event_type} />
+        <View className="flex-row items-center gap-1.5">
+          <StatusChip status={event.status} />
+          <EventTypeBadge type={event.event_type} />
+        </View>
       </View>
 
       {event.description ? (

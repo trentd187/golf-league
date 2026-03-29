@@ -2,12 +2,12 @@
 // Categorical badge and chip components used across Event and Round screens.
 //
 // "Categorical" means the color IS the meaning — a green chip always means "active",
-// a red chip always means "cancelled". These must NOT use theme tokens, because
+// a gray chip always means "completed". These must NOT use theme tokens, because
 // swapping colors would destroy the visual encoding. See CLAUDE.md.
 //
 // Exports:
 //   EventTypeBadge  — league (blue), tournament (amber), casual (gray)
-//   StatusChip      — event lifecycle: active (green), completed (gray), cancelled (red)
+//   StatusChip      — event lifecycle: active (green), completed (gray)
 //   RoleBadge       — "Organizer" pill; renders null for regular players
 //   RoundStatusChip — round lifecycle: scheduled (sky), active (green), completed (gray)
 
@@ -34,13 +34,12 @@ export function EventTypeBadge({ type }: { type: EventType }) {
 
 // ─── StatusChip ───────────────────────────────────────────────────────────────
 
-// Note: "upcoming" was removed as a valid status — events now start as "active".
+// Valid event statuses are "active" and "completed".
 // Falls back to "active" styling for any unrecognised status value.
 export function StatusChip({ status }: { status: string }) {
   const map: Record<string, { bg: string; text: string }> = {
     active:    { bg: "bg-green-100", text: "text-green-700" },
     completed: { bg: "bg-gray-100",  text: "text-gray-600" },
-    cancelled: { bg: "bg-red-100",   text: "text-red-600" },
   };
   const s = map[status] ?? map.active;
   const label = status.charAt(0).toUpperCase() + status.slice(1);

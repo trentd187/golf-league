@@ -563,7 +563,7 @@ export default function ScorecardScreen() {
   return (
     <KeyboardAvoidingView
       className={`flex-1 ${t.screen}`}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "android" ? "height" : undefined}
     >
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
@@ -606,6 +606,7 @@ export default function ScorecardScreen() {
       <ScrollView
         className="flex-1"
         contentContainerStyle={{ paddingBottom: 40 }}
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}

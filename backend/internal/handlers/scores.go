@@ -92,6 +92,10 @@ type ScorecardResponse struct {
 	HoleCount        int    `json:"hole_count"`
 	RequiresHandicap bool   `json:"requires_handicap"`
 	ScoringFormat    string `json:"scoring_format"`
+	// CallerUserID is the database UUID of the requesting user. The mobile client
+	// uses this to find its own player entry in the groups list — Clerk's user.id
+	// is different from the database UUID, so the server must supply it.
+	CallerUserID string `json:"caller_user_id"`
 	// IsOrganizer lets the mobile client show/hide the "End Round" button without a separate query.
 	IsOrganizer bool                     `json:"is_organizer"`
 	Holes       []ScorecardHole          `json:"holes"`
@@ -341,6 +345,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 			HoleCount:        round.Course.HoleCount,
 			RequiresHandicap: round.RequiresHandicap,
 			ScoringFormat:    string(round.ScoringFormat),
+			CallerUserID:     userIDStr,
 			IsOrganizer:      isOrg,
 			Holes:            holeRows,
 			Groups:           groupResponses,

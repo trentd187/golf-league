@@ -868,7 +868,7 @@ export default function ScorecardScreen() {
               const currentFir = firKey(holeStat);
 
               // handleGIRTap toggles GIR. Tapping the active option clears it.
-              // When GIR becomes "hit" and the score is par, auto-set putts to 2
+              // When GIR becomes "hit": auto-set putts to 2 for par, 1 for birdie
               // (only when putts is blank — don't overwrite a value the user entered).
               const handleGIRTap = (key: string) => {
                 const isActive = currentGir === key;
@@ -879,8 +879,12 @@ export default function ScorecardScreen() {
                   else if (key === "na")            { gir = "na"; }
                   else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
                 }
+                const isBirdie  = !isNaN(gross) && holeData.par != null && gross === holeData.par - 1;
                 const isParScore = !isNaN(gross) && holeData.par != null && gross === holeData.par;
-                const autoPutts = gir === "hit" && isParScore && holeStat.putts === "" ? { putts: "2" } : {};
+                const autoPutts =
+                  gir === "hit" && holeStat.putts === ""
+                    ? isBirdie ? { putts: "1" } : isParScore ? { putts: "2" } : {}
+                    : {};
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
@@ -949,23 +953,28 @@ export default function ScorecardScreen() {
                             ...prev,
                             [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: v },
                           }));
-                          // Auto-set putts to 2 when the score becomes par and GIR is
-                          // already "hit", but only if putts hasn't been entered yet.
+                          // Auto-set putts when GIR is already "hit" and putts is blank:
+                          // birdie → 1 putt, par → 2 putts.
                           const newGross = parseInt(v, 10);
                           if (
                             !isNaN(newGross) &&
                             holeData.par != null &&
-                            newGross === holeData.par &&
                             currentGir === "hit" &&
                             holeStat.putts === ""
                           ) {
-                            setStats((prev) => ({
-                              ...prev,
-                              [rpId]: {
-                                ...(prev[rpId] ?? {}),
-                                [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: "2" },
-                              },
-                            }));
+                            const autoP =
+                              newGross === holeData.par - 1 ? "1"
+                              : newGross === holeData.par   ? "2"
+                              : null;
+                            if (autoP !== null) {
+                              setStats((prev) => ({
+                                ...prev,
+                                [rpId]: {
+                                  ...(prev[rpId] ?? {}),
+                                  [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: autoP },
+                                },
+                              }));
+                            }
                           }
                         }}
                         onBlur={() => autoSavePlayer(rpId)}
@@ -1049,10 +1058,10 @@ export default function ScorecardScreen() {
                     </View>
                   </View>
 
-                  {/* FIR */}
-                  <View className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
+                  {/* FIR — disabled on par 3s (no fairway to hit on a tee shot to the green) */}
+                  <View className={`px-4 py-3 gap-2 border-b ${t.divider} ${holeData.par === 3 ? "opacity-40" : ""}`}>
                     <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                      Fairway in Regulation
+                      Fairway in Regulation{holeData.par === 3 ? " (N/A — par 3)" : ""}
                     </Text>
                     <View className="flex-row flex-wrap gap-2">
                       {FIR_OPTIONS.map(({ key, label, icon }) => {
@@ -1060,11 +1069,11 @@ export default function ScorecardScreen() {
                         return (
                           <TouchableOpacity
                             key={key}
-                            onPress={() => handleFIRTap(key)}
+                            onPress={() => { if (holeData.par !== 3) handleFIRTap(key); }}
                             className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
                               active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
                             }`}
-                            activeOpacity={0.7}
+                            activeOpacity={holeData.par === 3 ? 1 : 0.7}
                           >
                             {icon && (
                               <Ionicons

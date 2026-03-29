@@ -2,13 +2,14 @@
 // Event Detail screen — shown when a user taps an event card in the Events tab.
 // This screen is a full-page stack screen (no tab bar) pushed on top of the tabs.
 //
-// It has three sections:
-//   1. Event info   — name, type, status, description, dates, creator
-//   2. Members      — roster list; organizers see an "Add Member" button
-//   3. Rounds       — scheduled/active/completed rounds; organizers see "Schedule Round"
+// Four tabs are shown below the event info card:
+//   1. Members    — roster list; organizers see an "Add Member" button
+//   2. Rounds     — scheduled/active/completed rounds; organizers see "Schedule Round"
+//   3. Leaderboard — event standings (placeholder; populated once scoring is implemented)
+//   4. Stats       — aggregate stats across all rounds (placeholder)
 //
-// Tapping a round card navigates to /rounds/[id] (the Round detail/edit screen).
-// Organizer actions (edit event, add member, schedule round) open modal sheets.
+// Organizer actions (edit event, add member, schedule round, end event) are available
+// via the edit pencil in the header and the "End Event" button in the info card.
 //
 // Auth / permission:
 //   - The screen is only reachable by users who are already a member (backend enforces this).
@@ -135,6 +136,9 @@ export default function EventDetailScreen() {
   const [editModalVisible, setEditModalVisible]                   = useState(false);
   const [addMemberModalVisible, setAddMemberModalVisible]         = useState(false);
   const [scheduleRoundModalVisible, setScheduleRoundModalVisible] = useState(false);
+
+  // --- Tab state ---
+  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats">("members");
 
   // --- Edit event form state ---
   const [editName, setEditName]               = useState("");
@@ -335,13 +339,15 @@ export default function EventDetailScreen() {
     },
   });
 
-  const cancelEventMutation = useMutation({
+  // endEventMutation: marks the event as completed via PATCH /events/:id.
+  // The backend already accepts status: "completed" in UpdateEvent.
+  const endEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
       const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "cancelled" }),
+        body: JSON.stringify({ status: "completed" }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -354,7 +360,7 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["events"] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not cancel event", err.message, [{ text: "OK" }]);
+      Alert.alert("Could not end event", err.message, [{ text: "OK" }]);
     },
   });
 
@@ -403,16 +409,16 @@ export default function EventDetailScreen() {
     });
   };
 
-  const handleCancelEvent = () => {
+  const handleEndEvent = () => {
     Alert.alert(
-      "Cancel event?",
-      "The event will be marked as cancelled. Members will still be able to view it.",
+      "End Event",
+      "Mark this event as completed? This cannot be undone.",
       [
-        { text: "Keep", style: "cancel" },
+        { text: "Cancel", style: "cancel" },
         {
-          text: "Cancel Event",
+          text: "End Event",
           style: "destructive",
-          onPress: () => cancelEventMutation.mutate(),
+          onPress: () => endEventMutation.mutate(),
         },
       ]
     );
@@ -556,10 +562,54 @@ export default function EventDetailScreen() {
             </View>
           </View>
 
+          {/* End Event — organizer only, active events only */}
+          {isOrganizer && event.status === "active" && (
+            <TouchableOpacity
+              className={`mt-3 flex-row items-center justify-center gap-2 rounded-xl py-2.5 border ${
+                endEventMutation.isPending
+                  ? `opacity-50 ${t.border} ${t.surface}`
+                  : `${t.border} ${t.surface}`
+              }`}
+              onPress={handleEndEvent}
+              disabled={endEventMutation.isPending}
+              activeOpacity={0.8}
+            >
+              {endEventMutation.isPending ? (
+                <ActivityIndicator size="small" color={t.colors.tabBarInactive} />
+              ) : (
+                <>
+                  <Ionicons name="flag-outline" size={15} color={t.colors.tabBarInactive} />
+                  <Text className={`font-medium text-sm ${t.textSecondary}`}>End Event</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+        </View>
+
+        {/* ── Tab bar ────────────────────────────────────────────────────────── */}
+        <View className="flex-row gap-2 mb-5">
+          {(["members", "rounds", "leaderboard", "stats"] as const).map((tab) => {
+            const isActive = activeTab === tab;
+            return (
+              <TouchableOpacity
+                key={tab}
+                className={`flex-1 rounded-full py-2 items-center border ${
+                  isActive ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.border}`
+                }`}
+                onPress={() => setActiveTab(tab)}
+                activeOpacity={0.8}
+              >
+                <Text className={`text-sm font-semibold ${isActive ? "text-white" : t.textSecondary}`}>
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* ── Members section ────────────────────────────────────────────────── */}
-        <View className="mb-4">
+        {activeTab === "members" && <View className="mb-4">
           <SectionHeader
             title={`Members (${event.members.length})`}
             actionLabel="Add Member"
@@ -602,10 +652,10 @@ export default function EventDetailScreen() {
               ))}
             </View>
           )}
-        </View>
+        </View>}
 
         {/* ── Rounds section ─────────────────────────────────────────────────── */}
-        <View className="mb-8">
+        {activeTab === "rounds" && <View className="mb-8">
           <SectionHeader
             title="Rounds"
             actionLabel="Schedule"
@@ -664,7 +714,30 @@ export default function EventDetailScreen() {
               ))}
             </View>
           )}
-        </View>
+        </View>}
+
+        {/* ── Leaderboard placeholder ─────────────────────────────────────────── */}
+        {activeTab === "leaderboard" && (
+          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2 mb-8`}>
+            <Ionicons name="trophy-outline" size={32} color={t.colors.tabBarInactive} />
+            <Text className={`text-sm font-semibold ${t.textPrimary}`}>Event Standings</Text>
+            <Text className={`text-sm text-center ${t.textSecondary}`}>
+              Event leaderboard will be available once rounds are completed and scored.
+            </Text>
+          </View>
+        )}
+
+        {/* ── Stats placeholder ──────────────────────────────────────────────── */}
+        {activeTab === "stats" && (
+          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2 mb-8`}>
+            <Ionicons name="bar-chart-outline" size={32} color={t.colors.tabBarInactive} />
+            <Text className={`text-sm font-semibold ${t.textPrimary}`}>Event Stats</Text>
+            <Text className={`text-sm text-center ${t.textSecondary}`}>
+              Aggregate stats across all rounds will appear here once scoring is complete.
+            </Text>
+          </View>
+        )}
+
       </ScrollView>
 
       {/* ── Edit Event Modal ───────────────────────────────────────────────── */}
@@ -757,44 +830,15 @@ export default function EventDetailScreen() {
               </TouchableOpacity>
 
               {/* ── Danger zone ──────────────────────────────────────────────────
-                  Cancel and Delete are inside the Edit modal so they require a
-                  deliberate two-tap gesture, preventing accidental triggers. */}
+                  Delete is inside the Edit modal so it requires a deliberate
+                  two-tap gesture, preventing accidental triggers. */}
               <View className={`mt-6 pt-6 border-t ${t.divider} gap-3`}>
-
-                {/* Cancel Event — marks as "cancelled". Greyed out if already cancelled. */}
-                <TouchableOpacity
-                  className={`rounded-xl py-4 items-center border ${
-                    event.status === "cancelled"
-                      ? "border-gray-200 bg-gray-50"
-                      : "border-amber-200 bg-amber-50"
-                  }`}
-                  onPress={handleCancelEvent}
-                  disabled={
-                    cancelEventMutation.isPending ||
-                    deleteEventMutation.isPending ||
-                    event.status === "cancelled"
-                  }
-                >
-                  {cancelEventMutation.isPending ? (
-                    <ActivityIndicator color="#d97706" />
-                  ) : (
-                    <Text
-                      className="text-sm font-semibold"
-                      // eslint-disable-next-line react-native/no-inline-styles
-                      style={{
-                        color: event.status === "cancelled" ? "#9ca3af" : "#d97706",
-                      }}
-                    >
-                      {event.status === "cancelled" ? "Event Cancelled" : "Cancel Event"}
-                    </Text>
-                  )}
-                </TouchableOpacity>
 
                 {/* Delete Event — permanently removes the event and all its data. */}
                 <TouchableOpacity
                   className="rounded-xl py-4 items-center bg-red-50 border border-red-200"
                   onPress={handleDeleteEvent}
-                  disabled={cancelEventMutation.isPending || deleteEventMutation.isPending}
+                  disabled={deleteEventMutation.isPending}
                 >
                   {deleteEventMutation.isPending ? (
                     <ActivityIndicator color="#dc2626" />

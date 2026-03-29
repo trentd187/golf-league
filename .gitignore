@@ -21,6 +21,8 @@ mobile/*.p8
 mobile/*.p12
 mobile/*.mobileprovision
 mobile/.env.local
+# Contains baked-in API keys and env vars — never commit
+mobile/eas.json
 
 # Docker
 *.log

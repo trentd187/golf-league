@@ -680,17 +680,18 @@ export default function RoundDetailScreen() {
     return holesPlayed >= holeCount ? "F" : `${holesPlayed}`;
   }
 
-  // StatSummary: one category card for the Stats tab.
+  // StatRow: one ranked entry inside a stat category card.
+  type StatRow = { rank: string; names: string[]; value: number };
+
+  // StatSummary: one category card for the Stats tab — holds up to 3 ranked rows.
   type StatSummary = {
     category: string;
     unit: string;
-    leaders: string[];
-    value: number | null;
-    higherIsBetter: boolean;
+    top3: StatRow[];
   };
 
   // buildStats: computes per-player birdie/putt/GIR/FIR aggregates and returns
-  // the category leader(s) for each. Returns null value when no data has been entered.
+  // the top 3 ranked entries for each category.
   function buildStats(sc: Scorecard): StatSummary[] {
     const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
     const all = sc.groups.flatMap((g) => g.players);
@@ -717,30 +718,41 @@ export default function RoundDetailScreen() {
       all.map((p) => [p.display_name, p.hole_stats.filter((hs) => hs.fir === true).length])
     );
 
-    // findLeaders: returns the best value across all players and who achieved it.
-    // Returns null when no player has data, or when the best value is 0 for higher-is-better
-    // categories (0 birdies/greens/fairways is not a meaningful leader).
-    function findLeaders(
+    // findTop3: sorts players by their stat value, groups ties into shared rank rows,
+    // and returns up to 3 rank groups. Returns an empty array when no data exists.
+    // For higher-is-better categories, a best value of 0 is treated as "no data"
+    // (e.g. 0 birdies is not a meaningful leader worth showing).
+    function findTop3(
       map: Map<string, number | null>,
       higherIsBetter: boolean
-    ): { leaders: string[]; value: number | null } {
-      const valid = [...map.entries()].filter((e): e is [string, number] => e[1] !== null);
-      if (valid.length === 0) return { leaders: [], value: null };
-      const best = higherIsBetter
-        ? Math.max(...valid.map(([, v]) => v))
-        : Math.min(...valid.map(([, v]) => v));
-      if (higherIsBetter && best === 0) return { leaders: [], value: null };
-      return {
-        leaders: valid.filter(([, v]) => v === best).map(([n]) => n),
-        value: best,
-      };
+    ): StatRow[] {
+      const valid = [...map.entries()]
+        .filter((e): e is [string, number] => e[1] !== null)
+        .sort(([, a], [, b]) => higherIsBetter ? b - a : a - b);
+
+      const rows: StatRow[] = [];
+      let playerRank = 1;
+      let i = 0;
+      while (i < valid.length && rows.length < 3) {
+        const value = valid[i][1];
+        if (higherIsBetter && value === 0) break;
+        // Collect all players tied at this value.
+        const names: string[] = [];
+        while (i < valid.length && valid[i][1] === value) {
+          names.push(valid[i][0]);
+          i++;
+        }
+        rows.push({ rank: names.length > 1 ? `T${playerRank}` : `${playerRank}`, names, value });
+        playerRank += names.length;
+      }
+      return rows;
     }
 
     return [
-      { category: "Birdies",  unit: "birdies", higherIsBetter: true,  ...findLeaders(birdies,  true)  },
-      { category: "Putts",    unit: "putts",   higherIsBetter: false, ...findLeaders(putts,    false) },
-      { category: "Greens",   unit: "GIR",     higherIsBetter: true,  ...findLeaders(greens,   true)  },
-      { category: "Fairways", unit: "FIR",     higherIsBetter: true,  ...findLeaders(fairways, true)  },
+      { category: "Birdies",  unit: "birdies", top3: findTop3(birdies,  true)  },
+      { category: "Putts",    unit: "putts",   top3: findTop3(putts,    false) },
+      { category: "Greens",   unit: "GIR",     top3: findTop3(greens,   true)  },
+      { category: "Fairways", unit: "FIR",     top3: findTop3(fairways, true)  },
     ];
   }
 
@@ -1175,27 +1187,30 @@ export default function RoundDetailScreen() {
                   {stats.map((stat) => (
                     <View
                       key={stat.category}
-                      className={`${t.surface} rounded-2xl border ${t.border} p-4`}
+                      className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
                     >
-                      <Text
-                        className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}
-                      >
-                        {stat.category}
-                      </Text>
-                      {stat.value === null ? (
-                        <Text className={`text-sm italic ${t.textTertiary}`}>No data yet</Text>
+                      <View className={`px-4 py-2.5 border-b ${t.divider} ${t.surfaceSunken}`}>
+                        <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
+                          {stat.category}
+                        </Text>
+                      </View>
+                      {stat.top3.length === 0 ? (
+                        <Text className={`text-sm italic px-4 py-3 ${t.textTertiary}`}>No data yet</Text>
                       ) : (
-                        <>
-                          <Text
-                            className={`text-base font-bold ${t.textPrimary}`}
-                            numberOfLines={2}
+                        stat.top3.map((row, idx) => (
+                          <View
+                            key={row.rank}
+                            className={`flex-row items-center px-4 py-3 gap-3 ${idx < stat.top3.length - 1 ? `border-b ${t.divider}` : ""}`}
                           >
-                            {stat.leaders.join(", ")}
-                          </Text>
-                          <Text className={`text-sm mt-0.5 ${t.textSecondary}`}>
-                            {stat.value} {stat.unit}
-                          </Text>
-                        </>
+                            <Text className={`w-7 text-sm font-bold ${t.textTertiary}`}>{row.rank}</Text>
+                            <Text className={`flex-1 text-sm font-semibold ${t.textPrimary}`} numberOfLines={1}>
+                              {row.names.join(", ")}
+                            </Text>
+                            <Text className={`text-sm ${t.textSecondary}`}>
+                              {row.value} {stat.unit}
+                            </Text>
+                          </View>
+                        ))
                       )}
                     </View>
                   ))}

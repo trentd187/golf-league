@@ -249,7 +249,7 @@ export default function ProfileScreen() {
   return (
     <KeyboardAvoidingView
       className={`flex-1 ${t.screen}`}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView>
         <View className="px-5 pt-14 pb-10">

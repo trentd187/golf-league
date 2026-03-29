@@ -32,6 +32,27 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 ## Universal Rules
 
+### Cross-Platform (iOS + Android)
+
+**Every change must work on both iOS and Android.** Primary testing is on Android (Google Pixel). Never use an iOS-only API without an Android equivalent, and never leave Android with `undefined` where a behavior is needed.
+
+**`KeyboardAvoidingView` pattern — always handle both platforms:**
+```tsx
+// Correct — iOS gets "padding", Android gets "height"
+<KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"}>
+
+// Wrong — Android gets undefined (no keyboard avoidance at all)
+<KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+```
+
+**`automaticallyAdjustKeyboardInsets` is iOS-only.** On Android, use `behavior="height"` on `KeyboardAvoidingView` plus a `scrollToEnd` ref call on `onFocus` for inputs near the bottom of the screen (see `scorecard/[roundId].tsx` for the pattern).
+
+**`paddingBottom` for scrollable forms with inputs near the bottom:** use at least 320 so `scrollToEnd` has room to move the focused input above the keyboard on both platforms.
+
+**Platform-split rendering** (e.g. Android dialog vs iOS modal sheet for date pickers) is intentional and correct — just ensure both branches are complete and tested.
+
+---
+
 ### Comments
 Every file must have a file-level comment explaining its purpose. Beyond that, comment to explain *why*, not *what* — the code itself shows what it does.
 

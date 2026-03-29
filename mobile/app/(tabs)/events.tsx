@@ -600,7 +600,7 @@ export default function EventsScreen() {
         {/* KeyboardAvoidingView lifts the form above the keyboard when it opens */}
         <KeyboardAvoidingView
           className={`flex-1 ${t.surface}`}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <ScrollView>
             <View className="px-5 pt-8 pb-10">

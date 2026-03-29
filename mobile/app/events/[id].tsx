@@ -55,7 +55,9 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
-import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
+import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
+import { buildStats } from "@/utils/stats";
+import StatsCards from "@/components/StatsCards";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -600,95 +602,6 @@ export default function EventDetailScreen() {
     });
   }
 
-  // formatToPar: converts a score-vs-par integer to display string ("E", "+2", "-3").
-  function formatToPar(toPar: number | null): string {
-    if (toPar === null) return "—";
-    if (toPar === 0) return "E";
-    return toPar > 0 ? `+${toPar}` : `${toPar}`;
-  }
-
-  // StatRow / StatSummary: same shape as in rounds/[id].tsx.
-  type StatRow     = { rank: string; names: string[]; value: number };
-  type StatSummary = { category: string; unit: string; top3: StatRow[] };
-
-  // buildEventStats: aggregates per-player birdie/putt/GIR/FIR counts across all
-  // completed scorecards, then returns the top 3 leaders in each category.
-  function buildEventStats(scs: Scorecard[]): StatSummary[] {
-    const playerMap = new Map<string, {
-      display_name: string;
-      birdies: number;
-      putts: number | null;
-      greens: number;
-      fairways: number;
-    }>();
-
-    for (const sc of scs) {
-      const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-      for (const group of sc.groups) {
-        for (const p of group.players) {
-          const birdies  = p.scores.filter(
-            (s) => (holeMap.get(s.hole_number) ?? -99) === s.gross_score + 1
-          ).length;
-          const validPutts = p.hole_stats.filter((hs) => hs.putts !== null);
-          const roundPutts = validPutts.length > 0
-            ? validPutts.reduce((s, hs) => s + (hs.putts ?? 0), 0)
-            : null;
-          const greens   = p.hole_stats.filter((hs) => hs.gir === "hit").length;
-          const fairways = p.hole_stats.filter((hs) => hs.fir === true).length;
-
-          const existing = playerMap.get(p.user_id);
-          if (existing) {
-            existing.birdies  += birdies;
-            // Only add putts if this round has putt data — null means no data for this round.
-            existing.putts = existing.putts !== null || roundPutts !== null
-              ? (existing.putts ?? 0) + (roundPutts ?? 0)
-              : null;
-            existing.greens   += greens;
-            existing.fairways += fairways;
-          } else {
-            playerMap.set(p.user_id, {
-              display_name: p.display_name,
-              birdies,
-              putts: roundPutts,
-              greens,
-              fairways,
-            });
-          }
-        }
-      }
-    }
-
-    function findTop3(nameValMap: Map<string, number | null>, higherIsBetter: boolean): StatRow[] {
-      const valid = [...nameValMap.entries()]
-        .filter((e): e is [string, number] => e[1] !== null)
-        .sort(([, a], [, b]) => higherIsBetter ? b - a : a - b);
-      const rows: StatRow[] = [];
-      let playerRank = 1;
-      let i = 0;
-      while (i < valid.length && rows.length < 3) {
-        const value = valid[i][1];
-        if (higherIsBetter && value === 0) break;
-        const names: string[] = [];
-        while (i < valid.length && valid[i][1] === value) { names.push(valid[i][0]); i++; }
-        rows.push({ rank: names.length > 1 ? `T${playerRank}` : `${playerRank}`, names, value });
-        playerRank += names.length;
-      }
-      return rows;
-    }
-
-    const birdies  = new Map([...playerMap.values()].map((d) => [d.display_name, d.birdies]));
-    const putts    = new Map([...playerMap.values()].map((d) => [d.display_name, d.putts]));
-    const greens   = new Map([...playerMap.values()].map((d) => [d.display_name, d.greens]));
-    const fairways = new Map([...playerMap.values()].map((d) => [d.display_name, d.fairways]));
-
-    return [
-      { category: "Birdies",  unit: "birdies", top3: findTop3(birdies,  true)  },
-      { category: "Putts",    unit: "putts",   top3: findTop3(putts,    false) },
-      { category: "Greens",   unit: "GIR",     top3: findTop3(greens,   true)  },
-      { category: "Fairways", unit: "FIR",     top3: findTop3(fairways, true)  },
-    ];
-  }
-
   // --- Loading / error states ---
 
   if (eventLoading) {
@@ -1029,48 +942,9 @@ export default function EventDetailScreen() {
               <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
                 Failed to load stats.
               </Text>
-            ) : (() => {
-              const stats = buildEventStats(scorecards);
-              return (
-                <View className="gap-3">
-                  {stats.map((stat) => (
-                    <View
-                      key={stat.category}
-                      className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
-                    >
-                      <View className={`px-4 py-2.5 border-b ${t.divider} ${t.surfaceSunken}`}>
-                        <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
-                          {stat.category}
-                        </Text>
-                      </View>
-                      {stat.top3.length === 0 ? (
-                        <Text className={`text-sm italic px-4 py-3 ${t.textTertiary}`}>No data yet</Text>
-                      ) : (
-                        stat.top3.map((row, idx) => (
-                          <View
-                            key={row.rank}
-                            className={`flex-row items-center px-4 py-3 gap-3 ${
-                              idx < stat.top3.length - 1 ? `border-b ${t.divider}` : ""
-                            }`}
-                          >
-                            <Text className={`w-7 text-sm font-bold ${t.textTertiary}`}>{row.rank}</Text>
-                            <Text
-                              className={`flex-1 text-sm font-semibold ${t.textPrimary}`}
-                              numberOfLines={1}
-                            >
-                              {row.names.join(", ")}
-                            </Text>
-                            <Text className={`text-sm ${t.textSecondary}`}>
-                              {row.value} {stat.unit}
-                            </Text>
-                          </View>
-                        ))
-                      )}
-                    </View>
-                  ))}
-                </View>
-              );
-            })()}
+            ) : (
+              <StatsCards stats={buildStats(scorecards)} />
+            )}
           </View>
         )}
 

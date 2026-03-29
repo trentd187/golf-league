@@ -17,3 +17,11 @@ export const SCORING_FORMATS: { value: string; label: string }[] = [
 export function formatLabel(value: string): string {
   return SCORING_FORMATS.find((f) => f.value === value)?.label ?? value;
 }
+
+// formatToPar: converts a score-vs-par integer to a display string ("E", "+2", "-3").
+// Returns "—" for null (no par data on this course).
+export function formatToPar(toPar: number | null): string {
+  if (toPar === null) return "—";
+  if (toPar === 0) return "E";
+  return toPar > 0 ? `+${toPar}` : `${toPar}`;
+}

@@ -56,9 +56,11 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // format pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
-import { SCORING_FORMATS, formatLabel } from "@/utils/scoringFormats";
+import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import type { Scorecard } from "@/types/scorecard";
+import { buildStats } from "@/utils/stats";
+import StatsCards from "@/components/StatsCards";
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 
@@ -600,7 +602,7 @@ export default function RoundDetailScreen() {
     );
   };
 
-  // --- Leaderboard + stats helpers ---
+  // --- Leaderboard helpers ---
 
   // LeaderboardEntry: per-player aggregate for the Leaderboard tab.
   type LeaderboardEntry = {
@@ -667,93 +669,10 @@ export default function RoundDetailScreen() {
     });
   }
 
-  // formatToPar: converts a score-vs-par integer to display string ("E", "+2", "-3").
-  function formatToPar(toPar: number | null, holesPlayed: number): string {
-    if (holesPlayed === 0 || toPar === null) return "—";
-    if (toPar === 0) return "E";
-    return toPar > 0 ? `+${toPar}` : `${toPar}`;
-  }
-
-  // formatThru: holes played → "F" (finished), "9", or "—" (not started).
+  // formatThru: holes played → "F" (finished), hole number, or "—" (not started).
   function formatThru(holesPlayed: number, holeCount: number): string {
     if (holesPlayed === 0) return "—";
     return holesPlayed >= holeCount ? "F" : `${holesPlayed}`;
-  }
-
-  // StatRow: one ranked entry inside a stat category card.
-  type StatRow = { rank: string; names: string[]; value: number };
-
-  // StatSummary: one category card for the Stats tab — holds up to 3 ranked rows.
-  type StatSummary = {
-    category: string;
-    unit: string;
-    top3: StatRow[];
-  };
-
-  // buildStats: computes per-player birdie/putt/GIR/FIR aggregates and returns
-  // the top 3 ranked entries for each category.
-  function buildStats(sc: Scorecard): StatSummary[] {
-    const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-    const all = sc.groups.flatMap((g) => g.players);
-
-    const birdies = new Map(
-      all.map((p) => [
-        p.display_name,
-        p.scores.filter((s) => (holeMap.get(s.hole_number) ?? -99) === s.gross_score + 1).length,
-      ])
-    );
-    const putts = new Map(
-      all.map((p) => {
-        const valid = p.hole_stats.filter((hs) => hs.putts !== null);
-        return [
-          p.display_name,
-          valid.length > 0 ? valid.reduce((s, hs) => s + (hs.putts ?? 0), 0) : null,
-        ] as [string, number | null];
-      })
-    );
-    const greens = new Map(
-      all.map((p) => [p.display_name, p.hole_stats.filter((hs) => hs.gir === "hit").length])
-    );
-    const fairways = new Map(
-      all.map((p) => [p.display_name, p.hole_stats.filter((hs) => hs.fir === true).length])
-    );
-
-    // findTop3: sorts players by their stat value, groups ties into shared rank rows,
-    // and returns up to 3 rank groups. Returns an empty array when no data exists.
-    // For higher-is-better categories, a best value of 0 is treated as "no data"
-    // (e.g. 0 birdies is not a meaningful leader worth showing).
-    function findTop3(
-      map: Map<string, number | null>,
-      higherIsBetter: boolean
-    ): StatRow[] {
-      const valid = [...map.entries()]
-        .filter((e): e is [string, number] => e[1] !== null)
-        .sort(([, a], [, b]) => higherIsBetter ? b - a : a - b);
-
-      const rows: StatRow[] = [];
-      let playerRank = 1;
-      let i = 0;
-      while (i < valid.length && rows.length < 3) {
-        const value = valid[i][1];
-        if (higherIsBetter && value === 0) break;
-        // Collect all players tied at this value.
-        const names: string[] = [];
-        while (i < valid.length && valid[i][1] === value) {
-          names.push(valid[i][0]);
-          i++;
-        }
-        rows.push({ rank: names.length > 1 ? `T${playerRank}` : `${playerRank}`, names, value });
-        playerRank += names.length;
-      }
-      return rows;
-    }
-
-    return [
-      { category: "Birdies",  unit: "birdies", top3: findTop3(birdies,  true)  },
-      { category: "Putts",    unit: "putts",   top3: findTop3(putts,    false) },
-      { category: "Greens",   unit: "GIR",     top3: findTop3(greens,   true)  },
-      { category: "Fairways", unit: "FIR",     top3: findTop3(fairways, true)  },
-    ];
   }
 
   // --- Loading / error states ---
@@ -1117,13 +1036,13 @@ export default function RoundDetailScreen() {
                     const grossStr =
                       entry.holesPlayed > 0
                         ? hasHoles
-                          ? formatToPar(entry.grossToPar, entry.holesPlayed)
+                          ? formatToPar(entry.grossToPar)
                           : String(entry.grossTotal)
                         : "—";
                     const netStr =
                       entry.holesPlayed > 0
                         ? hasHoles
-                          ? formatToPar(entry.netToPar, entry.holesPlayed)
+                          ? formatToPar(entry.netToPar)
                           : String(entry.netTotal)
                         : "—";
                     const netUnder = entry.netToPar !== null && entry.netToPar < 0;
@@ -1180,43 +1099,9 @@ export default function RoundDetailScreen() {
               <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
                 Failed to load stats.
               </Text>
-            ) : (() => {
-              const stats = buildStats(scorecard);
-              return (
-                <View className="gap-3">
-                  {stats.map((stat) => (
-                    <View
-                      key={stat.category}
-                      className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
-                    >
-                      <View className={`px-4 py-2.5 border-b ${t.divider} ${t.surfaceSunken}`}>
-                        <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
-                          {stat.category}
-                        </Text>
-                      </View>
-                      {stat.top3.length === 0 ? (
-                        <Text className={`text-sm italic px-4 py-3 ${t.textTertiary}`}>No data yet</Text>
-                      ) : (
-                        stat.top3.map((row, idx) => (
-                          <View
-                            key={row.rank}
-                            className={`flex-row items-center px-4 py-3 gap-3 ${idx < stat.top3.length - 1 ? `border-b ${t.divider}` : ""}`}
-                          >
-                            <Text className={`w-7 text-sm font-bold ${t.textTertiary}`}>{row.rank}</Text>
-                            <Text className={`flex-1 text-sm font-semibold ${t.textPrimary}`} numberOfLines={1}>
-                              {row.names.join(", ")}
-                            </Text>
-                            <Text className={`text-sm ${t.textSecondary}`}>
-                              {row.value} {stat.unit}
-                            </Text>
-                          </View>
-                        ))
-                      )}
-                    </View>
-                  ))}
-                </View>
-              );
-            })()}
+            ) : (
+              <StatsCards stats={buildStats([scorecard])} />
+            )}
           </View>
         )}
 

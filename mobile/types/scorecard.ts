@@ -46,6 +46,20 @@ export interface ScorecardGroup {
   players: ScorecardPlayer[];
 }
 
+// StatRow: one rank group inside a stat category card (may contain multiple tied players).
+export interface StatRow {
+  rank: string;
+  names: string[];
+  value: number;
+}
+
+// StatSummary: one category card for the Stats view — holds up to 3 ranked rows.
+export interface StatSummary {
+  category: string;
+  unit: string;
+  top3: StatRow[];
+}
+
 export interface Scorecard {
   round_id: string;
   round_name: string;

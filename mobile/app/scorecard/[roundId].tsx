@@ -29,6 +29,7 @@ import {
   RefreshControl,
   KeyboardAvoidingView,
   Platform,
+  Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -199,7 +200,10 @@ export default function ScorecardScreen() {
   // ── Score / handicap / UI state ─────────────────────────────────────────────
   const [scores,          setScores]          = useState<LocalScores>({});
   const [handicaps,       setHandicaps]       = useState<LocalHandicaps>({});
-  const [savingHandicaps, setSavingHandicaps] = useState(false);
+  const [savingHandicaps,   setSavingHandicaps]   = useState(false);
+  // handicapDismissed: user tapped "Skip" in the handicap entry section.
+  // Hides the section for the rest of the session even if handicaps are missing.
+  const [handicapDismissed, setHandicapDismissed] = useState(false);
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
   const [endingRound,     setEndingRound]     = useState(false);
 
@@ -259,6 +263,21 @@ export default function ScorecardScreen() {
   // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
   // are not hidden behind the keyboard.
   const outerScrollRef = useRef<ScrollView>(null);
+
+  // pillScrollRef: horizontal ScrollView holding the hole selector pills.
+  // Scrolled automatically when currentHole changes so the active pill is
+  // always centred in view without the user having to swipe manually.
+  const pillScrollRef = useRef<ScrollView>(null);
+
+  // Scroll the hole pills so the active pill is always centred in view.
+  // Each pill is w-9 (36px) with gap-2 (8px) between them = 44px per slot.
+  // We subtract half the screen width and add half a pill so it lands centred.
+  useEffect(() => {
+    const PILL_STEP = 36 + 8; // w-9 + gap-2
+    const screenW   = Dimensions.get("window").width;
+    const x         = (currentHole - 1) * PILL_STEP - (screenW / 2) + 18;
+    pillScrollRef.current?.scrollTo({ x: Math.max(0, x), animated: true });
+  }, [currentHole]);
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
   // avoiding re-runs when Clerk refreshes user data mid-session.
@@ -520,9 +539,10 @@ export default function ScorecardScreen() {
   const needsHandicap = scorecard.requires_handicap &&
     group.players.some((p) => p.course_handicap == null);
 
-  // Show the handicap section whenever any player is missing one — even when
-  // the round doesn't require it (optional entry so net scores become available).
-  const showHandicapSection = group.players.some((p) => p.course_handicap == null);
+  // Show the handicap section whenever any player is missing one — unless the
+  // user has dismissed it for this session (they chose not to track handicaps).
+  const showHandicapSection =
+    !handicapDismissed && group.players.some((p) => p.course_handicap == null);
 
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
@@ -634,9 +654,15 @@ export default function ScorecardScreen() {
                 size={16}
                 color={needsHandicap ? "#d97706" : t.colors.tabBarInactive}
               />
-              <Text className={`text-sm font-semibold ${needsHandicap ? "text-amber-700" : t.textSecondary}`}>
+              <Text className={`flex-1 text-sm font-semibold ${needsHandicap ? "text-amber-700" : t.textSecondary}`}>
                 {needsHandicap ? "Handicap required before entering scores" : "Set Handicaps (optional)"}
               </Text>
+              {/* Skip lets the user dismiss this section when they don't want to track handicaps */}
+              <TouchableOpacity onPress={() => setHandicapDismissed(true)} hitSlop={8}>
+                <Text className={`text-xs font-medium ${needsHandicap ? "text-amber-600" : t.textTertiary}`}>
+                  Skip
+                </Text>
+              </TouchableOpacity>
             </View>
             <View className="px-4 py-3 gap-3">
               {group.players.map((player) => (
@@ -831,7 +857,7 @@ export default function ScorecardScreen() {
           <View className="mt-4 px-4 gap-4">
 
             {/* Hole selector pills — green outline = score entered, solid green = current hole */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView ref={pillScrollRef} horizontal showsHorizontalScrollIndicator={false}>
               <View className="flex-row gap-2 py-1">
                 {holeRows.map((hole) => {
                   const v        = scores[selectedPlayer?.round_player_id]?.[hole.hole_number] ?? "";
@@ -1155,11 +1181,11 @@ export default function ScorecardScreen() {
               <TouchableOpacity
                 onPress={() => setCurrentHole((h) => Math.max(1, h - 1))}
                 disabled={currentHole === 1}
-                className={`flex-row items-center gap-1 px-4 py-3 rounded-xl border ${t.surface} ${t.border} ${currentHole === 1 ? "opacity-30" : ""}`}
+                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === 1 ? "bg-green-700/30" : "bg-green-700"}`}
                 activeOpacity={0.7}
               >
-                <Ionicons name="chevron-back" size={16} color={t.colors.tabBarActive} />
-                <Text className={`text-sm font-semibold ${t.textSecondary}`}>Prev</Text>
+                <Ionicons name="chevron-back" size={20} color="white" />
+                <Text className="text-base font-semibold text-white">Prev</Text>
               </TouchableOpacity>
               <Text className={`text-sm font-semibold ${t.textTertiary}`}>
                 {currentHole} / {holeCount}
@@ -1167,11 +1193,11 @@ export default function ScorecardScreen() {
               <TouchableOpacity
                 onPress={() => setCurrentHole((h) => Math.min(holeCount, h + 1))}
                 disabled={currentHole === holeCount}
-                className={`flex-row items-center gap-1 px-4 py-3 rounded-xl border ${t.surface} ${t.border} ${currentHole === holeCount ? "opacity-30" : ""}`}
+                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === holeCount ? "bg-green-700/30" : "bg-green-700"}`}
                 activeOpacity={0.7}
               >
-                <Text className={`text-sm font-semibold ${t.textSecondary}`}>Next</Text>
-                <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarActive} />
+                <Text className="text-base font-semibold text-white">Next</Text>
+                <Ionicons name="chevron-forward" size={20} color="white" />
               </TouchableOpacity>
             </View>
 
@@ -1206,19 +1232,19 @@ export default function ScorecardScreen() {
         {scorecard.is_organizer && (
           <View className="px-4 mt-5 mb-2">
             <TouchableOpacity
-              className={`rounded-xl py-4 items-center flex-row justify-center gap-2 ${
-                endingRound ? "bg-green-700/40" : "bg-green-700"
+              className={`rounded-xl py-3 items-center flex-row justify-center gap-2 border ${
+                endingRound ? `opacity-50 ${t.border} ${t.surface}` : `${t.border} ${t.surface}`
               }`}
               onPress={handleEndRound}
               disabled={endingRound}
               activeOpacity={0.8}
             >
               {endingRound ? (
-                <ActivityIndicator color="white" />
+                <ActivityIndicator color={t.colors.tabBarInactive} />
               ) : (
                 <>
-                  <Ionicons name="flag-outline" size={16} color="white" />
-                  <Text className="text-white font-semibold text-base">End Round</Text>
+                  <Ionicons name="flag-outline" size={15} color={t.colors.tabBarInactive} />
+                  <Text className={`font-medium text-sm ${t.textSecondary}`}>End Round</Text>
                 </>
               )}
             </TouchableOpacity>

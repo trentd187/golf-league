@@ -2,6 +2,7 @@
   "expo": {
     "name": "Golf Stuff In Here",
     "slug": "golf-stuff-in-here",
+    "owner": "trentd187",
     "scheme": "golfstufinhere",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,6 +17,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.trentd.golfstufinhere",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -33,6 +35,12 @@
       "expo-sqlite",
       "expo-web-browser",
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3c7a6021-c836-48de-8b1b-6681f03d76a3"
+      }
+    }
   }
 }

@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
+      }
+    }
+  }
+}

@@ -75,6 +75,7 @@ func main() {
 	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))
 	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))
 	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(db))
+	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(db))
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))
 

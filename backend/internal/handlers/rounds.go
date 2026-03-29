@@ -11,6 +11,10 @@
 //	  → Creates a new empty tee-time group for the round, numbered one higher
 //	    than the current maximum. Organizer-only.
 //
+//	DELETE /api/v1/rounds/:roundId/groups/:groupId
+//	  → Removes the group. group_players are cascade-deleted; round_players are
+//	    kept so players remain registered and can be reassigned. Organizer-only.
+//
 //	POST /api/v1/rounds/:roundId/groups/:groupId/members
 //	  → Adds an event member to a tee-time group. Creates a RoundPlayer record
 //	    if one doesn't already exist. Enforces a 4-player maximum per group.
@@ -226,6 +230,52 @@ func CreateGroup(db *gorm.DB) fiber.Handler {
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(buildGroupResponse(db, group))
+	}
+}
+
+// DeleteGroup returns a handler for DELETE /api/v1/rounds/:roundId/groups/:groupId.
+// Removes a tee-time group from the round. The group_players join rows are removed
+// automatically via ON DELETE CASCADE; round_player records are kept so players
+// remain registered in the round and can be reassigned to another group.
+// Organizer-only.
+func DeleteGroup(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		roundID, err := uuid.Parse(c.Params("roundId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+		}
+		groupID, err := uuid.Parse(c.Params("groupId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid group ID"})
+		}
+
+		isOrg, eventID := isRoundOrganizer(db, roundID, callerID, userRole)
+		if !isOrg {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		}
+		if eventID == uuid.Nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
+		}
+
+		var group models.Group
+		if err := db.First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "group not found for this round"})
+		}
+
+		// ON DELETE CASCADE removes group_players rows automatically.
+		// round_players are intentionally kept — players stay registered in the round.
+		if err := db.Delete(&group).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete group"})
+		}
+
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 

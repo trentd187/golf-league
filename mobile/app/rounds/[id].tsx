@@ -20,6 +20,7 @@
 //   PATCH  /api/v1/rounds/:id                                 → edit round fields
 //   DELETE /api/v1/rounds/:id                                 → delete round
 //   POST   /api/v1/rounds/:id/groups                          → add a new empty group
+//   DELETE /api/v1/rounds/:id/groups/:groupId                 → delete a group
 //   POST   /api/v1/rounds/:id/groups/:groupId/members         → add player
 //   DELETE /api/v1/rounds/:id/groups/:groupId/members/:userId → remove player
 
@@ -278,6 +279,26 @@ export default function RoundDetailScreen() {
     },
   });
 
+  const deleteGroupMutation = useMutation({
+    mutationFn: async (groupId: string) => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not delete group", err.message, [{ text: "OK" }]);
+    },
+  });
+
   const deleteRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
@@ -338,6 +359,21 @@ export default function RoundDetailScreen() {
   });
 
   // --- Handlers ---
+
+  const handleDeleteGroup = (group: RoundGroup) => {
+    Alert.alert(
+      "Delete group?",
+      `Delete Group ${group.group_number}? Players will remain registered in the round.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => deleteGroupMutation.mutate(group.id),
+        },
+      ]
+    );
+  };
 
   const handleRemovePlayer = (group: RoundGroup, player: GroupMember) => {
     Alert.alert(
@@ -517,7 +553,7 @@ export default function RoundDetailScreen() {
         {/* ── Groups section ──────────────────────────────────────────────────── */}
         <SectionHeader
           title={`Groups (${round.groups.length})`}
-          actionLabel={addGroupMutation.isPending ? "Adding…" : "+ Group"}
+          actionLabel={addGroupMutation.isPending ? "Adding…" : "Group"}
           onAction={() => addGroupMutation.mutate()}
           showAction={round.is_organizer}
         />
@@ -528,9 +564,9 @@ export default function RoundDetailScreen() {
               key={group.id}
               className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
             >
-              {/* Group header: number + optional tee time */}
-              <View className={`px-4 py-3 flex-row items-center justify-between border-b ${t.divider}`}>
-                <Text className={`font-bold text-base ${t.textPrimary}`}>
+              {/* Group header: number + optional tee time + delete button for organizers */}
+              <View className={`px-4 py-3 flex-row items-center gap-2 border-b ${t.divider}`}>
+                <Text className={`font-bold text-base flex-1 ${t.textPrimary}`}>
                   Group {group.group_number}
                 </Text>
                 {group.tee_time ? (
@@ -539,6 +575,15 @@ export default function RoundDetailScreen() {
                     <Text className={`text-sm ${t.textSecondary}`}>{group.tee_time}</Text>
                   </View>
                 ) : null}
+                {round.is_organizer && (
+                  <TouchableOpacity
+                    onPress={() => handleDeleteGroup(group)}
+                    hitSlop={8}
+                    disabled={deleteGroupMutation.isPending}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#dc2626" />
+                  </TouchableOpacity>
+                )}
               </View>
 
               {/* Always render 4 player slots; empty slots show a dash */}

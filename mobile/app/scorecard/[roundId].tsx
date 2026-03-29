@@ -10,12 +10,12 @@
 //   3. If the round requires handicaps and any player is missing one, shows a
 //      handicap entry section at the top before score entry is available
 //   4. Non-scramble formats: toggle between group view (all players in columns)
-//      and individual view (one player at a time, with net score column).
+//      and individual view (one player at a time, hole-by-hole).
 //      Both views share the same `scores` state — switching never discards data.
 //   5. Allows any player in the group (or organizer/admin) to enter scores
 //   6. Scores are auto-saved on blur via PUT /rounds/:id/players/:rpId/scores
-//   7. Individual view: expandable "Advanced Stats" panel per hole (GIR, FIR, putts,
-//      first putt distance, putt distance made) saved via PUT /hole-stats
+//   7. Individual view: hole-by-hole card with score entry + GIR/FIR/putts per hole,
+//      navigated via hole selector pills or Prev/Next buttons.
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
@@ -189,11 +189,11 @@ export default function ScorecardScreen() {
   const queryClient   = useQueryClient();
 
   // ── View mode ───────────────────────────────────────────────────────────────
-  // "group": all players shown in columns (default, always available).
-  // "individual": one player at a time with gross + net score columns.
+  // "group": all players shown in columns (always available).
+  // "individual": one player at a time, hole-by-hole with score + stats per hole.
   // Only offered for non-scramble formats with 2+ players.
   // Switching never resets scores — both views share the same `scores` state.
-  const [viewMode,         setViewMode]         = useState<"group" | "individual">("group");
+  const [viewMode,         setViewMode]         = useState<"group" | "individual">("individual");
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
 
   // ── Score / handicap / UI state ─────────────────────────────────────────────
@@ -203,10 +203,10 @@ export default function ScorecardScreen() {
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
   const [endingRound,     setEndingRound]     = useState(false);
 
-  // ── Advanced stats state ─────────────────────────────────────────────────────
-  const [stats,            setStats]           = useState<LocalStats>({});
-  const [showStats,        setShowStats]        = useState(false);
-  const [selectedStatHole, setSelectedStatHole] = useState(1);
+  // ── Advanced stats + hole navigation state ───────────────────────────────────
+  const [stats,       setStats]       = useState<LocalStats>({});
+  // currentHole drives which hole is displayed in individual view (1-based).
+  const [currentHole, setCurrentHole] = useState(1);
 
   // ── Fetch scorecard ─────────────────────────────────────────────────────────
 
@@ -254,9 +254,6 @@ export default function ScorecardScreen() {
 
   // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
   const inputRefs  = useRef<Map<string, TextInput | null>>(new Map());
-
-  // indivInputRefs: individual view grid — key is hole_number (1-based).
-  const indivInputRefs = useRef<Map<number, TextInput | null>>(new Map());
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
   // avoiding re-runs when Clerk refreshes user data mid-session.
@@ -317,7 +314,7 @@ export default function ScorecardScreen() {
   // ── Advanced stats auto-save ─────────────────────────────────────────────────
 
   // autoSaveStats debounces a PUT /hole-stats call for a single hole.
-  // Used for both button taps (short delay = feels instant) and text inputs (longer delay).
+  // Used for both button taps (0ms = feels instant) and text inputs (400ms).
   const autoSaveStats = useCallback(
     (roundPlayerId: string, holeNumber: number, delay = 300) => {
       const key = `${roundPlayerId}-${holeNumber}`;
@@ -381,13 +378,6 @@ export default function ScorecardScreen() {
     []
   );
 
-  // Individual view: advance straight to the next hole.
-  const focusNextIndiv = useCallback((holeNumber: number, totalHoles: number) => {
-    if (holeNumber < totalHoles) {
-      indivInputRefs.current.get(holeNumber + 1)?.focus();
-    }
-  }, []);
-
   // ── Initialisation ──────────────────────────────────────────────────────────
 
   const initializedRef = useRef(false);
@@ -396,7 +386,7 @@ export default function ScorecardScreen() {
       setScores(initScores(group.players));
       setHandicaps(initHandicaps(group.players));
       setStats(initStats(group.players));
-      setSelectedStatHole(1);
+      setCurrentHole(1);
       // Default individual view to the current user's player, then first player.
       // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
       const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
@@ -532,13 +522,11 @@ export default function ScorecardScreen() {
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
 
-  // Column widths.
-  const leftColW       = 38;   // Hole #
-  const parColW        = 32;   // Par
-  const siColW         = 32;   // SI
-  const playerColW     = 64;   // Per-player column (group view)
-  const indivScoreColW = 84;   // Score column (individual view)
-  const indivNetColW   = 60;   // Net column (individual view)
+  // Column widths for group view.
+  const leftColW       = 38;
+  const parColW        = 32;
+  const siColW         = 32;
+  const playerColW     = 64;
 
   const totalGroupWidth = leftColW + parColW + siColW + group.players.length * playerColW;
 
@@ -552,7 +540,7 @@ export default function ScorecardScreen() {
     return holeMap.get(n) ?? { hole_number: n, par: 0, stroke_index: 0, yardage: null };
   });
 
-  // Pre-compute individual view totals (trivially cheap; avoids IIFE in JSX).
+  // Pre-compute individual view running totals.
   let indivGrossTotal = 0, indivGrossCount = 0;
   let indivNetTotal   = 0, indivNetCount   = 0;
   if (selectedPlayer) {
@@ -832,295 +820,260 @@ export default function ScorecardScreen() {
 
         ) : (
 
-          /* ── Individual view: single-player, optional net column ── */
-          <View className="mt-4 px-4">
+          /* ── Individual view: hole-by-hole entry ── */
+          <View className="mt-4 px-4 gap-4">
 
-            {/* Header row */}
-            <View className={`flex-row items-center py-2 ${t.surfaceSunken} border-b ${t.divider} rounded-t-xl overflow-hidden`}>
-              <Text style={{ width: leftColW }}       className={`text-xs font-bold text-center ${t.textTertiary}`}>H</Text>
-              <Text style={{ width: parColW }}        className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
-              <Text style={{ width: siColW }}         className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
-              <Text style={{ width: indivScoreColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>Score</Text>
-              {showNetCol && (
-                <Text style={{ width: indivNetColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>Net</Text>
-              )}
-            </View>
-
-            {/* Score rows */}
-            {holeRows.map((hole, idx) => {
-              const isOdd    = idx % 2 === 0;
-              const val      = scores[selectedPlayer?.round_player_id]?.[hole.hole_number] ?? "";
-              const gross    = parseInt(val, 10);
-              const grossClr = (hole.par && !isNaN(gross))
-                ? scoreColor(gross - hole.par, t.textPrimary)
-                : t.textPrimary;
-
-              // Net score = gross − handicap strokes for this hole.
-              const hcp      = selectedPlayer?.course_handicap ?? null;
-              const strokes  = (hole.stroke_index && hcp != null)
-                ? handicapStrokes(hcp, hole.stroke_index)
-                : 0;
-              const net      = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
-              const netClr   = (net != null && hole.par)
-                ? scoreColor(net - hole.par, t.textPrimary)
-                : t.textPrimary;
-
-              return (
-                <View
-                  key={hole.hole_number}
-                  className={`flex-row items-center py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
-                >
-                  <Text style={{ width: leftColW }} className={`text-sm font-semibold text-center ${t.textPrimary}`}>
-                    {hole.hole_number}
-                  </Text>
-                  <Text style={{ width: parColW }} className={`text-xs text-center ${hole.par ? t.textSecondary : t.textTertiary}`}>
-                    {hole.par || "—"}
-                  </Text>
-                  <Text style={{ width: siColW }} className={`text-xs text-center ${t.textTertiary}`}>
-                    {hole.stroke_index || "—"}
-                  </Text>
-                  <View style={{ width: indivScoreColW }} className="items-center px-2">
-                    <TextInput
-                      ref={(el) => { indivInputRefs.current.set(hole.hole_number, el); }}
-                      className={`w-full border rounded-lg text-center text-sm py-1 ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      returnKeyType={idx === holeRows.length - 1 ? "done" : "next"}
-                      value={val}
-                      onChangeText={(v) =>
-                        setScores((prev) => ({
-                          ...prev,
-                          [selectedPlayer.round_player_id]: {
-                            ...(prev[selectedPlayer.round_player_id] ?? {}),
-                            [hole.hole_number]: v,
-                          },
-                        }))
-                      }
-                      onSubmitEditing={() => focusNextIndiv(hole.hole_number, holeCount)}
-                      onBlur={() => autoSavePlayer(selectedPlayer.round_player_id)}
-                      editable={!savingHandicaps && !needsHandicap}
-                      placeholder="–"
-                      placeholderTextColor={t.colors.tabBarInactive}
-                    />
-                  </View>
-                  {showNetCol && (
-                    <Text style={{ width: indivNetColW }} className={`text-sm font-semibold text-center ${netClr}`}>
-                      {net != null ? net : "—"}
-                    </Text>
-                  )}
-                </View>
-              );
-            })}
-
-            {/* Totals row */}
-            <View className={`flex-row items-center py-2 ${t.surfaceSunken} border-t-2 ${t.border} rounded-b-xl overflow-hidden`}>
-              <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>TOT</Text>
-              <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
-                {scorecard.holes.reduce((sum, h) => sum + h.par, 0) || "—"}
-              </Text>
-              <View style={{ width: siColW }} />
-              <Text style={{ width: indivScoreColW }} className={`text-sm font-bold text-center ${t.textPrimary}`}>
-                {indivGrossCount > 0 ? indivGrossTotal : "—"}
-              </Text>
-              {showNetCol && (
-                <Text style={{ width: indivNetColW }} className={`text-sm font-bold text-center ${t.textPrimary}`}>
-                  {indivNetCount > 0 ? indivNetTotal : "—"}
-                </Text>
-              )}
-            </View>
-
-            {/* Save status indicator — shown below the individual table */}
-            {selectedPlayer && saveStatus[selectedPlayer.round_player_id] !== "idle" && (
-              <View className="flex-row items-center justify-center gap-2 mt-3">
-                {saveStatus[selectedPlayer.round_player_id] === "saving" && (
-                  <>
-                    <ActivityIndicator size="small" color={t.colors.tabBarActive} />
-                    <Text className={`text-xs ${t.textTertiary}`}>Saving…</Text>
-                  </>
-                )}
-                {saveStatus[selectedPlayer.round_player_id] === "saved" && (
-                  <>
-                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
-                    <Text className="text-xs text-green-700">Saved</Text>
-                  </>
-                )}
-                {saveStatus[selectedPlayer.round_player_id] === "error" && (
-                  <>
-                    <Ionicons name="alert-circle" size={14} color="#dc2626" />
-                    <Text className="text-xs text-red-600">Save failed — tap a cell to retry</Text>
-                  </>
-                )}
+            {/* Hole selector pills — green outline = score entered, solid green = current hole */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View className="flex-row gap-2 py-1">
+                {holeRows.map((hole) => {
+                  const v        = scores[selectedPlayer?.round_player_id]?.[hole.hole_number] ?? "";
+                  const hasScore = parseInt(v, 10) >= 1;
+                  const isActive = currentHole === hole.hole_number;
+                  return (
+                    <TouchableOpacity
+                      key={hole.hole_number}
+                      onPress={() => setCurrentHole(hole.hole_number)}
+                      className={`w-9 h-9 rounded-full items-center justify-center border ${
+                        isActive   ? "bg-green-700 border-green-700"
+                        : hasScore ? "border-green-700 bg-green-700/10"
+                        :            `${t.surface} ${t.border}`
+                      }`}
+                    >
+                      <Text className={`text-xs font-bold ${
+                        isActive   ? "text-white"
+                        : hasScore ? "text-green-700"
+                        :            t.textPrimary
+                      }`}>
+                        {hole.hole_number}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            )}
+            </ScrollView>
 
-          </View>
-        )}
-
-        {/* ── Advanced Stats panel (individual view only) ─────────────────────── */}
-        {effectiveViewMode === "individual" && selectedPlayer && (
-          <View className="px-4 mt-5">
-
-            {/* Toggle header */}
-            <TouchableOpacity
-              className={`flex-row items-center justify-between py-3 px-4 rounded-xl border ${t.border} ${t.surface}`}
-              onPress={() => setShowStats((prev) => !prev)}
-              activeOpacity={0.7}
-            >
-              <View className="flex-row items-center gap-2">
-                <Ionicons name="stats-chart-outline" size={16} color={t.colors.tabBarActive} />
-                <Text className={`text-sm font-semibold ${t.textPrimary}`}>Advanced Stats</Text>
-              </View>
-              <Ionicons
-                name={showStats ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={t.colors.tabBarInactive}
-              />
-            </TouchableOpacity>
-
-            {showStats && (() => {
+            {/* Hole detail card — score + stats for the current hole */}
+            {(() => {
               const rpId       = selectedPlayer.round_player_id;
-              const holeStat   = stats[rpId]?.[selectedStatHole] ?? emptyHoleStat;
+              const holeData   = holeRows.find((h) => h.hole_number === currentHole) ?? holeRows[0];
+              const val        = scores[rpId]?.[holeData.hole_number] ?? "";
+              const gross      = parseInt(val, 10);
+              const hcp        = selectedPlayer.course_handicap ?? null;
+              const strokes    = (holeData.stroke_index && hcp != null)
+                ? handicapStrokes(hcp, holeData.stroke_index)
+                : 0;
+              const net        = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
+              const grossClr   = (holeData.par && !isNaN(gross) && gross >= 1)
+                ? scoreColor(gross - holeData.par, t.textPrimary)
+                : t.textPrimary;
+              const netClr     = (net != null && holeData.par)
+                ? scoreColor(net - holeData.par, t.textPrimary)
+                : t.textPrimary;
+              const holeStat   = stats[rpId]?.[currentHole] ?? emptyHoleStat;
               const currentGir = girKey(holeStat);
               const currentFir = firKey(holeStat);
 
-              // handleGIRTap toggles the GIR selection. Tapping the active button clears it.
+              // handleGIRTap toggles GIR. Tapping the active option clears it.
               const handleGIRTap = (key: string) => {
                 const isActive = currentGir === key;
                 let gir: string | null = null;
                 let dir: string | null = null;
                 if (!isActive) {
-                  if (key === "hit")       { gir = "hit"; }
-                  else if (key === "na")   { gir = "na"; }
+                  if (key === "hit")                { gir = "hit"; }
+                  else if (key === "na")            { gir = "na"; }
                   else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
                 }
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
                     ...(prev[rpId] ?? {}),
-                    [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), gir, gir_miss_direction: dir },
+                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), gir, gir_miss_direction: dir },
                   },
                 }));
-                autoSaveStats(rpId, selectedStatHole, 0);
+                autoSaveStats(rpId, currentHole, 0);
               };
 
-              // handleFIRTap toggles the FIR selection. Tapping the active button clears it.
+              // handleFIRTap toggles FIR. Tapping the active option clears it.
               const handleFIRTap = (key: string) => {
                 const isActive = currentFir === key;
                 let fir: boolean | null = null;
                 let dir: string | null = null;
                 if (!isActive) {
-                  if (key === "hit") { fir = true; }
+                  if (key === "hit")                { fir = true; }
                   else if (key.startsWith("miss:")) { fir = false; dir = key.slice(5); }
                 }
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
                     ...(prev[rpId] ?? {}),
-                    [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), fir, fir_miss_direction: dir },
+                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), fir, fir_miss_direction: dir },
                   },
                 }));
-                autoSaveStats(rpId, selectedStatHole, 0);
+                autoSaveStats(rpId, currentHole, 0);
               };
 
               return (
-                <View className="mt-3 gap-4">
+                <View className={`rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
 
-                  {/* Hole selector pills */}
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    <View className="flex-row gap-2 py-1">
-                      {holeRows.map((hole) => (
-                        <TouchableOpacity
-                          key={hole.hole_number}
-                          onPress={() => setSelectedStatHole(hole.hole_number)}
-                          className={`w-9 h-9 rounded-full items-center justify-center border ${
-                            selectedStatHole === hole.hole_number
-                              ? "bg-green-700 border-green-700"
-                              : `${t.surface} ${t.border}`
-                          }`}
-                        >
-                          <Text className={`text-xs font-bold ${selectedStatHole === hole.hole_number ? "text-white" : t.textPrimary}`}>
-                            {hole.hole_number}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
+                  {/* Hole info bar */}
+                  <View className={`flex-row border-b ${t.divider} ${t.surfaceSunken}`}>
+                    <View className="flex-1 items-center py-3">
+                      <Text className={`text-xs ${t.textTertiary}`}>Hole</Text>
+                      <Text className={`text-2xl font-bold ${t.textPrimary}`}>{holeData.hole_number}</Text>
                     </View>
-                  </ScrollView>
-
-                  {/* Stat entry card */}
-                  <View className={`rounded-2xl border ${t.border} ${t.surface} p-4 gap-5`}>
-
-                    {/* GIR */}
-                    <View className="gap-2">
-                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                        Green in Regulation
-                      </Text>
-                      <View className="flex-row flex-wrap gap-2">
-                        {GIR_OPTIONS.map(({ key, label, icon }) => {
-                          const active = currentGir === key;
-                          return (
-                            <TouchableOpacity
-                              key={key}
-                              onPress={() => handleGIRTap(key)}
-                              className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                              }`}
-                              activeOpacity={0.7}
-                            >
-                              {icon && (
-                                <Ionicons
-                                  name={icon}
-                                  size={12}
-                                  color={active ? "white" : t.colors.tabBarActive}
-                                />
-                              )}
-                              <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
-                                {label}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
+                    <View className={`flex-1 items-center py-3 border-l ${t.border}`}>
+                      <Text className={`text-xs ${t.textTertiary}`}>Par</Text>
+                      <Text className={`text-2xl font-bold ${t.textPrimary}`}>{holeData.par || "—"}</Text>
+                    </View>
+                    <View className={`flex-1 items-center py-3 border-l ${t.border}`}>
+                      <Text className={`text-xs ${t.textTertiary}`}>SI</Text>
+                      <Text className={`text-2xl font-bold ${t.textPrimary}`}>{holeData.stroke_index || "—"}</Text>
+                    </View>
+                    {holeData.yardage != null && (
+                      <View className={`flex-1 items-center py-3 border-l ${t.border}`}>
+                        <Text className={`text-xs ${t.textTertiary}`}>Yards</Text>
+                        <Text className={`text-2xl font-bold ${t.textPrimary}`}>{holeData.yardage}</Text>
                       </View>
-                    </View>
+                    )}
+                  </View>
 
-                    {/* FIR */}
-                    <View className="gap-2">
-                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                        Fairway in Regulation
-                      </Text>
-                      <View className="flex-row flex-wrap gap-2">
-                        {FIR_OPTIONS.map(({ key, label, icon }) => {
-                          const active = currentFir === key;
-                          return (
-                            <TouchableOpacity
-                              key={key}
-                              onPress={() => handleFIRTap(key)}
-                              className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                              }`}
-                              activeOpacity={0.7}
-                            >
-                              {icon && (
-                                <Ionicons
-                                  name={icon}
-                                  size={12}
-                                  color={active ? "white" : t.colors.tabBarActive}
-                                />
-                              )}
-                              <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
-                                {label}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
+                  {/* Score entry row */}
+                  <View className={`flex-row items-center justify-center gap-8 px-4 py-5 border-b ${t.divider}`}>
+                    <View className="items-center gap-1">
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Score</Text>
+                      <TextInput
+                        className={`w-20 h-14 border-2 rounded-xl text-center text-3xl font-bold ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                        value={val}
+                        onChangeText={(v) =>
+                          setScores((prev) => ({
+                            ...prev,
+                            [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: v },
+                          }))
+                        }
+                        onBlur={() => autoSavePlayer(rpId)}
+                        editable={!savingHandicaps && !needsHandicap}
+                        placeholder="—"
+                        placeholderTextColor={t.colors.tabBarInactive}
+                      />
+                    </View>
+                    {showNetCol && (
+                      <View className="items-center gap-1">
+                        <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Net</Text>
+                        <View className={`w-20 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
+                          <Text className={`text-3xl font-bold ${netClr}`}>{net != null ? net : "—"}</Text>
+                        </View>
                       </View>
-                    </View>
+                    )}
+                    {hcp != null && strokes > 0 && (
+                      <View className="items-center gap-1">
+                        <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>HCP</Text>
+                        <View className={`w-16 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
+                          <Text className={`text-2xl font-bold ${t.textTertiary}`}>+{strokes}</Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
 
-                    {/* Numeric stats row */}
+                  {/* Save status — inline, shown only while active */}
+                  {saveStatus[rpId] !== undefined && saveStatus[rpId] !== "idle" && (
+                    <View className={`flex-row items-center justify-center gap-2 py-2 border-b ${t.divider}`}>
+                      {saveStatus[rpId] === "saving" && (
+                        <>
+                          <ActivityIndicator size="small" color={t.colors.tabBarActive} />
+                          <Text className={`text-xs ${t.textTertiary}`}>Saving…</Text>
+                        </>
+                      )}
+                      {saveStatus[rpId] === "saved" && (
+                        <>
+                          <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                          <Text className="text-xs text-green-700">Saved</Text>
+                        </>
+                      )}
+                      {saveStatus[rpId] === "error" && (
+                        <>
+                          <Ionicons name="alert-circle" size={14} color="#dc2626" />
+                          <Text className="text-xs text-red-600">Save failed — tap score to retry</Text>
+                        </>
+                      )}
+                    </View>
+                  )}
+
+                  {/* GIR */}
+                  <View className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
+                    <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                      Green in Regulation
+                    </Text>
+                    <View className="flex-row flex-wrap gap-2">
+                      {GIR_OPTIONS.map(({ key, label, icon }) => {
+                        const active = currentGir === key;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            onPress={() => handleGIRTap(key)}
+                            className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                              active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                            }`}
+                            activeOpacity={0.7}
+                          >
+                            {icon && (
+                              <Ionicons
+                                name={icon}
+                                size={12}
+                                color={active ? "white" : t.colors.tabBarActive}
+                              />
+                            )}
+                            <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
+                              {label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* FIR */}
+                  <View className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
+                    <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                      Fairway in Regulation
+                    </Text>
+                    <View className="flex-row flex-wrap gap-2">
+                      {FIR_OPTIONS.map(({ key, label, icon }) => {
+                        const active = currentFir === key;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            onPress={() => handleFIRTap(key)}
+                            className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                              active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                            }`}
+                            activeOpacity={0.7}
+                          >
+                            {icon && (
+                              <Ionicons
+                                name={icon}
+                                size={12}
+                                color={active ? "white" : t.colors.tabBarActive}
+                              />
+                            )}
+                            <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
+                              {label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* Numeric stats */}
+                  <View className="px-4 py-3 gap-3">
                     {(
                       [
-                        { field: "putts" as const,               label: "Putts",              unit: null  },
-                        { field: "first_putt_distance" as const, label: "First Putt",         unit: "ft"  },
-                        { field: "putt_distance_made" as const,  label: "Made Putt",          unit: "ft"  },
+                        { field: "putts" as const,               label: "Putts",      unit: null },
+                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft" },
+                        { field: "putt_distance_made" as const,  label: "Made Putt",  unit: "ft" },
                       ] as const
                     ).map(({ field, label, unit }) => (
                       <View key={field} className="flex-row items-center justify-between">
@@ -1139,19 +1092,69 @@ export default function ScorecardScreen() {
                               ...prev,
                               [rpId]: {
                                 ...(prev[rpId] ?? {}),
-                                [selectedStatHole]: { ...(prev[rpId]?.[selectedStatHole] ?? emptyHoleStat), [field]: v },
+                                [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), [field]: v },
                               },
                             }))
                           }
-                          onBlur={() => autoSaveStats(rpId, selectedStatHole, 400)}
+                          onBlur={() => autoSaveStats(rpId, currentHole, 400)}
                         />
                       </View>
                     ))}
-
                   </View>
+
                 </View>
               );
             })()}
+
+            {/* Prev / Next hole navigation */}
+            <View className="flex-row items-center justify-between">
+              <TouchableOpacity
+                onPress={() => setCurrentHole((h) => Math.max(1, h - 1))}
+                disabled={currentHole === 1}
+                className={`flex-row items-center gap-1 px-4 py-3 rounded-xl border ${t.surface} ${t.border} ${currentHole === 1 ? "opacity-30" : ""}`}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="chevron-back" size={16} color={t.colors.tabBarActive} />
+                <Text className={`text-sm font-semibold ${t.textSecondary}`}>Prev</Text>
+              </TouchableOpacity>
+              <Text className={`text-sm font-semibold ${t.textTertiary}`}>
+                {currentHole} / {holeCount}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setCurrentHole((h) => Math.min(holeCount, h + 1))}
+                disabled={currentHole === holeCount}
+                className={`flex-row items-center gap-1 px-4 py-3 rounded-xl border ${t.surface} ${t.border} ${currentHole === holeCount ? "opacity-30" : ""}`}
+                activeOpacity={0.7}
+              >
+                <Text className={`text-sm font-semibold ${t.textSecondary}`}>Next</Text>
+                <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarActive} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Running totals summary */}
+            <View className={`flex-row rounded-xl border ${t.border} ${t.surface} overflow-hidden mb-2`}>
+              <View className="flex-1 items-center py-3">
+                <Text className={`text-xs ${t.textTertiary}`}>Gross</Text>
+                <Text className={`text-lg font-bold ${t.textPrimary}`}>
+                  {indivGrossCount > 0 ? indivGrossTotal : "—"}
+                </Text>
+              </View>
+              {showNetCol && (
+                <View className={`flex-1 items-center py-3 border-l ${t.border}`}>
+                  <Text className={`text-xs ${t.textTertiary}`}>Net</Text>
+                  <Text className={`text-lg font-bold ${t.textPrimary}`}>
+                    {indivNetCount > 0 ? indivNetTotal : "—"}
+                  </Text>
+                </View>
+              )}
+              <View className={`flex-1 items-center py-3 border-l ${t.border}`}>
+                <Text className={`text-xs ${t.textTertiary}`}>Holes</Text>
+                <Text className={`text-lg font-bold ${t.textPrimary}`}>
+                  {indivGrossCount}/{holeCount}
+                </Text>
+              </View>
+            </View>
+
           </View>
         )}
 

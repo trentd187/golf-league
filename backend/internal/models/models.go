@@ -258,6 +258,7 @@ type Group struct {
 	RoundID      uuid.UUID  `gorm:"type:uuid;not null"`
 	Round        Round      `gorm:"foreignKey:RoundID"`
 	GroupNumber  int        `gorm:"not null"`
+	Name         *string    // Optional display name (e.g. a team name); nil = use "Group N" fallback
 	TeeTime      *time.Time // Optional scheduled start time
 	StartingHole int        `gorm:"not null;default:1"` // Shotgun starts begin on different holes
 	CreatedAt    time.Time

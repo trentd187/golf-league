@@ -11,6 +11,9 @@
 //	  → Creates a new empty tee-time group for the round, numbered one higher
 //	    than the current maximum. Organizer-only.
 //
+//	PATCH  /api/v1/rounds/:roundId/groups/:groupId
+//	  → Updates a group's name and/or tee time. Organizer-only.
+//
 //	DELETE /api/v1/rounds/:roundId/groups/:groupId
 //	  → Removes the group. group_players are cascade-deleted; round_players are
 //	    kept so players remain registered and can be reassigned. Organizer-only.
@@ -49,6 +52,7 @@ type GroupMemberResponse struct {
 type GroupResponse struct {
 	ID           string                `json:"id"`
 	GroupNumber  int                   `json:"group_number"`
+	Name         *string               `json:"name"`          // optional team/group label; null = use "Group N"
 	TeeTime      *string               `json:"tee_time"`      // "3:04 PM" or null
 	StartingHole int                   `json:"starting_hole"` // usually 1; shotgun starts differ
 	Players      []GroupMemberResponse `json:"players"`
@@ -166,6 +170,7 @@ func GetRound(db *gorm.DB) fiber.Handler {
 			groupResponses = append(groupResponses, GroupResponse{
 				ID:           g.ID.String(),
 				GroupNumber:  g.GroupNumber,
+				Name:         g.Name,
 				TeeTime:      teeTimeStr,
 				StartingHole: g.StartingHole,
 				Players:      players,
@@ -276,6 +281,89 @@ func DeleteGroup(db *gorm.DB) fiber.Handler {
 		}
 
 		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
+// UpdateGroupRequest is the JSON body for PATCH /api/v1/rounds/:roundId/groups/:groupId.
+// Both fields are optional — only provided fields are applied.
+type UpdateGroupRequest struct {
+	// Name sets a custom label (e.g. a team name). Send "" to clear it.
+	Name *string `json:"name"`
+	// TeeTime accepts "15:04" (24-hour) or "3:04 PM". Send "" to clear it.
+	TeeTime *string `json:"tee_time"`
+}
+
+// UpdateGroup returns a handler for PATCH /api/v1/rounds/:roundId/groups/:groupId.
+// Allows organizers to set a custom name and/or tee time on a group.
+func UpdateGroup(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		roundID, err := uuid.Parse(c.Params("roundId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+		}
+		groupID, err := uuid.Parse(c.Params("groupId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid group ID"})
+		}
+
+		isOrg, eventID := isRoundOrganizer(db, roundID, callerID, userRole)
+		if !isOrg {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		}
+		if eventID == uuid.Nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
+		}
+
+		var group models.Group
+		if err := db.First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "group not found for this round"})
+		}
+
+		var req UpdateGroupRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		if req.Name != nil {
+			if *req.Name == "" {
+				group.Name = nil // clear
+			} else {
+				group.Name = req.Name
+			}
+		}
+
+		if req.TeeTime != nil {
+			if *req.TeeTime == "" {
+				group.TeeTime = nil // clear
+			} else {
+				// Accept "15:04" (24-hour) or "3:04 PM" — same formats as round creation.
+				var parsedTime time.Time
+				var parseErr error
+				parsedTime, parseErr = time.Parse("15:04", *req.TeeTime)
+				if parseErr != nil {
+					parsedTime, parseErr = time.Parse("3:04 PM", *req.TeeTime)
+				}
+				if parseErr != nil {
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tee_time must be HH:MM or H:MM AM/PM"})
+				}
+				// Store as a UTC time on the zero date — only the time component is meaningful.
+				t := time.Date(0, 1, 1, parsedTime.Hour(), parsedTime.Minute(), 0, 0, time.UTC)
+				group.TeeTime = &t
+			}
+		}
+
+		if err := db.Save(&group).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update group"})
+		}
+
+		return c.JSON(buildGroupResponse(db, group))
 	}
 }
 
@@ -478,6 +566,7 @@ func buildGroupResponse(db *gorm.DB, g models.Group) GroupResponse {
 	return GroupResponse{
 		ID:           g.ID.String(),
 		GroupNumber:  g.GroupNumber,
+		Name:         g.Name,
 		TeeTime:      teeTimeStr,
 		StartingHole: g.StartingHole,
 		Players:      players,

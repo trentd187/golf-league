@@ -83,6 +83,19 @@ func TestCreateGroup_MissingAuth(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+// ─── UpdateGroup ──────────────────────────────────────────────────────────────
+
+// TestUpdateGroup_MissingAuth verifies that a request with no auth context
+// returns 401 before any database call.
+func TestUpdateGroup_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPatch, groupByIDRoute, handlers.UpdateGroup(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch,
+			"/rounds/"+validUUID+"/groups/"+validUUID, nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 // ─── DeleteGroup ──────────────────────────────────────────────────────────────
 
 // TestDeleteGroup_MissingAuth verifies that a request with no auth context

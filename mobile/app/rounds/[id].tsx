@@ -20,6 +20,7 @@
 //   PATCH  /api/v1/rounds/:id                                 → edit round fields
 //   DELETE /api/v1/rounds/:id                                 → delete round
 //   POST   /api/v1/rounds/:id/groups                          → add a new empty group
+//   PATCH  /api/v1/rounds/:id/groups/:groupId                 → update group name / tee time
 //   DELETE /api/v1/rounds/:id/groups/:groupId                 → delete a group
 //   POST   /api/v1/rounds/:id/groups/:groupId/members         → add player
 //   DELETE /api/v1/rounds/:id/groups/:groupId/members/:userId → remove player
@@ -67,7 +68,8 @@ type GroupMember = {
 type RoundGroup = {
   id: string;
   group_number: number;
-  tee_time: string | null; // "7:30 AM" formatted by the backend, or null
+  name: string | null;      // optional team/group label; null = display "Group N"
+  tee_time: string | null;  // "7:30 AM" formatted by the backend, or null
   starting_hole: number;
   players: GroupMember[];
 };
@@ -109,6 +111,11 @@ export default function RoundDetailScreen() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   // memberSearch: owned here so it resets when the modal closes.
   const [memberSearch, setMemberSearch] = useState("");
+
+  // editGroupModal: open when organizer taps the pencil on a group card.
+  const [editGroupId,      setEditGroupId]      = useState<string | null>(null);
+  const [editGroupName,    setEditGroupName]    = useState("");
+  const [editGroupTeeTime, setEditGroupTeeTime] = useState(""); // free-text, e.g. "7:30 AM"
 
   const [editModalVisible, setEditModalVisible]       = useState(false);
   const [editName, setEditName]                       = useState("");
@@ -188,8 +195,9 @@ export default function RoundDetailScreen() {
       return res.json();
     },
     onSuccess: () => {
+      // Invalidate so the player list and group card both update immediately.
+      // Do NOT close the modal — user may want to add more players before dismissing.
       queryClient.invalidateQueries({ queryKey: ["round", id] });
-      setSelectedGroupId(null);
       setMemberSearch("");
     },
     onError: (err: Error) => {
@@ -279,6 +287,29 @@ export default function RoundDetailScreen() {
     },
   });
 
+  const updateGroupMutation = useMutation({
+    mutationFn: async ({ groupId, name, teeTime }: { groupId: string; name: string; teeTime: string }) => {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() || null, tee_time: teeTime.trim() || null }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+      setEditGroupId(null);
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not update group", err.message, [{ text: "OK" }]);
+    },
+  });
+
   const deleteGroupMutation = useMutation({
     mutationFn: async (groupId: string) => {
       const token = await getToken();
@@ -359,6 +390,12 @@ export default function RoundDetailScreen() {
   });
 
   // --- Handlers ---
+
+  const openEditGroup = (group: RoundGroup) => {
+    setEditGroupId(group.id);
+    setEditGroupName(group.name ?? "");
+    setEditGroupTeeTime(group.tee_time ?? "");
+  };
 
   const handleDeleteGroup = (group: RoundGroup) => {
     Alert.alert(
@@ -564,11 +601,17 @@ export default function RoundDetailScreen() {
               key={group.id}
               className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}
             >
-              {/* Group header: number + optional tee time + delete button for organizers */}
+              {/* Group header: name/number + tee time + edit + delete (organizers only) */}
               <View className={`px-4 py-3 flex-row items-center gap-2 border-b ${t.divider}`}>
-                <Text className={`font-bold text-base flex-1 ${t.textPrimary}`}>
-                  Group {group.group_number}
-                </Text>
+                <View className="flex-1 min-w-0">
+                  <Text className={`font-bold text-base ${t.textPrimary}`} numberOfLines={1}>
+                    {group.name ?? `Group ${group.group_number}`}
+                  </Text>
+                  {/* Show "Group N" as subtitle when a custom name is set */}
+                  {group.name ? (
+                    <Text className={`text-xs ${t.textTertiary}`}>Group {group.group_number}</Text>
+                  ) : null}
+                </View>
                 {group.tee_time ? (
                   <View className="flex-row items-center gap-1">
                     <Ionicons name="time-outline" size={13} color={t.colors.tabBarInactive} />
@@ -576,13 +619,22 @@ export default function RoundDetailScreen() {
                   </View>
                 ) : null}
                 {round.is_organizer && (
-                  <TouchableOpacity
-                    onPress={() => handleDeleteGroup(group)}
-                    hitSlop={8}
-                    disabled={deleteGroupMutation.isPending}
-                  >
-                    <Ionicons name="trash-outline" size={16} color="#dc2626" />
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      onPress={() => openEditGroup(group)}
+                      hitSlop={8}
+                      disabled={updateGroupMutation.isPending}
+                    >
+                      <Ionicons name="pencil-outline" size={16} color="#2563eb" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleDeleteGroup(group)}
+                      hitSlop={8}
+                      disabled={deleteGroupMutation.isPending}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="#dc2626" />
+                    </TouchableOpacity>
+                  </>
                 )}
               </View>
 
@@ -942,6 +994,83 @@ export default function RoundDetailScreen() {
           </View>
 
         </View>
+      </Modal>
+
+      {/* ── Edit Group Modal ─────────────────────────────────────────────────── */}
+
+      <Modal
+        visible={!!editGroupId}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setEditGroupId(null)}
+      >
+        <KeyboardAvoidingView
+          className={`flex-1 ${t.surface}`}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <ScrollView>
+            <View className="px-5 pt-8 pb-10">
+
+              <ModalHeader
+                title="Edit Group"
+                onClose={() => setEditGroupId(null)}
+                disabled={updateGroupMutation.isPending}
+              />
+
+              <View className="mb-4">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                  Group Name (optional)
+                </Text>
+                <TextInput
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="e.g. Team Eagles"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  value={editGroupName}
+                  onChangeText={setEditGroupName}
+                  autoCapitalize="words"
+                  editable={!updateGroupMutation.isPending}
+                  returnKeyType="next"
+                />
+              </View>
+
+              <View className="mb-6">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                  Tee Time (optional)
+                </Text>
+                <TextInput
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="e.g. 7:30 AM"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  value={editGroupTeeTime}
+                  onChangeText={setEditGroupTeeTime}
+                  editable={!updateGroupMutation.isPending}
+                  returnKeyType="done"
+                />
+              </View>
+
+              <TouchableOpacity
+                className={`rounded-xl py-4 items-center ${updateGroupMutation.isPending ? t.primaryBgDisabled : t.primaryBg}`}
+                onPress={() => {
+                  if (editGroupId) {
+                    updateGroupMutation.mutate({
+                      groupId: editGroupId,
+                      name: editGroupName,
+                      teeTime: editGroupTeeTime,
+                    });
+                  }
+                }}
+                disabled={updateGroupMutation.isPending}
+              >
+                {updateGroupMutation.isPending ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text className="text-white font-semibold text-base">Save</Text>
+                )}
+              </TouchableOpacity>
+
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ── Course Picker Modal ─────────────────────────────────────────────── */}

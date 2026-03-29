@@ -253,7 +253,12 @@ export default function ScorecardScreen() {
   const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
-  const inputRefs  = useRef<Map<string, TextInput | null>>(new Map());
+  const inputRefs     = useRef<Map<string, TextInput | null>>(new Map());
+
+  // outerScrollRef: used to programmatically scroll the main ScrollView when
+  // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
+  // are not hidden behind the keyboard.
+  const outerScrollRef = useRef<ScrollView>(null);
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
   // avoiding re-runs when Clerk refreshes user data mid-session.
@@ -604,8 +609,9 @@ export default function ScorecardScreen() {
       </View>
 
       <ScrollView
+        ref={outerScrollRef}
         className="flex-1"
-        contentContainerStyle={{ paddingBottom: 40 }}
+        contentContainerStyle={{ paddingBottom: 320 }}
         automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         refreshControl={
           <RefreshControl
@@ -1097,6 +1103,11 @@ export default function ScorecardScreen() {
                               },
                             }))
                           }
+                          onFocus={() => {
+                            // Delay lets the keyboard animation start before we scroll,
+                            // ensuring the inset has been applied and there is room to move.
+                            setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
+                          }}
                           onBlur={() => autoSaveStats(rpId, currentHole, 400)}
                         />
                       </View>

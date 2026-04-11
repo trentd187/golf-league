@@ -332,6 +332,11 @@ type ScheduleRoundRequest struct {
 	// Legacy fallback: find-or-create by name. Used only when course_id is absent.
 	// Prefer course_id — this field will be removed in a future version.
 	CourseName string `json:"course_name"`
+
+	// NineHoleSelection restricts play to 9 holes on an 18-hole course.
+	// "front" = holes 1–9, "back" = holes 10–18. Omit (or null) for a full round.
+	// Invalid on 9-hole courses — the backend returns 400 in that case.
+	NineHoleSelection *string `json:"nine_hole_selection"`
 }
 
 // RoundSummaryResponse is returned per round in the rounds list and on round creation.
@@ -749,6 +754,16 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 			scoringFormat = models.ScoringFormat(*req.ScoringFormat)
 		}
 
+		// Validate nine_hole_selection value before hitting the DB.
+		// The course hole-count check (requires 18-hole course) happens inside the
+		// transaction once the course record is loaded — that path is DB-dependent (Tier 2).
+		if req.NineHoleSelection != nil {
+			sel := *req.NineHoleSelection
+			if sel != "front" && sel != "back" {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "nine_hole_selection must be \"front\" or \"back\""})
+			}
+		}
+
 		var createdRound models.Round
 		var courseName string
 		groupInputs := req.Groups
@@ -823,6 +838,11 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 
 			courseName = course.Name
 
+			// Nine-hole selection is only valid for 18-hole courses.
+			if req.NineHoleSelection != nil && course.HoleCount != 18 {
+				return fiber.NewError(fiber.StatusBadRequest, "nine_hole_selection is only valid for 18-hole courses")
+			}
+
 			var roundCount int64
 			tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount)
 			nextRoundNumber := int(roundCount) + 1
@@ -833,15 +853,16 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 			}
 
 			createdRound = models.Round{
-				EventID:          eventID,
-				CourseID:         course.ID,
-				DefaultTeeID:     teeID,
-				Name:             roundName,
-				RoundNumber:      nextRoundNumber,
-				ScheduledDate:    scheduledDate,
-				Status:           models.RoundStatusScheduled,
-				ScoringFormat:    scoringFormat,
-				RequiresHandicap: false,
+				EventID:           eventID,
+				CourseID:          course.ID,
+				DefaultTeeID:      teeID,
+				Name:              roundName,
+				RoundNumber:       nextRoundNumber,
+				ScheduledDate:     scheduledDate,
+				Status:            models.RoundStatusScheduled,
+				ScoringFormat:     scoringFormat,
+				RequiresHandicap:  false,
+				NineHoleSelection: req.NineHoleSelection,
 			}
 			if err := tx.Create(&createdRound).Error; err != nil {
 				return err

@@ -75,6 +75,9 @@ export interface Scorecard {
   // is_organizer is true when the requesting user is an organizer of this round's event.
   // The mobile client uses this to show/hide the "End Round" button.
   is_organizer: boolean;
+  // nine_hole_selection is "front" (holes 1–9), "back" (holes 10–18), or null (full round).
+  // When set, hole_count is 9 and holes contains only the selected half.
+  nine_hole_selection: "front" | "back" | null;
   // Hole data from the round's default tee. Empty array when no tee data has been entered yet.
   holes: ScorecardHole[];
   groups: ScorecardGroup[];

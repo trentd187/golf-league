@@ -190,8 +190,11 @@ type Round struct {
 	Status           RoundStatus   `gorm:"type:round_status;not null;default:'scheduled'"`
 	ScoringFormat    ScoringFormat `gorm:"type:scoring_format;not null"`
 	RequiresHandicap bool          `gorm:"not null;default:false"` // Blocks score entry until handicap is set
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// NineHoleSelection: "front" (holes 1–9), "back" (holes 10–18), or nil (full round).
+	// Only meaningful for 18-hole courses.
+	NineHoleSelection *string `gorm:"column:nine_hole_selection;type:text"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RoundPlayer links an EventPlayer to a specific Round and stores per-round results.

@@ -98,9 +98,12 @@ type ScorecardResponse struct {
 	// is different from the database UUID, so the server must supply it.
 	CallerUserID string `json:"caller_user_id"`
 	// IsOrganizer lets the mobile client show/hide the "End Round" button without a separate query.
-	IsOrganizer bool                     `json:"is_organizer"`
-	Holes       []ScorecardHole          `json:"holes"`
-	Groups      []ScorecardGroupResponse `json:"groups"`
+	IsOrganizer bool `json:"is_organizer"`
+	// NineHoleSelection is "front" (holes 1–9), "back" (holes 10–18), or null (full round).
+	// When set, HoleCount is 9 and Holes contains only the selected half.
+	NineHoleSelection *string                  `json:"nine_hole_selection"`
+	Holes             []ScorecardHole          `json:"holes"`
+	Groups            []ScorecardGroupResponse `json:"groups"`
 }
 
 // ─── Request types ────────────────────────────────────────────────────────────
@@ -231,12 +234,28 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
 		}
 
+		// Determine the effective hole count and which holes are in play.
+		// For nine-hole rounds, filter to the selected half and use 9 as the count.
+		effectiveHoleCount := round.Course.HoleCount
+		if round.NineHoleSelection != nil {
+			effectiveHoleCount = 9
+		}
+
 		// Build hole data slice from the default tee.
 		// Holes are ordered by hole_number ascending.
 		holeRows := make([]ScorecardHole, 0, len(round.DefaultTee.Holes))
 		// Keep a lookup map for net-score calculation later.
 		siByHole := make(map[int]int, len(round.DefaultTee.Holes))
 		for _, h := range round.DefaultTee.Holes {
+			// Skip holes outside the selected nine when playing a nine-hole round.
+			if round.NineHoleSelection != nil {
+				if *round.NineHoleSelection == "front" && h.HoleNumber > 9 {
+					continue
+				}
+				if *round.NineHoleSelection == "back" && h.HoleNumber <= 9 {
+					continue
+				}
+			}
 			holeRows = append(holeRows, ScorecardHole{
 				HoleNumber:  h.HoleNumber,
 				Par:         h.Par,
@@ -298,7 +317,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 
 				// Only emit totals when all holes have been entered.
 				var tg, tn *int
-				if len(dbScores) >= round.Course.HoleCount {
+				if len(dbScores) >= effectiveHoleCount {
 					tg = &totalGross
 					tn = &totalNet
 				}
@@ -342,16 +361,17 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 		}
 
 		return c.JSON(ScorecardResponse{
-			RoundID:          round.ID.String(),
-			RoundName:        round.Name,
-			Status:           string(round.Status),
-			HoleCount:        round.Course.HoleCount,
-			RequiresHandicap: round.RequiresHandicap,
-			ScoringFormat:    string(round.ScoringFormat),
-			CallerUserID:     userIDStr,
-			IsOrganizer:      isOrg,
-			Holes:            holeRows,
-			Groups:           groupResponses,
+			RoundID:           round.ID.String(),
+			RoundName:         round.Name,
+			Status:            string(round.Status),
+			HoleCount:         effectiveHoleCount,
+			RequiresHandicap:  round.RequiresHandicap,
+			ScoringFormat:     string(round.ScoringFormat),
+			CallerUserID:      userIDStr,
+			IsOrganizer:       isOrg,
+			NineHoleSelection: round.NineHoleSelection,
+			Holes:             holeRows,
+			Groups:            groupResponses,
 		})
 	}
 }

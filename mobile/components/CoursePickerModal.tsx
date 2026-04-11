@@ -44,11 +44,13 @@ export interface CourseTeeSummary {
 // It includes tees so the parent can show a tee picker without a second fetch.
 // has_holes is true when at least one tee has all 18 holes populated — used
 // to warn the organizer before scheduling on an incomplete course.
+// hole_count is 9 or 18 — used by the schedule form to show the front/back nine selector.
 export interface PickedCourse {
   id: string;
   name: string;
   city: string;
   state: string;
+  hole_count: number;
   has_holes: boolean;
   tees: CourseTeeSummary[];
 }
@@ -78,6 +80,7 @@ interface CourseDetailResponse {
   name: string;
   city: string;
   state: string;
+  hole_count: number;
   has_holes: boolean;
   tees: CourseTeeSummary[];
 }
@@ -237,6 +240,7 @@ export default function CoursePickerModal({
       name: data.name,
       city: data.city ?? "",
       state: data.state ?? "",
+      hole_count: data.hole_count ?? 18,
       has_holes: data.has_holes ?? false,
       tees: data.tees ?? [],
     };
@@ -282,6 +286,7 @@ export default function CoursePickerModal({
         name: imported.name,
         city: imported.city ?? "",
         state: imported.state ?? "",
+        hole_count: imported.hole_count ?? 18,
         has_holes: imported.has_holes ?? false,
         tees: imported.tees ?? [],
       });

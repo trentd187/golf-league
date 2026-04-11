@@ -162,6 +162,9 @@ export default function EventDetailScreen() {
   const [coursePickerVisible, setCoursePickerVisible] = useState(false);
   const [roundDate, setRoundDate]         = useState("");
   const [scoringFormat, setScoringFormat] = useState("stroke");
+  // nineHoleSelection: "18" = full round, "front" = holes 1–9, "back" = holes 10–18.
+  // Only shown when the selected course has 18 holes.
+  const [nineHoleSelection, setNineHoleSelection] = useState<"18" | "front" | "back">("18");
   const [groupCount, setGroupCount]         = useState(1);
   // groupTeeTimes: one "HH:MM" string per group ("" = no tee time set).
   const [groupTeeTimes, setGroupTeeTimes]   = useState<string[]>([""]);
@@ -365,6 +368,7 @@ export default function EventDetailScreen() {
       setSelectedTeeId(null);
       setRoundDate("");
       setScoringFormat("stroke");
+      setNineHoleSelection("18");
       setGroupCount(1);
       setGroupTeeTimes([""]);
     },
@@ -499,6 +503,9 @@ export default function EventDetailScreen() {
       return tt ? { tee_time: tt } : {};
     });
 
+    // Include nine_hole_selection only when not a full round.
+    const nineHole = nineHoleSelection !== "18" ? { nine_hole_selection: nineHoleSelection } : {};
+
     if (selectedTeeId) {
       scheduleRoundMutation.mutate({
         name:             roundName.trim(),
@@ -507,6 +514,7 @@ export default function EventDetailScreen() {
         scheduled_date:   displayToApi(roundDate.trim()),
         scoring_format:   scoringFormat,
         groups,
+        ...nineHole,
       });
     } else {
       // No tees on this course — backend will find-or-create and attach a default tee.
@@ -516,6 +524,7 @@ export default function EventDetailScreen() {
         scheduled_date: displayToApi(roundDate.trim()),
         scoring_format: scoringFormat,
         groups,
+        ...nineHole,
       });
     }
   };
@@ -1113,6 +1122,7 @@ export default function EventDetailScreen() {
           setRoundName("");
           setSelectedCourse(null);
           setSelectedTeeId(null);
+          setNineHoleSelection("18");
           setGroupCount(1);
           setGroupTeeTimes([""]);
           setOpenTeeTimePicker(null);
@@ -1132,6 +1142,7 @@ export default function EventDetailScreen() {
                   setRoundName("");
                   setSelectedCourse(null);
                   setSelectedTeeId(null);
+                  setNineHoleSelection("18");
                   setGroupCount(1);
                   setGroupTeeTimes([""]);
                 }}
@@ -1251,6 +1262,40 @@ export default function EventDetailScreen() {
                   <Text className="text-xs text-amber-700 flex-1">
                     This course has no hole data. Par and stroke index won{"'"}t be available on the scorecard.
                   </Text>
+                </View>
+              )}
+
+              {/* Nine-hole selector — only for 18-hole courses */}
+              {selectedCourse && selectedCourse.hole_count === 18 && (
+                <View className="mb-4">
+                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                    Holes
+                  </Text>
+                  <View className="flex-row gap-2">
+                    {([
+                      { value: "18",    label: "Full 18" },
+                      { value: "front", label: "Front 9" },
+                      { value: "back",  label: "Back 9"  },
+                    ] as const).map((opt) => {
+                      const selected = nineHoleSelection === opt.value;
+                      return (
+                        <TouchableOpacity
+                          key={opt.value}
+                          className={`flex-1 rounded-xl py-2.5 items-center border ${
+                            selected
+                              ? `${t.primaryBg} border-transparent`
+                              : `${t.surface} ${t.borderInput}`
+                          }`}
+                          onPress={() => setNineHoleSelection(opt.value)}
+                          disabled={scheduleRoundMutation.isPending}
+                        >
+                          <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
               )}
 

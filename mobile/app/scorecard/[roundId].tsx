@@ -273,12 +273,15 @@ export default function ScorecardScreen() {
   // Scroll the hole pills so the active pill is always centred in view.
   // Each pill is w-9 (36px) with gap-2 (8px) between them = 44px per slot.
   // We subtract half the screen width and add half a pill so it lands centred.
+  // For back-nine rounds currentHole starts at 10, so subtract startHole to get
+  // the 0-based pill index before computing the scroll position.
   useEffect(() => {
     const PILL_STEP = 36 + 8; // w-9 + gap-2
     const screenW   = Dimensions.get("window").width;
-    const x         = (currentHole - 1) * PILL_STEP - (screenW / 2) + 18;
+    const pillIndex = currentHole - (scorecard?.nine_hole_selection === "back" ? 10 : 1);
+    const x         = pillIndex * PILL_STEP - (screenW / 2) + 18;
     pillScrollRef.current?.scrollTo({ x: Math.max(0, x), animated: true });
-  }, [currentHole]);
+  }, [currentHole, scorecard?.nine_hole_selection]);
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
   // avoiding re-runs when Clerk refreshes user data mid-session.
@@ -412,7 +415,8 @@ export default function ScorecardScreen() {
       setScores(initScores(group.players));
       setHandicaps(initHandicaps(group.players));
       setStats(initStats(group.players));
-      setCurrentHole(1);
+      // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
+      setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
       // Default individual view to the current user's player, then first player.
       // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
       const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
@@ -518,13 +522,16 @@ export default function ScorecardScreen() {
 
   const totalGroupWidth = leftColW + parColW + siColW + group.players.length * playerColW;
 
-  // Build hole rows. Without tee data, show 1..hole_count with blank par/SI.
+  // Build hole rows. Without tee data, generate placeholders with blank par/SI.
+  // For back-nine rounds, startHole is 10 so holes are numbered 10–18.
   const holeCount = scorecard.hole_count || 18;
+  const startHole = scorecard.nine_hole_selection === "back" ? 10 : 1;
+  const lastHole  = startHole + holeCount - 1;
   type HoleRowData = { hole_number: number; par: number; stroke_index: number; yardage: number | null };
   const holeMap = new Map<number, HoleRowData>();
   for (const h of scorecard.holes) holeMap.set(h.hole_number, h);
   const holeRows: HoleRowData[] = Array.from({ length: holeCount }, (_, i) => {
-    const n = i + 1;
+    const n = startHole + i;
     return holeMap.get(n) ?? { hole_number: n, par: 0, stroke_index: 0, yardage: null };
   });
 
@@ -1157,21 +1164,21 @@ export default function ScorecardScreen() {
             {/* Prev / Next hole navigation */}
             <View className="flex-row items-center justify-between">
               <TouchableOpacity
-                onPress={() => setCurrentHole((h) => Math.max(1, h - 1))}
-                disabled={currentHole === 1}
-                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === 1 ? "bg-green-700/30" : "bg-green-700"}`}
+                onPress={() => setCurrentHole((h) => Math.max(startHole, h - 1))}
+                disabled={currentHole === startHole}
+                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === startHole ? "bg-green-700/30" : "bg-green-700"}`}
                 activeOpacity={0.7}
               >
                 <Ionicons name="chevron-back" size={20} color="white" />
                 <Text className="text-base font-semibold text-white">Prev</Text>
               </TouchableOpacity>
               <Text className={`text-sm font-semibold ${t.textTertiary}`}>
-                {currentHole} / {holeCount}
+                {currentHole} / {lastHole}
               </Text>
               <TouchableOpacity
-                onPress={() => setCurrentHole((h) => Math.min(holeCount, h + 1))}
-                disabled={currentHole === holeCount}
-                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === holeCount ? "bg-green-700/30" : "bg-green-700"}`}
+                onPress={() => setCurrentHole((h) => Math.min(lastHole, h + 1))}
+                disabled={currentHole === lastHole}
+                className={`flex-row items-center gap-2 px-6 py-4 rounded-xl ${currentHole === lastHole ? "bg-green-700/30" : "bg-green-700"}`}
                 activeOpacity={0.7}
               >
                 <Text className="text-base font-semibold text-white">Next</Text>

@@ -26,6 +26,7 @@ export interface ScorecardHoleStat {
   putts: number | null;
   first_putt_distance: number | null; // feet
   putt_distance_made: number | null;  // feet
+  approach_yds: number | null;        // yards; optional — most users will not track this
 }
 
 export interface ScorecardPlayer {

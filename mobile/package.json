@@ -5,10 +5,18 @@
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
+    "android-build": "eas build --platform android --profile preview",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "postinstall": "lefthook install",
     "lint": "expo lint"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native-worklets"
+      ]
+    }
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -59,6 +59,7 @@ type HoleStatEntry = {
   putts: string;
   first_putt_distance: string; // feet
   putt_distance_made: string;  // feet
+  approach_yds: string;        // yards; optional
 };
 
 // LocalStats maps round_player_id → hole_number → HoleStatEntry.
@@ -132,6 +133,7 @@ function initStats(players: ScorecardPlayer[]): LocalStats {
         putts:               s.putts != null ? String(s.putts) : "",
         first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
         putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
+        approach_yds:        s.approach_yds != null ? String(s.approach_yds) : "",
       };
     }
   }
@@ -161,7 +163,7 @@ function firKey(entry: HoleStatEntry | undefined): string | null {
 const emptyHoleStat: HoleStatEntry = {
   gir: null, gir_miss_direction: null,
   fir: null, fir_miss_direction: null,
-  putts: "", first_putt_distance: "", putt_distance_made: "",
+  putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
 };
 
 // scoreColor returns a NativeWind class string for a score relative to par.
@@ -364,6 +366,7 @@ export default function ScorecardScreen() {
           putts:                toInt(entry.putts),
           first_putt_distance:  toInt(entry.first_putt_distance),
           putt_distance_made:   toInt(entry.putt_distance_made),
+          approach_yds:         toInt(entry.approach_yds),
         };
 
         try {
@@ -1095,9 +1098,10 @@ export default function ScorecardScreen() {
                   <View className="px-4 py-3 gap-3">
                     {(
                       [
-                        { field: "putts" as const,               label: "Putts",      unit: null },
-                        { field: "putt_distance_made" as const,  label: "Made Putt",  unit: "ft" },
-                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft" },
+                        { field: "putts" as const,               label: "Putts",      unit: null  },
+                        { field: "putt_distance_made" as const,  label: "Made Putt",  unit: "ft"  },
+                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft"  },
+                        { field: "approach_yds" as const,        label: "Approach",   unit: "yds" },
                       ] as const
                     ).map(({ field, label, unit }) => (
                       <View key={field} className="flex-row items-center justify-between">

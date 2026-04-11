@@ -248,6 +248,7 @@ type HoleStat struct {
 	Putts             *int      `gorm:"column:putts;type:int"`
 	FirstPuttDistance *int      `gorm:"column:first_putt_distance;type:int"` // feet
 	PuttDistanceMade  *int      `gorm:"column:putt_distance_made;type:int"`  // feet
+	ApproachYds       *int      `gorm:"column:approach_yds;type:int"`        // yards; optional
 	EnteredAt         time.Time `gorm:"autoCreateTime"`
 	UpdatedAt         time.Time `gorm:"autoUpdateTime"`
 }

@@ -12,13 +12,14 @@
 // useFocusEffect refetches when the tab becomes active so the list stays current
 // after returning from the round detail or scorecard screens.
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   Text,
   View,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 
 import { useAuth } from "@clerk/clerk-expo";
@@ -127,6 +128,14 @@ export default function RoundsScreen() {
     },
   });
 
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  }, [refetch]);
+
   // Refetch when the tab gains focus — picks up changes made on other screens
   // without refetching on every render.
   useFocusEffect(
@@ -229,6 +238,14 @@ export default function RoundsScreen() {
             />
           );
         }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={[t.colors.tabBarActive]}
+            tintColor={t.colors.tabBarActive}
+          />
+        }
       />
     </View>
   );

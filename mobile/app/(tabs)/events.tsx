@@ -23,6 +23,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  RefreshControl,
 } from "react-native";
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
@@ -192,6 +193,14 @@ export default function EventsScreen() {
       return res.json();
     },
   });
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  }, [refetch]);
 
   // Refetch only when the query was explicitly invalidated (e.g. after an edit on the detail screen).
   // react-native-screens freezes the tab while a stack screen is on top; the background refetch
@@ -411,6 +420,14 @@ export default function EventsScreen() {
               />
             )}
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[t.colors.tabBarActive]}
+                tintColor={t.colors.tabBarActive}
+              />
+            }
           />
         ) : (
           <View className="flex-1 items-center justify-center gap-3 px-8">

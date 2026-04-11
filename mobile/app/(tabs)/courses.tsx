@@ -14,7 +14,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  RefreshControl,
+
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -61,7 +61,6 @@ export default function CoursesScreen() {
     isLoading,
     isError,
     refetch,
-    isRefetching,
   } = useQuery<CourseSummary[]>({
     queryKey: ["courses", searchQuery],
     queryFn:  fetchCourses,
@@ -169,13 +168,7 @@ export default function CoursesScreen() {
             data={courses}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 48 }}
-            refreshControl={
-              <RefreshControl
-                refreshing={isRefetching}
-                onRefresh={refetch}
-                tintColor={t.colors.tabBarActive}
-              />
-            }
+
             ListEmptyComponent={
               <Text className={`text-sm text-center mt-10 ${t.textTertiary}`}>
                 {searchQuery.trim() ? "No courses match your search." : "No courses yet."}

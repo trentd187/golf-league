@@ -15,7 +15,7 @@
 //   3. Scorecards for those rounds are fetched in parallel via useQueries
 //   4. caller_user_id (DB UUID returned by the API) identifies the caller's player entry
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -23,6 +23,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Modal,
+  RefreshControl,
 } from "react-native";
 import { useAuth } from "@clerk/clerk-expo";
 import { useQuery, useQueries } from "@tanstack/react-query";
@@ -536,13 +537,14 @@ export default function StatsScreen() {
 
   const [activeFilter, setActiveFilter] = useState<FilterValue>("last20");
   const [innerTab, setInnerTab] = useState<InnerTab>("stats");
+  const [refreshing, setRefreshing] = useState(false);
 
   // Which round is currently open in a modal, and which modal is showing.
   const [selectedRound, setSelectedRound] = useState<RoundSummary | null>(null);
   const [openModal, setOpenModal] = useState<"stats" | "scorecard" | null>(null);
 
   // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
-  const { data: allRounds, isLoading: roundsLoading, isError: roundsError } = useQuery<RoundSummary[]>({
+  const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
     queryKey: ["rounds"],
     queryFn: async () => {
       const token = await getToken();
@@ -553,6 +555,12 @@ export default function StatsScreen() {
       return res.json();
     },
   });
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  }, [refetch]);
 
   // Only completed rounds have scorecards worth aggregating.
   // completedRounds is ordered by scheduled_date DESC (API order).
@@ -673,6 +681,14 @@ export default function StatsScreen() {
       <ScrollView
         contentContainerStyle={{ paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={[t.colors.tabBarActive]}
+            tintColor={t.colors.tabBarActive}
+          />
+        }
       >
         {/* Page header */}
         <View className="px-5 pt-14 pb-3">

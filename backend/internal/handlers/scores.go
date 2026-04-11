@@ -61,6 +61,7 @@ type ScorecardHoleStat struct {
 	Putts             *int    `json:"putts"`
 	FirstPuttDistance *int    `json:"first_putt_distance"` // feet
 	PuttDistanceMade  *int    `json:"putt_distance_made"`  // feet
+	ApproachYds       *int    `json:"approach_yds"`        // yards; optional
 }
 
 // ScorecardPlayer is a player in a group with their handicap, all hole scores, and hole stats.
@@ -130,6 +131,7 @@ type HoleStatInput struct {
 	Putts            *int    `json:"putts"`
 	FirstPuttDist    *int    `json:"first_putt_distance"` // feet
 	PuttDistMade     *int    `json:"putt_distance_made"`  // feet
+	ApproachYds      *int    `json:"approach_yds"`        // yards; optional
 }
 
 // UpsertHoleStatsRequest is the JSON body for PUT /rounds/:roundId/players/:roundPlayerId/hole-stats.
@@ -316,6 +318,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 						Putts:             s.Putts,
 						FirstPuttDistance: s.FirstPuttDistance,
 						PuttDistanceMade:  s.PuttDistanceMade,
+						ApproachYds:       s.ApproachYds,
 					})
 				}
 
@@ -587,6 +590,7 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 				Putts:             s.Putts,
 				FirstPuttDistance: s.FirstPuttDist,
 				PuttDistanceMade:  s.PuttDistMade,
+				ApproachYds:       s.ApproachYds,
 			})
 		}
 
@@ -597,7 +601,7 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 			DoUpdates: clause.AssignmentColumns([]string{
 				"gir", "gir_miss_direction",
 				"fir", "fir_miss_direction",
-				"putts", "first_putt_distance", "putt_distance_made",
+				"putts", "first_putt_distance", "putt_distance_made", "approach_yds",
 				"updated_at",
 			}),
 		}).Create(&records)

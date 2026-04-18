@@ -106,7 +106,10 @@ pre-push:
     # masking a real failure.
     # -------------------------------------------------------------------------
     backend-docker-build:
-      glob: "{backend/**/*.go,backend/go.mod,backend/go.sum,Dockerfile}"
+      # files: explicitly diffs against origin/main so lefthook knows which files changed.
+      # glob: filters that list — hook is skipped entirely if no backend or Dockerfile files changed.
+      files: git diff --name-only origin/main HEAD
+      glob: "{backend/**,Dockerfile}"
       run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
 
     # Mobile Jest coverage will be added here once the Jest framework is set up.

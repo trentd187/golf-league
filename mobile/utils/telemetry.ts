@@ -13,6 +13,8 @@
 //   - trace_id: the backend's trace ID from the most recent API response
 //     (X-Trace-ID response header, captured by apiFetch)
 
+import * as ExpoCrypto from "expo-crypto";
+
 import { API_URL } from "@/constants/api";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -41,8 +43,9 @@ class TelemetryClient {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    // crypto.randomUUID() is available in React Native's Hermes engine (>= 0.71).
-    this.sessionId = crypto.randomUUID();
+    // Use expo-crypto rather than the global crypto object — the global is not
+    // available in all Hermes/React Native environments (e.g. older Expo Go builds).
+    this.sessionId = ExpoCrypto.randomUUID();
   }
 
   // setTokenGetter is called from _layout.tsx after ClerkLoaded so the client

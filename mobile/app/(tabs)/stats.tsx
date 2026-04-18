@@ -28,7 +28,7 @@ import {
 import { useAuth } from "@clerk/clerk-expo";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Path, Line, Text as SvgText } from "react-native-svg";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
@@ -101,10 +101,51 @@ function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[]) {
 }
 
 // buildMyStats aggregates the caller's personal stats across a set of scorecards.
-function buildMyStats(scorecards: Scorecard[]) {
+// roundsList is the matching RoundSummary array — needed to pair 9-hole rounds by
+// event + date so front and back halves form one 18-hole equivalent score.
+function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
+  // ── Gross score collection ──────────────────────────────────────────────────
+  // Only 18-hole-equivalent totals go into avg/low/high.
+  //   • Full 18-hole rounds: use total_gross directly.
+  //   • 9-hole rounds: pair a "front" and "back" from the same event on the same
+  //     date; sum the two halves. Unpaired halves are excluded.
+  // Per-hole stats (distribution, par averages, GIR, FIR, putts) accumulate from
+  // every scorecard regardless of round length.
+
+  const roundMap = new Map(roundsList.map((r) => [r.id, r]));
+
+  // Collect all 18-hole-equivalent gross scores into one array so the Scores tab
+  // can derive its own avg/low/high from the same source (returned as grossScores).
+  const grossScores: number[] = [];
+
+  // Full 18-hole rounds count directly.
+  for (const sc of scorecards) {
+    if (sc.nine_hole_selection !== null) continue;
+    const player = findMyPlayer(sc);
+    if (player?.total_gross != null) grossScores.push(player.total_gross);
+  }
+
+  // 9-hole rounds are paired chronologically — any two combine into one 18-hole
+  // equivalent regardless of which nine, course, or event. Oldest pair first so
+  // only the most recent round can be left unpaired when the count is odd.
+  const nineHoleEntries: { gross: number; date: string }[] = [];
+  for (const sc of scorecards) {
+    if (sc.nine_hole_selection === null) continue;
+    const r = roundMap.get(sc.round_id);
+    if (!r) continue;
+    const player = findMyPlayer(sc);
+    if (player?.total_gross != null) {
+      nineHoleEntries.push({ gross: player.total_gross, date: r.scheduled_date });
+    }
+  }
+  nineHoleEntries.sort((a, b) => a.date.localeCompare(b.date));
+  // Pair [0+1], [2+3], … — an odd last entry is left unpaired.
+  for (let i = 0; i + 1 < nineHoleEntries.length; i += 2) {
+    grossScores.push(nineHoleEntries[i].gross + nineHoleEntries[i + 1].gross);
+  }
+
+  // ── Per-hole accumulators (all rounds, any length) ──────────────────────────
   let rounds = 0;
-  let totalGross = 0;
-  let grossCount = 0;
   let totalPutts = 0;
   let puttRounds = 0;
   let greensHit = 0;
@@ -130,11 +171,6 @@ function buildMyStats(scorecards: Scorecard[]) {
 
     rounds++;
 
-    if (player.total_gross !== null) {
-      totalGross += player.total_gross;
-      grossCount++;
-    }
-
     const validPutts = player.hole_stats.filter((hs) => hs.putts !== null);
     if (validPutts.length > 0) {
       totalPutts += validPutts.reduce((sum, hs) => sum + (hs.putts ?? 0), 0);
@@ -148,13 +184,12 @@ function buildMyStats(scorecards: Scorecard[]) {
     fairwaysHit   += player.hole_stats.filter((hs) => hs.fir === true).length;
     fairwaysTotal += player.hole_stats.filter((hs) => hs.fir !== null).length;
 
-    // Per-score loop: scoring distribution and par-type averages.
     for (const s of player.scores) {
       const par = holeMap.get(s.hole_number);
       if (par == null) continue;
       const diff = s.gross_score - par;
 
-      if (diff <= -1)     birdiesOrBetter++;
+      if (diff <= -1)      birdiesOrBetter++;
       else if (diff === 0) parsCount++;
       else if (diff === 1) bogeysCount++;
       else                 doublesPlus++;
@@ -165,11 +200,22 @@ function buildMyStats(scorecards: Scorecard[]) {
     }
   }
 
+  const avgGrossScore = grossScores.length > 0
+    ? grossScores.reduce((s, g) => s + g, 0) / grossScores.length
+    : null;
+  const lowScore  = grossScores.length > 0 ? Math.min(...grossScores) : null;
+  const highScore = grossScores.length > 0 ? Math.max(...grossScores) : null;
+
   return {
     rounds,
-    avgGrossScore:    grossCount > 0     ? totalGross / grossCount            : null,
-    avgPuttsPerRound: puttRounds > 0    ? totalPutts / puttRounds            : null,
-    girPercent:       greensTotal > 0   ? (greensHit / greensTotal) * 100    : null,
+    // grossScores is exposed so the Scores tab can derive its summary strip
+    // from the same paired data without duplicating the pairing logic.
+    grossScores,
+    avgGrossScore,
+    lowScore,
+    highScore,
+    avgPuttsPerRound: puttRounds > 0    ? totalPutts / puttRounds             : null,
+    girPercent:       greensTotal > 0   ? (greensHit / greensTotal) * 100     : null,
     firPercent:       fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
     birdiesOrBetter, parsCount, bogeysCount, doublesPlus,
     avgPar3: par3Count > 0 ? par3Total / par3Count : null,
@@ -229,103 +275,199 @@ function StatCard({
   );
 }
 
-// ScoringPieChart renders a donut chart showing hole outcome distribution across
-// all scored holes. Segments use categorical colors that encode scoring meaning,
-// not theme tokens. Segments with zero holes are omitted to keep the chart clean.
-function ScoringPieChart({
-  birdiesOrBetter,
-  pars,
-  bogeys,
-  doublesPlus,
+// ScoringCard is the unified Scoring section: summary stats (avg/low/high,
+// par-type averages) followed by a scoring distribution donut chart with
+// SVG spoke labels — no separate legend row needed.
+function ScoringCard({
+  avgGrossScore, lowScore, highScore,
+  avgPar3, avgPar4, avgPar5,
+  birdiesOrBetter, pars, bogeys, doublesPlus,
 }: Readonly<{
+  avgGrossScore: number | null;
+  lowScore: number | null;
+  highScore: number | null;
+  avgPar3: number | null;
+  avgPar4: number | null;
+  avgPar5: number | null;
   birdiesOrBetter: number;
   pars: number;
   bogeys: number;
   doublesPlus: number;
 }>) {
   const t = useTheme();
-  const total = birdiesOrBetter + pars + bogeys + doublesPlus;
-  if (total === 0) return null;
 
-  const SIZE = 160;
-  const CX   = SIZE / 2;
-  const CY   = SIZE / 2;
-  const R    = 66; // outer radius
-  const IR   = 40; // inner radius (donut hole)
+  // ── Donut chart geometry ──────────────────────────────────────────────────
+  // viewBox is 300×180; the circle is centered at (150, 90) with R=55 and IR=32.
+  // Labels are drawn as spoke lines radiating from the outer edge — no separate
+  // legend block is needed. The viewBox scales to fill the card width.
+  const CX = 150, CY = 90, R = 55, IR = 32;
+  const SPOKE_R  = 70; // where the radial line ends
+  const ELBOW_LEN = 12; // horizontal leg length
 
-  // Categorical colors — color encodes scoring meaning, not theme state.
+  // Categorical colors — not theme tokens; color encodes the scoring outcome.
   const allSlices = [
     { value: birdiesOrBetter, color: "#16a34a", label: "Birdie+" },
     { value: pars,             color: "#3b82f6", label: "Par"     },
     { value: bogeys,           color: "#f59e0b", label: "Bogey"   },
     { value: doublesPlus,      color: "#ef4444", label: "Double+" },
   ];
-  // Only include slices that have at least one hole — zero-value arcs are invisible
-  // but can cause SVG rendering artifacts.
+  const total  = allSlices.reduce((s, x) => s + x.value, 0);
+  // Zero-value slices are excluded from rendering to avoid SVG arc artifacts.
   const slices = allSlices.filter((s) => s.value > 0);
 
   function toXY(angle: number, radius: number) {
     return { x: CX + radius * Math.cos(angle), y: CY + radius * Math.sin(angle) };
   }
 
-  // Build a donut arc path. When the sweep is nearly 2π (one segment dominates),
-  // clamp to avoid the degenerate case where the arc's start and end points coincide.
+  // Donut arc path. Sweep is clamped just below 2π to prevent the degenerate
+  // case where the arc's start and end coordinates coincide (full-circle edge).
   function arcPath(startAngle: number, sweep: number): string {
-    const clampedSweep = Math.min(sweep, 2 * Math.PI - 0.001);
-    const endAngle = startAngle + clampedSweep;
+    const sw = Math.min(sweep, 2 * Math.PI - 0.001);
+    const ea = startAngle + sw;
     const os = toXY(startAngle, R);
-    const oe = toXY(endAngle,   R);
+    const oe = toXY(ea, R);
     const is = toXY(startAngle, IR);
-    const ie = toXY(endAngle,   IR);
-    const large = clampedSweep > Math.PI ? 1 : 0;
+    const ie = toXY(ea, IR);
+    const lg = sw > Math.PI ? 1 : 0;
     return [
       `M ${os.x.toFixed(2)} ${os.y.toFixed(2)}`,
-      `A ${R} ${R} 0 ${large} 1 ${oe.x.toFixed(2)} ${oe.y.toFixed(2)}`,
+      `A ${R} ${R} 0 ${lg} 1 ${oe.x.toFixed(2)} ${oe.y.toFixed(2)}`,
       `L ${ie.x.toFixed(2)} ${ie.y.toFixed(2)}`,
-      `A ${IR} ${IR} 0 ${large} 0 ${is.x.toFixed(2)} ${is.y.toFixed(2)}`,
+      `A ${IR} ${IR} 0 ${lg} 0 ${is.x.toFixed(2)} ${is.y.toFixed(2)}`,
       "Z",
     ].join(" ");
   }
 
-  // Start at the top of the circle (–π/2) and sweep clockwise.
+  // Compute arc paths and spoke-label positions, sweeping clockwise from the top.
   let angle = -Math.PI / 2;
   const paths = slices.map((s) => {
-    const sweep = (s.value / total) * 2 * Math.PI;
-    const d = arcPath(angle, sweep);
+    const sweep    = (s.value / total) * 2 * Math.PI;
+    const midAngle = angle + sweep / 2;
+    const d        = arcPath(angle, sweep);
     angle += sweep;
-    return { ...s, d };
+
+    const spokeEnd  = toXY(midAngle, SPOKE_R);
+    // Label goes to the right for the right half of the circle (cos ≥ 0), left otherwise.
+    const isRight    = Math.cos(midAngle) >= 0;
+    const elbowX     = spokeEnd.x + (isRight ? ELBOW_LEN : -ELBOW_LEN);
+    // Both lines (category name + percentage) use textAnchor="middle" at textCenterX so
+    // the shorter percentage string is always horizontally centered under the label.
+    const textCenterX = elbowX + (isRight ? 24 : -24);
+    const pct         = Math.round((s.value / total) * 100);
+    // Radial line starts at the outer arc edge, not inside the donut.
+    const spokeStart = toXY(midAngle, R);
+
+    return { ...s, d, spokeStart, spokeEnd, elbowX, textCenterX, pct, midY: spokeEnd.y };
   });
+
+  const parItems = [
+    { label: "Par 3", value: avgPar3 },
+    { label: "Par 4", value: avgPar4 },
+    { label: "Par 5", value: avgPar5 },
+  ];
 
   return (
     <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
+      {/* Section header */}
       <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
-        Scoring Distribution
+        Scoring
       </Text>
-      <View className="items-center mb-3">
-        <Svg width={SIZE} height={SIZE}>
-          {paths.map((s) => (
-            <Path key={s.label} d={s.d} fill={s.color} />
-          ))}
-        </Svg>
+
+      {/* Row 1: Avg | Low | High */}
+      <View className={`flex-row border-b ${t.divider} pb-3 mb-3`}>
+        <View className="flex-1 items-center">
+          <Text className={`text-2xl font-bold ${t.textPrimary}`}>
+            {avgGrossScore === null ? "—" : avgGrossScore.toFixed(1)}
+          </Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>Avg</Text>
+        </View>
+        <View className={`w-px ${t.border} border-l`} />
+        <View className="flex-1 items-center">
+          <Text className={`text-2xl font-bold ${lowScore === null ? t.textPrimary : "text-green-600"}`}>
+            {lowScore ?? "—"}
+          </Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>Low</Text>
+        </View>
+        <View className={`w-px ${t.border} border-l`} />
+        <View className="flex-1 items-center">
+          <Text className={`text-2xl font-bold ${highScore === null ? t.textPrimary : "text-red-500"}`}>
+            {highScore ?? "—"}
+          </Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>High</Text>
+        </View>
       </View>
-      {/* Legend: one row per category, label on left, "pct% (n)" on right */}
-      <View className="gap-2">
-        {allSlices.map((s) => {
-          const pct = Math.round((s.value / total) * 100);
-          return (
-            <View key={s.label} className="flex-row items-center justify-between">
-              <View className="flex-row items-center gap-2">
-                {/* eslint-disable-next-line react-native/no-inline-styles */}
-                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: s.color }} />
-                <Text className={`text-sm ${t.textSecondary}`}>{s.label}</Text>
-              </View>
-              <Text className={`text-sm font-semibold ${s.value === 0 ? t.textTertiary : t.textPrimary}`}>
-                {pct}% ({s.value})
+
+      {/* Row 2: Avg Par 3 | Avg Par 4 | Avg Par 5 */}
+      <View className={`flex-row border-b ${t.divider} pb-3 mb-3`}>
+        {parItems.map((item, i) => (
+          // Vertical divider between columns only — not before the first.
+          // eslint-disable-next-line react/no-array-index-key
+          <View key={i} className="flex-1 flex-row">
+            {i > 0 && <View className={`w-px ${t.border} border-l`} />}
+            <View className="flex-1 items-center">
+              <Text className={`text-lg font-bold ${item.value === null ? t.textTertiary : t.textPrimary}`}>
+                {item.value === null ? "—" : item.value.toFixed(2)}
+              </Text>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>
+                {item.label}
               </Text>
             </View>
-          );
-        })}
+          </View>
+        ))}
       </View>
+
+      {/* Scoring distribution donut with SVG spoke labels */}
+      <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
+        Distribution
+      </Text>
+      {total > 0 ? (
+        // viewBox scales to card width; height is fixed at 180 logical units.
+        <Svg viewBox="0 0 300 190" width="100%" height={190}>
+          {/* Arc slices */}
+          {paths.map((s) => (
+            <Path key={`arc-${s.label}`} d={s.d} fill={s.color} />
+          ))}
+          {/* Spoke line from arc edge → elbow, then horizontal → text */}
+          {paths.map((s) => [
+            <Line
+              key={`spoke-${s.label}`}
+              x1={s.spokeStart.x.toFixed(2)} y1={s.spokeStart.y.toFixed(2)}
+              x2={s.spokeEnd.x.toFixed(2)}   y2={s.spokeEnd.y.toFixed(2)}
+              stroke={s.color} strokeWidth={1.5}
+            />,
+            <Line
+              key={`elbow-${s.label}`}
+              x1={s.spokeEnd.x.toFixed(2)} y1={s.spokeEnd.y.toFixed(2)}
+              x2={s.elbowX.toFixed(2)}     y2={s.spokeEnd.y.toFixed(2)}
+              stroke={s.color} strokeWidth={1.5}
+            />,
+            <SvgText
+              key={`label-${s.label}`}
+              x={s.textCenterX.toFixed(2)}
+              y={(s.midY).toFixed(2)}
+              textAnchor="middle"
+              fontSize={10}
+              fontWeight="600"
+              fill={s.color}
+            >
+              {s.label}
+            </SvgText>,
+            <SvgText
+              key={`pct-${s.label}`}
+              x={s.textCenterX.toFixed(2)}
+              y={(s.midY + 12).toFixed(2)}
+              textAnchor="middle"
+              fontSize={10}
+              fontWeight="600"
+              fill={s.color}
+            >
+              {s.pct}%
+            </SvgText>,
+          ])}
+        </Svg>
+      ) : (
+        <Text className={`text-sm text-center py-4 ${t.textTertiary}`}>No scores recorded</Text>
+      )}
     </View>
   );
 }
@@ -839,22 +981,16 @@ export default function StatsScreen() {
     .map((q) => q.data)
     .filter((sc): sc is Scorecard => sc !== undefined);
 
-  const stats = useMemo(() => buildMyStats(scorecards), [scorecards]);
+  const stats = useMemo(() => buildMyStats(scorecards, filteredRounds), [scorecards, filteredRounds]);
 
-  // Scoring summary for the Scores tab: avg, high, and low gross scores across
-  // the filtered rounds. Only rounds where the player has a complete total_gross count.
+  // Scoring summary for the Scores tab: avg, high, and low from the same
+  // 18-hole-equivalent gross scores that buildMyStats computed (paired 9s included).
   const scoringSummary = useMemo(() => {
-    const grossScores = scorecards
-      .map((sc) => findMyPlayer(sc)?.total_gross)
-      .filter((g): g is number => g !== null && g !== undefined);
+    const { grossScores } = stats;
     if (grossScores.length === 0) return null;
     const avg = grossScores.reduce((s, g) => s + g, 0) / grossScores.length;
-    return {
-      avg,
-      low:  Math.min(...grossScores),
-      high: Math.max(...grossScores),
-    };
-  }, [scorecards]);
+    return { avg, low: Math.min(...grossScores), high: Math.max(...grossScores) };
+  }, [stats]);
 
   // Look up the loaded scorecard for whichever round has a modal open.
   const selectedScorecard = selectedRound
@@ -1000,16 +1136,13 @@ export default function StatsScreen() {
                 {stats.rounds} round{stats.rounds === 1 ? "" : "s"}{periodLabel}
               </Text>
 
-              <StatCard
-                label="Scoring"
-                rows={[
-                  { label: "Avg Score",   value: stats.avgGrossScore === null ? "—" : stats.avgGrossScore.toFixed(1), dim: stats.avgGrossScore === null },
-                  { label: "Avg (Par 3)", value: stats.avgPar3 === null ? "—" : stats.avgPar3.toFixed(2),             dim: stats.avgPar3 === null },
-                  { label: "Avg (Par 4)", value: stats.avgPar4 === null ? "—" : stats.avgPar4.toFixed(2),             dim: stats.avgPar4 === null },
-                  { label: "Avg (Par 5)", value: stats.avgPar5 === null ? "—" : stats.avgPar5.toFixed(2),             dim: stats.avgPar5 === null },
-                ]}
-              />
-              <ScoringPieChart
+              <ScoringCard
+                avgGrossScore={stats.avgGrossScore}
+                lowScore={stats.lowScore}
+                highScore={stats.highScore}
+                avgPar3={stats.avgPar3}
+                avgPar4={stats.avgPar4}
+                avgPar5={stats.avgPar5}
                 birdiesOrBetter={stats.birdiesOrBetter}
                 pars={stats.parsCount}
                 bogeys={stats.bogeysCount}

@@ -15,14 +15,17 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Modal,
+  TextInput,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import ModalHeader from "@/components/ModalHeader";
 import HoleDataGrid from "@/components/HoleDataGrid";
 import TeeForm from "@/components/TeeForm";
 import type { CourseDetail, TeeDetail } from "@/types/courses";
@@ -53,6 +56,12 @@ export default function CourseDetailScreen() {
   const [deletingTeeId,    setDeletingTeeId]    = useState<string | null>(null);
   const [refreshingCourse, setRefreshingCourse] = useState(false);
 
+  // Edit course modal state.
+  const [editCourseVisible, setEditCourseVisible] = useState(false);
+  const [editName,  setEditName]  = useState("");
+  const [editCity,  setEditCity]  = useState("");
+  const [editState, setEditState] = useState("");
+
   const canEdit = isAdminOrManager(user?.publicMetadata?.role);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
@@ -81,6 +90,39 @@ export default function CourseDetailScreen() {
     queryClient.invalidateQueries({ queryKey: ["course", id] });
     queryClient.invalidateQueries({ queryKey: ["courses"] });
   };
+
+  // ── Edit course ────────────────────────────────────────────────────────────
+  const openEditCourse = () => {
+    if (!course) return;
+    setEditName(course.name);
+    setEditCity(course.city ?? "");
+    setEditState(course.state ?? "");
+    setEditCourseVisible(true);
+  };
+
+  const editCourseMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/courses/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name:  editName.trim(),
+          city:  editCity.trim()  || undefined,
+          state: editState.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? "Failed to update course");
+      }
+    },
+    onSuccess: () => {
+      invalidateCourse();
+      setEditCourseVisible(false);
+    },
+    onError: (err: Error) => Alert.alert("Error", err.message),
+  });
 
   // ── Tee delete ─────────────────────────────────────────────────────────────
   const deleteTee = (tee: TeeDetail) => {
@@ -198,6 +240,20 @@ export default function CourseDetailScreen() {
           <Text className={`text-xs mt-1 ${t.textTertiary}`}>
             {course.hole_count}-hole course
           </Text>
+
+          {/* Edit course button — admin/manager only */}
+          {canEdit && (
+            <TouchableOpacity
+              className={`mt-3 self-start flex-row items-center gap-1.5 border rounded-xl px-3 py-2 ${t.borderInput}`}
+              onPress={openEditCourse}
+            >
+              <Ionicons name="create-outline" size={15} color={t.colors.tabBarActive} />
+              {/* eslint-disable-next-line react-native/no-inline-styles */}
+              <Text className="text-sm font-medium" style={{ color: t.colors.tabBarActive }}>
+                Edit Course
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {/* has_holes warning */}
           {!course.has_holes && (
@@ -336,6 +392,81 @@ export default function CourseDetailScreen() {
         existing={teeFormTarget}
         onSaved={invalidateCourse}
       />
+
+      {/* ── Edit Course Modal ───────────────────────────────────────────────── */}
+      <Modal
+        visible={editCourseVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setEditCourseVisible(false)}
+      >
+        <View className={`flex-1 ${t.surface} px-5 pt-8`}>
+          <ModalHeader
+            title="Edit Course"
+            onClose={() => setEditCourseVisible(false)}
+            disabled={editCourseMutation.isPending}
+          />
+
+          <View className="mt-6 gap-4">
+            <View>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                Course Name <Text className="text-red-500">*</Text>
+              </Text>
+              <TextInput
+                className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                value={editName}
+                onChangeText={setEditName}
+                autoCapitalize="words"
+                placeholderTextColor={t.colors.tabBarInactive}
+                editable={!editCourseMutation.isPending}
+              />
+            </View>
+
+            <View>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                City
+              </Text>
+              <TextInput
+                className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                value={editCity}
+                onChangeText={setEditCity}
+                autoCapitalize="words"
+                placeholderTextColor={t.colors.tabBarInactive}
+                editable={!editCourseMutation.isPending}
+              />
+            </View>
+
+            <View>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                State
+              </Text>
+              <TextInput
+                className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                value={editState}
+                onChangeText={setEditState}
+                autoCapitalize="characters"
+                maxLength={2}
+                placeholderTextColor={t.colors.tabBarInactive}
+                editable={!editCourseMutation.isPending}
+              />
+            </View>
+
+            <TouchableOpacity
+              className={`rounded-xl py-3.5 items-center mt-2 ${
+                editName.trim() && !editCourseMutation.isPending ? "bg-green-700" : "bg-green-700/40"
+              }`}
+              onPress={() => editCourseMutation.mutate()}
+              disabled={!editName.trim() || editCourseMutation.isPending}
+            >
+              {editCourseMutation.isPending ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-white font-semibold text-base">Save Changes</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }

@@ -28,6 +28,7 @@ import {
 import { useAuth } from "@clerk/clerk-expo";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
+import Svg, { Path } from "react-native-svg";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
@@ -102,7 +103,6 @@ function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[]) {
 // buildMyStats aggregates the caller's personal stats across a set of scorecards.
 function buildMyStats(scorecards: Scorecard[]) {
   let rounds = 0;
-  let totalBirdies = 0;
   let totalGross = 0;
   let grossCount = 0;
   let totalPutts = 0;
@@ -112,16 +112,23 @@ function buildMyStats(scorecards: Scorecard[]) {
   let fairwaysHit = 0;
   let fairwaysTotal = 0;
 
+  // Scoring distribution counters for the pie chart.
+  let birdiesOrBetter = 0;
+  let parsCount = 0;
+  let bogeysCount = 0;
+  let doublesPlus = 0;
+
+  // Par-specific score accumulators for avg score by par.
+  let par3Total = 0, par3Count = 0;
+  let par4Total = 0, par4Count = 0;
+  let par5Total = 0, par5Count = 0;
+
   for (const sc of scorecards) {
     const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
     const player = findMyPlayer(sc);
     if (!player) continue;
 
     rounds++;
-
-    totalBirdies += player.scores.filter(
-      (s) => (holeMap.get(s.hole_number) ?? -99) === s.gross_score + 1
-    ).length;
 
     if (player.total_gross !== null) {
       totalGross += player.total_gross;
@@ -140,15 +147,34 @@ function buildMyStats(scorecards: Scorecard[]) {
 
     fairwaysHit   += player.hole_stats.filter((hs) => hs.fir === true).length;
     fairwaysTotal += player.hole_stats.filter((hs) => hs.fir !== null).length;
+
+    // Per-score loop: scoring distribution and par-type averages.
+    for (const s of player.scores) {
+      const par = holeMap.get(s.hole_number);
+      if (par == null) continue;
+      const diff = s.gross_score - par;
+
+      if (diff <= -1)     birdiesOrBetter++;
+      else if (diff === 0) parsCount++;
+      else if (diff === 1) bogeysCount++;
+      else                 doublesPlus++;
+
+      if (par === 3)      { par3Total += s.gross_score; par3Count++; }
+      else if (par === 4) { par4Total += s.gross_score; par4Count++; }
+      else if (par === 5) { par5Total += s.gross_score; par5Count++; }
+    }
   }
 
   return {
     rounds,
-    totalBirdies,
     avgGrossScore:    grossCount > 0     ? totalGross / grossCount            : null,
     avgPuttsPerRound: puttRounds > 0    ? totalPutts / puttRounds            : null,
     girPercent:       greensTotal > 0   ? (greensHit / greensTotal) * 100    : null,
     firPercent:       fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
+    birdiesOrBetter, parsCount, bogeysCount, doublesPlus,
+    avgPar3: par3Count > 0 ? par3Total / par3Count : null,
+    avgPar4: par4Count > 0 ? par4Total / par4Count : null,
+    avgPar5: par5Count > 0 ? par5Total / par5Count : null,
   };
 }
 
@@ -199,6 +225,107 @@ function StatCard({
           </Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+// ScoringPieChart renders a donut chart showing hole outcome distribution across
+// all scored holes. Segments use categorical colors that encode scoring meaning,
+// not theme tokens. Segments with zero holes are omitted to keep the chart clean.
+function ScoringPieChart({
+  birdiesOrBetter,
+  pars,
+  bogeys,
+  doublesPlus,
+}: Readonly<{
+  birdiesOrBetter: number;
+  pars: number;
+  bogeys: number;
+  doublesPlus: number;
+}>) {
+  const t = useTheme();
+  const total = birdiesOrBetter + pars + bogeys + doublesPlus;
+  if (total === 0) return null;
+
+  const SIZE = 160;
+  const CX   = SIZE / 2;
+  const CY   = SIZE / 2;
+  const R    = 66; // outer radius
+  const IR   = 40; // inner radius (donut hole)
+
+  // Categorical colors — color encodes scoring meaning, not theme state.
+  const allSlices = [
+    { value: birdiesOrBetter, color: "#16a34a", label: "Birdie+" },
+    { value: pars,             color: "#3b82f6", label: "Par"     },
+    { value: bogeys,           color: "#f59e0b", label: "Bogey"   },
+    { value: doublesPlus,      color: "#ef4444", label: "Double+" },
+  ];
+  // Only include slices that have at least one hole — zero-value arcs are invisible
+  // but can cause SVG rendering artifacts.
+  const slices = allSlices.filter((s) => s.value > 0);
+
+  function toXY(angle: number, radius: number) {
+    return { x: CX + radius * Math.cos(angle), y: CY + radius * Math.sin(angle) };
+  }
+
+  // Build a donut arc path. When the sweep is nearly 2π (one segment dominates),
+  // clamp to avoid the degenerate case where the arc's start and end points coincide.
+  function arcPath(startAngle: number, sweep: number): string {
+    const clampedSweep = Math.min(sweep, 2 * Math.PI - 0.001);
+    const endAngle = startAngle + clampedSweep;
+    const os = toXY(startAngle, R);
+    const oe = toXY(endAngle,   R);
+    const is = toXY(startAngle, IR);
+    const ie = toXY(endAngle,   IR);
+    const large = clampedSweep > Math.PI ? 1 : 0;
+    return [
+      `M ${os.x.toFixed(2)} ${os.y.toFixed(2)}`,
+      `A ${R} ${R} 0 ${large} 1 ${oe.x.toFixed(2)} ${oe.y.toFixed(2)}`,
+      `L ${ie.x.toFixed(2)} ${ie.y.toFixed(2)}`,
+      `A ${IR} ${IR} 0 ${large} 0 ${is.x.toFixed(2)} ${is.y.toFixed(2)}`,
+      "Z",
+    ].join(" ");
+  }
+
+  // Start at the top of the circle (–π/2) and sweep clockwise.
+  let angle = -Math.PI / 2;
+  const paths = slices.map((s) => {
+    const sweep = (s.value / total) * 2 * Math.PI;
+    const d = arcPath(angle, sweep);
+    angle += sweep;
+    return { ...s, d };
+  });
+
+  return (
+    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
+      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+        Scoring Distribution
+      </Text>
+      <View className="items-center mb-3">
+        <Svg width={SIZE} height={SIZE}>
+          {paths.map((s) => (
+            <Path key={s.label} d={s.d} fill={s.color} />
+          ))}
+        </Svg>
+      </View>
+      {/* Legend: one row per category, label on left, "pct% (n)" on right */}
+      <View className="gap-2">
+        {allSlices.map((s) => {
+          const pct = Math.round((s.value / total) * 100);
+          return (
+            <View key={s.label} className="flex-row items-center justify-between">
+              <View className="flex-row items-center gap-2">
+                {/* eslint-disable-next-line react-native/no-inline-styles */}
+                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: s.color }} />
+                <Text className={`text-sm ${t.textSecondary}`}>{s.label}</Text>
+              </View>
+              <Text className={`text-sm font-semibold ${s.value === 0 ? t.textTertiary : t.textPrimary}`}>
+                {pct}% ({s.value})
+              </Text>
+            </View>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -876,10 +1003,17 @@ export default function StatsScreen() {
               <StatCard
                 label="Scoring"
                 rows={[
-                  { label: "Rounds Played", value: stats.rounds.toString() },
-                  { label: "Avg Score",     value: stats.avgGrossScore === null ? "—" : stats.avgGrossScore.toFixed(1),     dim: stats.avgGrossScore === null },
-                  { label: "Total Birdies", value: stats.totalBirdies === 0    ? "—" : stats.totalBirdies.toString(),       dim: stats.totalBirdies === 0    },
+                  { label: "Avg Score",   value: stats.avgGrossScore === null ? "—" : stats.avgGrossScore.toFixed(1), dim: stats.avgGrossScore === null },
+                  { label: "Avg (Par 3)", value: stats.avgPar3 === null ? "—" : stats.avgPar3.toFixed(2),             dim: stats.avgPar3 === null },
+                  { label: "Avg (Par 4)", value: stats.avgPar4 === null ? "—" : stats.avgPar4.toFixed(2),             dim: stats.avgPar4 === null },
+                  { label: "Avg (Par 5)", value: stats.avgPar5 === null ? "—" : stats.avgPar5.toFixed(2),             dim: stats.avgPar5 === null },
                 ]}
+              />
+              <ScoringPieChart
+                birdiesOrBetter={stats.birdiesOrBetter}
+                pars={stats.parsCount}
+                bogeys={stats.bogeysCount}
+                doublesPlus={stats.doublesPlus}
               />
               <StatCard
                 label="Driving"

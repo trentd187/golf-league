@@ -177,6 +177,33 @@ function scoreColor(diff: number, textPrimary: string): string {
   return "text-red-500";                    // Double+
 }
 
+// scoreToPar computes a player's cumulative score vs par for all holes played.
+// Returns null when no holes have been scored yet.
+// Holes with no par data (par === 0) are excluded from the par sum.
+function scoreToPar(
+  roundPlayerId: string,
+  holeRows: { hole_number: number; par: number }[],
+  localScores: LocalScores,
+): number | null {
+  const inputs = localScores[roundPlayerId] ?? {};
+  let diff = 0, count = 0;
+  for (const hole of holeRows) {
+    const g = parseInt(inputs[hole.hole_number] ?? "", 10);
+    if (!isNaN(g) && g >= 1 && hole.par) {
+      diff += g - hole.par;
+      count++;
+    }
+  }
+  return count > 0 ? diff : null;
+}
+
+// formatToPar converts a numeric score differential to the standard display:
+// "E" for even, "+N" for over, "-N" for under.
+function formatToPar(diff: number): string {
+  if (diff === 0) return "E";
+  return diff > 0 ? `+${diff}` : String(diff);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ScorecardScreen() {
@@ -694,8 +721,11 @@ export default function ScorecardScreen() {
                   }`}
                   numberOfLines={1}
                 >
-                  {/* Playing handicap shown in parens; (-) when not yet entered */}
-                  {p.display_name.split(" ")[0]} {p.course_handicap != null ? `(${p.course_handicap})` : "(-)"}
+                  {/* Score to par shown in parens; (-) when no holes played yet */}
+                  {(() => {
+                    const diff = scoreToPar(p.round_player_id, holeRows, scores);
+                    return `${p.display_name.split(" ")[0]} (${diff != null ? formatToPar(diff) : "-"})`;
+                  })()}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -722,10 +752,15 @@ export default function ScorecardScreen() {
                       <Text className={`text-xs font-bold text-center ${t.textPrimary}`} numberOfLines={1}>
                         {p.display_name.split(" ")[0]}
                       </Text>
-                      {/* Playing handicap for this round; (-) when not yet entered */}
-                      <Text className={`text-xs text-center ${t.textTertiary}`} numberOfLines={1}>
-                        {p.course_handicap != null ? `(${p.course_handicap})` : "(-)"}
-                      </Text>
+                      {/* Score to par for this round; (-) when no holes played yet */}
+                      {(() => {
+                        const diff = scoreToPar(p.round_player_id, holeRows, scores);
+                        return (
+                          <Text className={`text-xs text-center ${t.textTertiary}`} numberOfLines={1}>
+                            {diff != null ? formatToPar(diff) : "(-)"}
+                          </Text>
+                        );
+                      })()}
                       {status === "saving" && (
                         // eslint-disable-next-line react-native/no-inline-styles
                         <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />

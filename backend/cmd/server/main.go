@@ -5,16 +5,22 @@
 package main
 
 import (
+	"context"
 	"log"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/gofiber/contrib/otelfiber"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
 
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/database"
 	"github.com/trentd187/golf-league/internal/handlers"
 	"github.com/trentd187/golf-league/internal/middleware"
+	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
 	"github.com/trentd187/golf-league/internal/websocket"
 )
@@ -36,6 +42,19 @@ func main() {
 	hub := websocket.NewHub()
 	go hub.Run()
 
+	// Initialise the full Grafana Cloud observability stack (logs, metrics, traces, profiling).
+	// Components whose env vars are absent degrade to no-ops — server runs without credentials.
+	obs, err := observability.Init(cfg, hub.ConnCount)
+	if err != nil {
+		log.Fatal("Failed to initialise observability:", err)
+	}
+	defer obs.Shutdown()
+
+	// Route all stdlib slog output through our handler so app logs appear in Loki.
+	slog.SetDefault(obs.Logger)
+	// Register the default handler for package-level observability.LogInfo(...) calls in handlers.
+	observability.SetDefault(obs.Handler())
+
 	// GolfCourseAPIClient is created once and shared across requests.
 	// GOLF_COURSE_API_KEY may be empty — handlers check and return 503 if called without a key.
 	golfAPI := services.NewGolfCourseAPIClient(cfg.GolfCourseAPIKey)
@@ -44,9 +63,20 @@ func main() {
 		AppName: "Golf League API",
 	})
 
-	app.Use(logger.New())
-	// cors.New() allows cross-origin requests — needed in development; lock down in production.
 	app.Use(cors.New())
+
+	// otelfiber auto-instruments every request as an OTel span.
+	// Must be registered first so all subsequent middleware and handlers have span context.
+	app.Use(otelfiber.Middleware())
+
+	// Correlation middleware reads X-Correlation-ID from the request (or generates one),
+	// attaches it to the active span, and writes X-Trace-ID to the response.
+	// Must be registered after otelfiber so the span already exists.
+	app.Use(middleware.Correlation())
+
+	// HTTPMetrics records request counts and latency using OTel instruments.
+	// Registered after otelfiber so span context is available.
+	app.Use(middleware.HTTPMetrics(obs.Metrics))
 
 	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
 	app.Get("/health", handlers.HealthCheck)
@@ -54,6 +84,10 @@ func main() {
 	// All routes under /api/v1 require a valid Clerk JWT.
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
+
+	// Telemetry — mobile clients POST structured logs here; backend proxies to Loki.
+	// Requires a valid Clerk JWT (auth middleware above), so Loki credentials stay server-side.
+	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
 	// Event routes
 	api.Get("/events", handlers.GetEvents(db))
@@ -111,6 +145,24 @@ func main() {
 	api.Get("/users", handlers.GetUsers(db))
 	api.Patch("/me/profile-image", handlers.UpdateProfileImage(cfg, db))
 
-	log.Printf("Starting server on port %s", cfg.Port)
-	log.Fatal(app.Listen(":" + cfg.Port))
+	// Start the server in a goroutine so we can listen for OS signals below.
+	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;
+	// graceful shutdown flushes telemetry before the process exits.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		observability.LogInfo(context.Background(), "server.startup", "Server starting",
+			"port", cfg.Port, "env", cfg.Env)
+		if err := app.Listen(":" + cfg.Port); err != nil {
+			log.Printf("Server listen error: %v", err)
+		}
+	}()
+
+	<-quit
+
+	observability.LogInfo(context.Background(), "server.shutdown", "Server shutting down")
+	if err := app.Shutdown(); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
 }

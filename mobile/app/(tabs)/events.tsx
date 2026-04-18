@@ -31,6 +31,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge, StatusChip } from "@/components/badges";
@@ -186,7 +187,7 @@ export default function EventsScreen() {
     queryKey: ["events"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
@@ -281,7 +282,7 @@ export default function EventsScreen() {
       end_date?: string;
     }) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

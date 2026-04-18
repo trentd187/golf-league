@@ -18,6 +18,24 @@ type Config struct {
 	ClerkJWKSURL     string // Clerk's JWKS URL — used to verify JWT signatures
 	Env              string // Runtime environment: "development", "staging", or "production"
 	GolfCourseAPIKey string // API key for GolfCourseAPI.com — enables external course search/import
+
+	// Logging — structured slog output at or above this level (debug|info|warn|error, default: info)
+	LogLevel string
+
+	// Loki — all three must be set to enable remote log push; empty = stdout only
+	LokiURL    string
+	LokiUser   string
+	LokiAPIKey string
+
+	// OTLP — same gateway receives metrics (→ Mimir) and traces (→ Tempo); empty = disabled
+	OTLPEndpoint string
+	OTLPUser     string
+	OTLPAPIKey   string
+
+	// Pyroscope — continuous profiling; empty = disabled
+	PyroscopeURL    string
+	PyroscopeUser   string
+	PyroscopeAPIKey string
 }
 
 // Load reads configuration from environment variables and returns a populated Config.
@@ -35,6 +53,11 @@ func Load() *Config {
 		env = "development"
 	}
 
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+
 	return &Config{
 		Port:             port,
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
@@ -42,5 +65,15 @@ func Load() *Config {
 		ClerkJWKSURL:     os.Getenv("CLERK_JWKS_URL"),
 		Env:              env,
 		GolfCourseAPIKey: os.Getenv("GOLF_COURSE_API_KEY"),
+		LogLevel:         logLevel,
+		LokiURL:          os.Getenv("LOKI_URL"),
+		LokiUser:         os.Getenv("LOKI_USER"),
+		LokiAPIKey:       os.Getenv("LOKI_API_KEY"),
+		OTLPEndpoint:     os.Getenv("OTLP_ENDPOINT"),
+		OTLPUser:         os.Getenv("OTLP_USER"),
+		OTLPAPIKey:       os.Getenv("OTLP_API_KEY"),
+		PyroscopeURL:     os.Getenv("PYROSCOPE_URL"),
+		PyroscopeUser:    os.Getenv("PYROSCOPE_USER"),
+		PyroscopeAPIKey:  os.Getenv("PYROSCOPE_API_KEY"),
 	}
 }

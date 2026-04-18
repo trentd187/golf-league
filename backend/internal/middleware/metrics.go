@@ -1,0 +1,46 @@
+// metrics.go provides the HTTPMetrics middleware that records request count
+// and latency for every HTTP request using the OTel instruments in Metrics.
+// It uses the Fiber route pattern (e.g. "/rounds/:roundId") rather than the
+// raw URL to prevent UUID-per-series cardinality explosions on the Mimir free tier.
+package middleware
+
+import (
+	"context"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+
+	"github.com/trentd187/golf-league/internal/observability"
+)
+
+// HTTPMetrics returns a Fiber middleware that records per-request metrics.
+// Register this after otelfiber so the OTel span context is already set.
+func HTTPMetrics(m *observability.Metrics) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		duration := time.Since(start)
+
+		// Fiber sets the matched route pattern after Next() returns.
+		// Fall back to "unknown" for unmatched paths (404s) so they don't
+		// create high-cardinality series in Mimir.
+		route := c.Route().Path
+		if route == "" {
+			route = "unknown"
+		}
+
+		statusCode := c.Response().StatusCode()
+		m.RecordHTTP(context.Background(), c.Method(), route, statusCode, duration)
+
+		// Log 5xx errors so they appear in Loki with full request context.
+		if statusCode >= 500 {
+			observability.LogError(c.UserContext(), "http.error", "HTTP 5xx response",
+				"method", c.Method(),
+				"route", route,
+				"status", statusCode,
+			)
+		}
+
+		return err
+	}
+}

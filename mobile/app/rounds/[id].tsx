@@ -46,6 +46,7 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
@@ -174,7 +175,7 @@ export default function RoundDetailScreen() {
     queryKey: ["round", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch round: ${res.status}`);
@@ -187,7 +188,7 @@ export default function RoundDetailScreen() {
     queryKey: ["event", round?.event_id, "members"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error("Failed to fetch members");
@@ -208,7 +209,7 @@ export default function RoundDetailScreen() {
     queryKey: ["scorecard", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/scorecard`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/scorecard`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
@@ -296,7 +297,7 @@ export default function RoundDetailScreen() {
       course_name?: string;
     }) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -325,7 +326,7 @@ export default function RoundDetailScreen() {
   const addGroupMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -346,7 +347,7 @@ export default function RoundDetailScreen() {
   const updateGroupMutation = useMutation({
     mutationFn: async ({ groupId, name, teeTime }: { groupId: string; name: string; teeTime: string }) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim() || null, tee_time: teeTime.trim() || null }),
@@ -370,7 +371,7 @@ export default function RoundDetailScreen() {
   const deleteGroupMutation = useMutation({
     mutationFn: async (groupId: string) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -390,7 +391,7 @@ export default function RoundDetailScreen() {
   const deleteRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -415,7 +416,7 @@ export default function RoundDetailScreen() {
   const endRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ status: "completed" }),
@@ -457,7 +458,7 @@ export default function RoundDetailScreen() {
   const startRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ status: "active" }),

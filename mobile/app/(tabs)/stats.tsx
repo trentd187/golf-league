@@ -30,6 +30,7 @@ import { useQuery, useQueries } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import ModalHeader from "@/components/ModalHeader";
 import type { Scorecard, ScorecardPlayer, ScorecardHole } from "@/types/scorecard";
 
@@ -548,7 +549,7 @@ export default function StatsScreen() {
     queryKey: ["rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/rounds`, {
+      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
@@ -599,7 +600,7 @@ export default function StatsScreen() {
       queryKey: ["scorecard", round.id],
       queryFn: async () => {
         const token = await getToken();
-        const res = await fetch(`${API_URL}/api/v1/rounds/${round.id}/scorecard`, {
+        const res = await apiFetch(`${API_URL}/api/v1/rounds/${round.id}/scorecard`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);

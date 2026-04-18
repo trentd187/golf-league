@@ -12,6 +12,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	// keyfunc fetches Clerk's public JWKS keys, caches them, and handles key rotation.
 	"github.com/MicahParks/keyfunc/v3"
@@ -176,6 +178,12 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 		// Store user info in request-scoped locals for downstream handlers.
 		c.Locals("userID", user.ID.String())
 		c.Locals("userRole", string(user.Role))
+
+		// Tag the active OTel span with the user's database UUID so traces in
+		// Grafana Tempo can be filtered by user when investigating reported issues.
+		trace.SpanFromContext(c.UserContext()).SetAttributes(
+			attribute.String("user.id", user.ID.String()),
+		)
 
 		return c.Next()
 	}

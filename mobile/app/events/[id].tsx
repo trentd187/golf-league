@@ -36,6 +36,7 @@ import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/rea
 import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 
 // DateInput: auto-formats typed input to MM-DD-YY and shows a native calendar picker.
 // apiToDisplay/displayToApi handle YYYY-MM-DD ↔ MM-DD-YY conversion.
@@ -192,7 +193,7 @@ export default function EventDetailScreen() {
     queryKey: ["event", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch event: ${res.status}`);
@@ -208,7 +209,7 @@ export default function EventDetailScreen() {
     queryKey: ["event", id, "rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}/rounds`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
@@ -221,7 +222,7 @@ export default function EventDetailScreen() {
     queryKey: ["users"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/users`, {
+      const res = await apiFetch(`${API_URL}/api/v1/users`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error("Failed to fetch users");
@@ -244,7 +245,7 @@ export default function EventDetailScreen() {
       queryKey: ["scorecard", roundId],
       queryFn: async () => {
         const token = await getToken();
-        const res = await fetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
+        const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
@@ -282,7 +283,7 @@ export default function EventDetailScreen() {
       end_date?: string;
     }) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -309,7 +310,7 @@ export default function EventDetailScreen() {
   const addMemberMutation = useMutation({
     mutationFn: async (userId: string) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}/members`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/members`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -346,7 +347,7 @@ export default function EventDetailScreen() {
       course_name?: string;
     }) => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}/rounds`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -382,7 +383,7 @@ export default function EventDetailScreen() {
   const endEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ status: "completed" }),
@@ -405,7 +406,7 @@ export default function EventDetailScreen() {
   const deleteEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/events/${id}`, {
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });

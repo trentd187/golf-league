@@ -22,6 +22,7 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import ModalHeader from "@/components/ModalHeader";
 import type { CourseSummary } from "@/types/courses";
 
@@ -77,7 +78,7 @@ export default function CoursesScreen() {
   const createMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses`, {
+      const res = await apiFetch(`${API_URL}/api/v1/courses`, {
         method:  "POST",
         headers: {
           Authorization:  `Bearer ${token}`,

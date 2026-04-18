@@ -33,6 +33,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/observability"
 	"gorm.io/gorm"
 )
 
@@ -238,6 +239,12 @@ func CreateEvent(db *gorm.DB) fiber.Handler {
 				"error": "failed to create event",
 			})
 		}
+
+		observability.LogInfo(c.UserContext(), "event.created", "Event created",
+			"event_id", createdEvent.ID.String(),
+			"event_type", string(createdEvent.EventType),
+			"user_id", userID.String(),
+		)
 
 		var creator models.User
 		db.First(&creator, "id = ?", userID)
@@ -485,6 +492,13 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 		// db.Save() issues an UPDATE for all columns (GORM doesn't diff).
 		if err := db.Save(&event).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update event"})
+		}
+
+		if req.Status != nil {
+			observability.LogInfo(c.UserContext(), "event.status_changed", "Event status changed",
+				"event_id", event.ID.String(),
+				"status", string(event.Status),
+			)
 		}
 
 		var memberCount int64
@@ -910,6 +924,11 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to schedule round"})
 		}
+
+		observability.LogInfo(c.UserContext(), "round.created", "Round scheduled",
+			"round_id", createdRound.ID.String(),
+			"event_id", eventID.String(),
+		)
 
 		return c.Status(fiber.StatusCreated).JSON(RoundSummaryResponse{
 			ID:            createdRound.ID.String(),

@@ -36,6 +36,7 @@ import {
 import { useState } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
@@ -162,7 +163,7 @@ export default function ProfileScreen() {
 
       // Do NOT set Content-Type manually — RN sets "multipart/form-data; boundary=..."
       // automatically when the body is FormData. Setting it manually omits the boundary.
-      const res = await fetch(`${API_URL}/api/v1/me/profile-image`, {
+      const res = await apiFetch(`${API_URL}/api/v1/me/profile-image`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,

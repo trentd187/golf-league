@@ -4,7 +4,10 @@
 // the moment they're entered.
 package websocket
 
-import "sync" // sync provides the RWMutex for safe concurrent map access
+import (
+	"sync"        // sync provides the RWMutex for safe concurrent map access
+	"sync/atomic" // atomic provides lock-free integer operations for the connection counter
+)
 
 // Client represents a single connected WebSocket client.
 type Client struct {
@@ -32,6 +35,10 @@ type Hub struct {
 
 	// RWMutex allows multiple concurrent readers (broadcast) or one exclusive writer (register/unregister).
 	mu sync.RWMutex
+
+	// connCount tracks the total number of active WebSocket connections.
+	// Accessed via atomic operations so it can be read from any goroutine without holding mu.
+	connCount int32
 }
 
 // NewHub creates and initializes a Hub.
@@ -59,6 +66,7 @@ func (h *Hub) Run() {
 			}
 			h.clients[client.RoundID][client] = true
 			h.mu.Unlock()
+			atomic.AddInt32(&h.connCount, 1)
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -69,6 +77,7 @@ func (h *Hub) Run() {
 					if len(clients) == 0 {
 						delete(h.clients, client.RoundID)
 					}
+					atomic.AddInt32(&h.connCount, -1)
 				}
 			}
 			h.mu.Unlock()
@@ -106,4 +115,10 @@ func (h *Hub) Register(client *Client) {
 // Unregister removes a client from the Hub when its WebSocket connection closes.
 func (h *Hub) Unregister(client *Client) {
 	h.unregister <- client
+}
+
+// ConnCount returns the current number of active WebSocket connections.
+// Safe to call from any goroutine — uses an atomic load, no lock needed.
+func (h *Hub) ConnCount() int32 {
+	return atomic.LoadInt32(&h.connCount)
 }

@@ -22,6 +22,7 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { apiFetch } from "@/utils/api";
 import HoleDataGrid from "@/components/HoleDataGrid";
 import TeeForm from "@/components/TeeForm";
 import type { CourseDetail, TeeDetail } from "@/types/courses";
@@ -57,7 +58,7 @@ export default function CourseDetailScreen() {
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {
     const token = await getToken();
-    const res = await fetch(`${API_URL}/api/v1/courses/${id}`, {
+    const res = await apiFetch(`${API_URL}/api/v1/courses/${id}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) throw new Error("Failed to load course");
@@ -122,7 +123,7 @@ export default function CourseDetailScreen() {
     setRefreshingCourse(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses/${id}/refresh`, {
+      const res = await apiFetch(`${API_URL}/api/v1/courses/${id}/refresh`, {
         method:  "POST",
         headers: { Authorization: `Bearer ${token}` },
       });

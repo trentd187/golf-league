@@ -109,6 +109,9 @@ export default function CoursePickerModal({
   // locationQuery: optional city, state, or zip — appended to external search and used
   // to filter local DB results by city or state.
   const [locationQuery, setLocationQuery]         = useState("");
+  // allCourses: full unfiltered list fetched on modal open, shown when no search is active.
+  const [allCourses, setAllCourses]               = useState<LocalCourseSummary[]>([]);
+  const [allCoursesLoading, setAllCoursesLoading] = useState(false);
   const [localResults, setLocalResults]           = useState<LocalCourseSummary[]>([]);
   const [externalResults, setExternalResults]     = useState<ExternalCourseSummary[]>([]);
   const [localLoading, setLocalLoading]           = useState(false);
@@ -128,14 +131,32 @@ export default function CoursePickerModal({
     if (!visible) {
       setQuery("");
       setLocationQuery("");
+      setAllCourses([]);
       setLocalResults([]);
       setExternalResults([]);
       setLocalLoading(false);
+      setAllCoursesLoading(false);
       setExternalLoading(false);
       setImportingId(null);
       setSelectingId(null);
       setShowExternal(false);
+      return;
     }
+
+    // On open: load all courses alphabetically so the list is immediately browsable.
+    setAllCoursesLoading(true);
+    getToken().then((token) =>
+      fetch(`${API_URL}/api/v1/courses`, { headers: { Authorization: `Bearer ${token}` } })
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data: LocalCourseSummary[]) => {
+          const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name));
+          setAllCourses(sorted);
+        })
+        .catch(() => {})
+        .finally(() => setAllCoursesLoading(false)),
+    );
+    // getToken is intentionally excluded from deps — same reasoning as the search effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   // ── Local search — fires 500 ms after the user stops typing ─────────────────
@@ -171,8 +192,11 @@ export default function CoursePickerModal({
         let url = `${API_URL}/api/v1/courses?${params.toString()}`;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         if (res.ok) {
-          const data = await res.json();
-          setLocalResults(Array.isArray(data) ? data : []);
+          const data: LocalCourseSummary[] = await res.json();
+          const sorted = Array.isArray(data)
+            ? [...data].sort((a, b) => a.name.localeCompare(b.name))
+            : [];
+          setLocalResults(sorted);
         }
       } catch {
         // Network error — show empty results; user can try again or search online.
@@ -362,23 +386,31 @@ export default function CoursePickerModal({
 
         {/* Results list */}
         <FlatList
-          data={localResults}
+          data={hasSearch ? localResults : allCourses}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 }}
           ListHeaderComponent={
             <>
-              {/* Spinner while local search is in flight */}
-              {localLoading && (
+              {/* Spinner while loading all courses on open */}
+              {allCoursesLoading && !hasSearch && (
                 <ActivityIndicator
                   size="small"
                   color={t.colors.tabBarActive}
                   style={{ marginVertical: 20 }}
                 />
               )}
-              {/* Prompt before the user has typed enough */}
-              {!localLoading && !hasSearch && (
+              {/* Spinner while a search is in flight */}
+              {localLoading && hasSearch && (
+                <ActivityIndicator
+                  size="small"
+                  color={t.colors.tabBarActive}
+                  style={{ marginVertical: 20 }}
+                />
+              )}
+              {/* Hint text — only shown after initial load when no courses exist at all */}
+              {!allCoursesLoading && !hasSearch && allCourses.length === 0 && (
                 <Text className={`text-sm text-center mt-10 ${t.textTertiary}`}>
-                  Type a course name (3+ chars) or location (2+ chars) to search
+                  No courses yet. Type a name to search online.
                 </Text>
               )}
             </>

@@ -207,8 +207,10 @@ func (h *LokiHandler) pushToLoki(batch []lokiEntry) {
 		return
 	}
 
+	// Append the push path so LOKI_URL can be the base URL (e.g. https://logs-prod-xxx.grafana.net),
+	// consistent with how OTLP_ENDPOINT is configured. The Loki push API is always at this path.
 	//nolint:gosec // h.lokiURL is operator-configured, not user input
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, h.lokiURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, h.lokiURL+"/loki/api/v1/push", bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "observability: loki request build error: %v\n", err)
 		return

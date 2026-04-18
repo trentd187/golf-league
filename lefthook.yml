@@ -97,4 +97,16 @@ pre-push:
       root: "backend"
       run: go test ./... -timeout 60s
 
+    # -------------------------------------------------------------------------
+    # Backend: Docker build check
+    # -------------------------------------------------------------------------
+    # Verifies the Railway Dockerfile (repo root) builds successfully.
+    # Catches Go version mismatches, missing files, and broken build steps
+    # before they fail in Railway's CI. Uses --no-cache to avoid stale layers
+    # masking a real failure.
+    # -------------------------------------------------------------------------
+    backend-docker-build:
+      glob: "{backend/**/*.go,backend/go.mod,backend/go.sum,Dockerfile}"
+      run: docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest
+
     # Mobile Jest coverage will be added here once the Jest framework is set up.

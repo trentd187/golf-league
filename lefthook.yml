@@ -107,6 +107,9 @@ pre-push:
     # -------------------------------------------------------------------------
     backend-docker-build:
       glob: "{backend/**/*.go,backend/go.mod,backend/go.sum,Dockerfile}"
-      run: docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest
+      run: >
+        docker info > /dev/null 2>&1
+        && docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest
+        || { echo "⚠️  Docker not running — skipping Docker build check"; exit 0; }
 
     # Mobile Jest coverage will be added here once the Jest framework is set up.

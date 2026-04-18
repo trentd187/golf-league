@@ -17,6 +17,11 @@ import * as ExpoCrypto from "expo-crypto";
 
 import { API_URL } from "@/constants/api";
 
+// Determined at bundle time by Metro/Hermes. __DEV__ is true in Expo Go and
+// dev-client builds, false in EAS production builds and standalone apps.
+// This mirrors how the backend reads its ENV environment variable.
+const APP_ENV = __DEV__ ? "development" : "production";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 interface QueueEntry {
@@ -38,7 +43,7 @@ class TelemetryClient {
   // Included in log entries so a Loki error can link directly to a Tempo span.
   private lastTraceId: string | null = null;
 
-  private queue: QueueEntry[] = [];
+  private readonly queue: QueueEntry[] = [];
   private getToken: TokenGetter | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -86,6 +91,7 @@ class TelemetryClient {
       fields: {
         ...fields,
         correlation_id: this.sessionId,
+        env: APP_ENV,
         ...(this.lastTraceId ? { trace_id: this.lastTraceId } : {}),
       },
     };

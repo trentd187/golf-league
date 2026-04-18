@@ -142,24 +142,51 @@ type lokiStream struct {
 	Values [][2]string       `json:"values"` // [unix_nano_string, log_line]
 }
 
+// streamKey groups Loki entries into separate streams.
+// Loki stream labels are indexed — one stream per (level, service, env) triple.
+type streamKey struct {
+	level   string
+	service string // "backend" or "mobile"
+	env     string
+}
+
 // pushToLoki serialises a batch of entries into Loki's push format and sends
-// one HTTP request per level group (each level gets its own stream label set).
+// one HTTP request per stream group. Each (level, service, env) triple gets its
+// own stream so callers can filter by {service="backend"} or {service="mobile",env="production"}.
+//
+// For backend entries the env label is always h.env (from the ENV env var).
+// For mobile entries the env label is taken from the "env" field sent by the
+// mobile app — "development" in Expo Go / dev client, "production" in EAS builds.
 // Errors are printed to stderr to avoid recursive logging.
 func (h *LokiHandler) pushToLoki(batch []lokiEntry) {
-	// Group entries by level so each has its own stream label.
-	byLevel := make(map[string][]lokiEntry)
+	// Group entries by (level, service, env).
+	// Mobile entries are identified by source="mobile" in their attrs — set by
+	// the telemetry handler when proxying logs from the React Native app.
+	byStream := make(map[streamKey][]lokiEntry)
 	for _, e := range batch {
-		lbl := levelLabel(e.level)
-		byLevel[lbl] = append(byLevel[lbl], e)
+		svc := "backend"
+		env := h.env
+		for _, a := range e.attrs {
+			if a.Key == "source" && a.Value.String() == "mobile" {
+				svc = "mobile"
+			}
+			// Use the mobile app's own env field so dev and prod builds are
+			// distinguishable even when routed through the same backend instance.
+			if svc == "mobile" && a.Key == "env" && a.Value.String() != "" {
+				env = a.Value.String()
+			}
+		}
+		key := streamKey{level: levelLabel(e.level), service: svc, env: env}
+		byStream[key] = append(byStream[key], e)
 	}
 
 	var streams []lokiStream
-	for lbl, entries := range byLevel {
+	for key, entries := range byStream {
 		stream := lokiStream{
 			Stream: map[string]string{
-				"app":   "golf-league",
-				"env":   h.env,
-				"level": lbl,
+				"service": key.service,
+				"env":     key.env,
+				"level":   key.level,
 			},
 		}
 		for _, e := range entries {

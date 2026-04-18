@@ -50,8 +50,9 @@ type RoundSummary = {
   slope_rating: number;
 };
 
-// FilterValue is "last20" | "all" | a 4-digit year string like "2026".
-type FilterValue = "last20" | "all" | string;
+// FilterValue is a discriminated string: "last20", "all", or a 4-digit year like "2026".
+// Using plain string avoids the S6571 Sonar warning (specific literals overridden by string).
+type FilterValue = string;
 
 type InnerTab = "stats" | "scores";
 
@@ -65,6 +66,37 @@ function findMyPlayer(sc: Scorecard): ScorecardPlayer | undefined {
     if (p) return p;
   }
   return undefined;
+}
+
+// buildRoundStats computes per-hole stats for one player in a single round.
+function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[]) {
+  const holeMap = new Map(holes.map((h) => [h.hole_number, h.par]));
+
+  let birdies = 0, pars = 0, bogeys = 0, doubles = 0;
+  for (const s of player.scores) {
+    const par = holeMap.get(s.hole_number);
+    if (par == null) continue;
+    const diff = s.gross_score - par;
+    if (diff <= -1)     birdies++;
+    else if (diff === 0) pars++;
+    else if (diff === 1) bogeys++;
+    else                 doubles++;
+  }
+
+  const validPutts  = player.hole_stats.filter((hs) => hs.putts !== null);
+  const totalPutts  = validPutts.reduce((sum, hs) => sum + (hs.putts ?? 0), 0);
+  const greensHit   = player.hole_stats.filter((hs) => hs.gir === "hit").length;
+  const greensTotal = player.hole_stats.filter((hs) => hs.gir !== null && hs.gir !== "na").length;
+  const fairwaysHit   = player.hole_stats.filter((hs) => hs.fir === true).length;
+  const fairwaysTotal = player.hole_stats.filter((hs) => hs.fir !== null).length;
+
+  return {
+    birdies, pars, bogeys, doubles,
+    totalPutts:     validPutts.length > 0 ? totalPutts : null,
+    puttsTracked:   validPutts.length,
+    greensHit,   greensTotal,
+    fairwaysHit, fairwaysTotal,
+  };
 }
 
 // buildMyStats aggregates the caller's personal stats across a set of scorecards.
@@ -143,18 +175,46 @@ function scoreTextColor(gross: number, par: number): string {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-// StatSection renders a placeholder card for one stat category.
-// Used in both the aggregated Stats tab and the per-round RoundStatsModal.
-function StatSection({ label }: { label: string }) {
+// StatCard renders a labeled group of stat rows.
+// Each row has a label on the left and a value on the right.
+// dim=true greys out the value when no data is available.
+function StatCard({
+  label,
+  rows,
+}: Readonly<{
+  label: string;
+  rows: { label: string; value: string; dim?: boolean }[];
+}>) {
   const t = useTheme();
   return (
     <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
-      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-1`}>
         {label}
       </Text>
-      <Text className={`text-sm ${t.textSecondary}`}>Coming soon</Text>
+      {rows.map((row) => (
+        <View key={row.label} className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
+          <Text className={`text-sm ${t.textSecondary}`}>{row.label}</Text>
+          <Text className={`text-sm font-semibold ${row.dim ? t.textTertiary : t.textPrimary}`}>
+            {row.value}
+          </Text>
+        </View>
+      ))}
     </View>
   );
+}
+
+// formatRunningDiff formats a cumulative to-par differential for display.
+// Returns "—" when no holes are scored yet, "E" for even, "+N" or "-N" otherwise.
+function formatRunningDiff(diff: number | undefined): string {
+  if (diff === undefined) return "—";
+  if (diff === 0) return "E";
+  return diff > 0 ? `+${diff}` : `${diff}`;
+}
+
+// runningDiffColor returns the appropriate NativeWind color class for a running differential.
+function runningDiffColor(diff: number | undefined, neutralClass: string): string {
+  if (diff === undefined || diff === 0) return neutralClass;
+  return diff < 0 ? "text-green-600" : "text-red-500";
 }
 
 // HoleTableRow renders a single hole inside the scorecard grid.
@@ -164,30 +224,16 @@ function HoleTableRow({
   hole,
   gross,
   runningDiff,
-}: {
+}: Readonly<{
   hole: ScorecardHole;
   gross: number | undefined;
   runningDiff: number | undefined;
-}) {
+}>) {
   const t = useTheme();
-  const hasScore = gross !== undefined;
+  const hasScore   = gross !== undefined;
   const colorClass = hasScore ? scoreTextColor(gross, hole.par) : "";
-
-  const runningText =
-    runningDiff === undefined
-      ? "—"
-      : runningDiff === 0
-      ? "E"
-      : runningDiff > 0
-      ? `+${runningDiff}`
-      : `${runningDiff}`;
-
-  const runningColor =
-    runningDiff === undefined || runningDiff === 0
-      ? t.textTertiary
-      : runningDiff < 0
-      ? "text-green-600"
-      : "text-red-500";
+  const runningText  = formatRunningDiff(runningDiff);
+  const runningColor = runningDiffColor(runningDiff, t.textTertiary);
 
   return (
     <View className={`flex-row items-center py-2.5 border-b ${t.border}`}>
@@ -207,26 +253,34 @@ function HoleTableRow({
   );
 }
 
+// formatTotalDiff formats a hole total's gross-vs-par difference for display.
+function formatTotalDiff(diff: number | null): string {
+  if (diff === null) return "—";
+  if (diff === 0) return "E";
+  return diff > 0 ? `+${diff}` : `${diff}`;
+}
+
+// totalDiffColor returns the NativeWind color class for a totals row's to-par display.
+function totalDiffColor(diff: number | null, neutralClass: string): string {
+  if (diff === null || diff === 0) return neutralClass;
+  return diff < 0 ? "text-green-600" : "text-red-500";
+}
+
 // HoleTotalsRow renders the OUT / IN / TOT summary row inside the scorecard grid.
 function HoleTotalsRow({
   label,
   par,
   gross,
-}: {
+}: Readonly<{
   label: string;
   par: number;
   gross: number | null;
-}) {
+}>) {
   const t = useTheme();
-  const diff = gross !== null ? gross - par : null;
-  const toParText =
-    diff === null ? "—" : diff === 0 ? "E" : diff > 0 ? `+${diff}` : `${diff}`;
-  const toParColor =
-    diff === null || diff === 0
-      ? t.textTertiary
-      : diff < 0
-      ? "text-green-600"
-      : "text-red-500";
+  // gross === null means not all holes scored yet — show "—" for the diff.
+  const diff       = gross === null ? null : gross - par;
+  const toParText  = formatTotalDiff(diff);
+  const toParColor = totalDiffColor(diff, t.textTertiary);
 
   return (
     <View className={`flex-row items-center py-2.5 px-1 ${t.surfaceSunken} rounded-lg my-1`}>
@@ -240,16 +294,21 @@ function HoleTotalsRow({
   );
 }
 
-// RoundStatsModal shows the per-round stat sections (same structure as the Stats tab).
-// The scorecard must be loaded before this modal is opened — the parent ensures this.
+// RoundStatsModal shows per-round stats for the current user.
+// scorecard is pre-loaded by the parent before opening this modal.
 function RoundStatsModal({
   round,
+  scorecard,
   onClose,
-}: {
+}: Readonly<{
   round: RoundSummary;
+  scorecard: Scorecard | undefined;
   onClose: () => void;
-}) {
+}>) {
   const t = useTheme();
+
+  const player     = scorecard ? findMyPlayer(scorecard) : undefined;
+  const roundStats = player && scorecard ? buildRoundStats(player, scorecard.holes) : null;
 
   const [year, month, day] = round.scheduled_date.split("-").map(Number);
   const date = new Date(year, month - 1, day).toLocaleDateString("en-US", {
@@ -257,6 +316,10 @@ function RoundStatsModal({
     day: "numeric",
     year: "numeric",
   });
+
+  // Format a percentage with fraction: "45% (5/11)" — "—" when not tracked.
+  const fmtPct = (hit: number, total: number) =>
+    total > 0 ? `${Math.round((hit / total) * 100)}% (${hit}/${total})` : "—";
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
@@ -291,9 +354,45 @@ function RoundStatsModal({
             </View>
           </View>
 
-          {STAT_SECTIONS.map((section) => (
-            <StatSection key={section} label={section} />
-          ))}
+          {roundStats ? (
+            <>
+              <StatCard
+                label="Scoring"
+                rows={[
+                  { label: "Birdies or Better", value: roundStats.birdies > 0 ? roundStats.birdies.toString() : "—", dim: roundStats.birdies === 0 },
+                  { label: "Pars",    value: roundStats.pars.toString()    },
+                  { label: "Bogeys",  value: roundStats.bogeys.toString()  },
+                  { label: "Double+", value: roundStats.doubles > 0 ? roundStats.doubles.toString() : "—", dim: roundStats.doubles === 0 },
+                ]}
+              />
+              <StatCard
+                label="Driving"
+                rows={[
+                  { label: "Fairways Hit", value: fmtPct(roundStats.fairwaysHit, roundStats.fairwaysTotal), dim: roundStats.fairwaysTotal === 0 },
+                ]}
+              />
+              <StatCard
+                label="Approach"
+                rows={[
+                  { label: "Greens in Regulation", value: fmtPct(roundStats.greensHit, roundStats.greensTotal), dim: roundStats.greensTotal === 0 },
+                ]}
+              />
+              <StatCard
+                label="Putting"
+                rows={[
+                  { label: "Total Putts",      value: roundStats.totalPutts === null ? "—" : roundStats.totalPutts.toString(), dim: roundStats.totalPutts === null },
+                  { label: "Avg Putts / Hole", value: (roundStats.totalPutts !== null && roundStats.puttsTracked > 0) ? (roundStats.totalPutts / roundStats.puttsTracked).toFixed(1) : "—", dim: roundStats.totalPutts === null },
+                ]}
+              />
+            </>
+          ) : (
+            <View className={`${t.surface} rounded-2xl border ${t.border} p-8 items-center gap-2`}>
+              <Ionicons name="bar-chart-outline" size={36} color={t.colors.tabBarInactive} />
+              <Text className={`text-sm text-center ${t.textSecondary}`}>
+                No stats recorded for this round.
+              </Text>
+            </View>
+          )}
         </ScrollView>
       </View>
     </Modal>
@@ -306,11 +405,11 @@ function RoundScorecardModal({
   round,
   scorecard,
   onClose,
-}: {
+}: Readonly<{
   round: RoundSummary;
   scorecard: Scorecard;
   onClose: () => void;
-}) {
+}>) {
   const t = useTheme();
 
   const player = findMyPlayer(scorecard);
@@ -450,16 +549,16 @@ function ScoreRow({
   scorecard,
   onStatsPress,
   onScorecardPress,
-}: {
+}: Readonly<{
   round: RoundSummary;
   scorecard: Scorecard | undefined;
   onStatsPress: () => void;
   onScorecardPress: () => void;
-}) {
+}>) {
   const t = useTheme();
 
   const player = scorecard ? findMyPlayer(scorecard) : undefined;
-  const scoreDisplay = player?.total_gross != null ? String(player.total_gross) : "—";
+  const scoreDisplay = String(player?.total_gross ?? "—");
 
   // Parse the date string as local time so it doesn't shift by timezone offset.
   const [year, month, day] = round.scheduled_date.split("-").map(Number);
@@ -504,7 +603,7 @@ function ScoreRow({
       {/* Action buttons */}
       <View className={`mt-3 pt-3 border-t ${t.border} flex-row gap-2`}>
         <TouchableOpacity
-          className={`flex-1 flex-row items-center justify-center gap-1.5 py-2 rounded-xl border ${t.border} ${t.surface} ${!scorecardReady ? "opacity-40" : ""}`}
+          className={`flex-1 flex-row items-center justify-center gap-1.5 py-2 rounded-xl border ${t.border} ${t.surface} ${scorecardReady ? "" : "opacity-40"}`}
           onPress={onStatsPress}
           disabled={!scorecardReady}
           activeOpacity={0.75}
@@ -513,7 +612,7 @@ function ScoreRow({
           <Text className={`text-sm font-semibold ${t.textSecondary}`}>Stats</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          className={`flex-1 flex-row items-center justify-center gap-1.5 py-2 rounded-xl border ${t.border} ${t.surface} ${!scorecardReady ? "opacity-40" : ""}`}
+          className={`flex-1 flex-row items-center justify-center gap-1.5 py-2 rounded-xl border ${t.border} ${t.surface} ${scorecardReady ? "" : "opacity-40"}`}
           onPress={onScorecardPress}
           disabled={!scorecardReady}
           activeOpacity={0.75}
@@ -527,8 +626,6 @@ function ScoreRow({
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const STAT_SECTIONS = ["Scoring", "Driving", "Approach", "Putting", "Recovery"] as const;
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -664,12 +761,16 @@ export default function StatsScreen() {
   const noRoundsEver = completedRounds.length === 0;
   // Empty state for the selected filter period.
   const noRoundsInPeriod = !noRoundsEver && filteredRounds.length === 0;
+  // Period suffix appended to round-count labels — if/else avoids a nested ternary.
+  let periodLabel = ` · ${activeFilter}`;
+  if (activeFilter === "last20") periodLabel = " · Last 20";
+  else if (activeFilter === "all") periodLabel = " · All Time";
 
   return (
     <View className={`flex-1 ${t.screen}`}>
       {/* Per-round modals — rendered outside the ScrollView so they overlay the full screen */}
       {selectedRound && openModal === "stats" && (
-        <RoundStatsModal round={selectedRound} onClose={closeModal} />
+        <RoundStatsModal round={selectedRound} scorecard={selectedScorecard} onClose={closeModal} />
       )}
       {selectedRound && openModal === "scorecard" && selectedScorecard && (
         <RoundScorecardModal
@@ -769,16 +870,35 @@ export default function StatsScreen() {
             <>
               {/* Context label: "5 rounds · 2026" */}
               <Text className={`text-xs font-semibold uppercase tracking-widest mb-4 ${t.textTertiary}`}>
-                {stats.rounds} round{stats.rounds !== 1 ? "s" : ""}
-                {activeFilter === "last20" ? " · Last 20"
-                  : activeFilter === "all"  ? " · All Time"
-                  : ` · ${activeFilter}`}
+                {stats.rounds} round{stats.rounds === 1 ? "" : "s"}{periodLabel}
               </Text>
 
-              {/* Stat category sections — content TBD */}
-              {STAT_SECTIONS.map((section) => (
-                <StatSection key={section} label={section} />
-              ))}
+              <StatCard
+                label="Scoring"
+                rows={[
+                  { label: "Rounds Played", value: stats.rounds.toString() },
+                  { label: "Avg Score",     value: stats.avgGrossScore === null ? "—" : stats.avgGrossScore.toFixed(1),     dim: stats.avgGrossScore === null },
+                  { label: "Total Birdies", value: stats.totalBirdies === 0    ? "—" : stats.totalBirdies.toString(),       dim: stats.totalBirdies === 0    },
+                ]}
+              />
+              <StatCard
+                label="Driving"
+                rows={[
+                  { label: "Fairways Hit", value: stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`, dim: stats.firPercent === null },
+                ]}
+              />
+              <StatCard
+                label="Approach"
+                rows={[
+                  { label: "Greens in Regulation", value: stats.girPercent === null ? "—" : `${stats.girPercent.toFixed(0)}%`, dim: stats.girPercent === null },
+                ]}
+              />
+              <StatCard
+                label="Putting"
+                rows={[
+                  { label: "Avg Putts / Round", value: stats.avgPuttsPerRound === null ? "—" : stats.avgPuttsPerRound.toFixed(1), dim: stats.avgPuttsPerRound === null },
+                ]}
+              />
             </>
           ) : (
             <>
@@ -793,10 +913,7 @@ export default function StatsScreen() {
 
               {/* Per-round score list */}
               <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>
-                {filteredRounds.length} round{filteredRounds.length !== 1 ? "s" : ""}
-                {activeFilter === "last20" ? " · Last 20"
-                  : activeFilter === "all"  ? " · All Time"
-                  : ` · ${activeFilter}`}
+                {filteredRounds.length} round{filteredRounds.length === 1 ? "" : "s"}{periodLabel}
               </Text>
 
               {/* Avg / Low / High summary strip */}

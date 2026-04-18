@@ -223,6 +223,15 @@ func (h *LokiHandler) pushToLoki(batch []lokiEntry) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// Loki returns 204 on success. Any other status means the push was rejected —
+	// read the body so the error message appears in Railway's stdout logs.
+	if resp.StatusCode != http.StatusNoContent {
+		var buf [512]byte
+		n, _ := resp.Body.Read(buf[:])
+		fmt.Fprintf(os.Stderr, "observability: loki push rejected: status=%d body=%s\n",
+			resp.StatusCode, buf[:n])
+	}
 }
 
 // entryToJSON serialises a lokiEntry to a compact JSON string for the Loki value field.

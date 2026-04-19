@@ -11,7 +11,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
+        "APP_VARIANT": "development",
+        "EXPO_PUBLIC_API_URL": "https://golf-league-develop.up.railway.app",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
       }
     },
@@ -22,6 +23,7 @@
         "gradleCommand": ":app:assembleRelease"
       },
       "env": {
+        "APP_VARIANT": "preview",
         "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
       }
@@ -31,6 +33,7 @@
         "buildType": "app-bundle"
       },
       "env": {
+        "APP_VARIANT": "production",
         "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
       }

@@ -5,7 +5,8 @@
   "scripts": {
     "start": "expo start --clear",
     "android": "expo start --android",
-    "android-build": "eas build --platform android --profile preview",
+    "android-build-preview": "eas build --platform android --profile preview",
+    "android-build-development": "eas build --platform android --profile development",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "postinstall": "lefthook install",
@@ -32,6 +33,7 @@
     "expo-auth-session": "~7.0.10",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",
+    "expo-dev-client": "~6.0.20",
     "expo-image-picker": "~17.0.10",
     "expo-linking": "~8.0.11",
     "expo-router": "~6.0.23",

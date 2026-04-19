@@ -5,7 +5,8 @@
   "scripts": {
     "start": "expo start --clear",
     "android": "expo start --android",
-    "android-build": "eas build --platform android --profile preview",
+    "android-build-preview": "eas build --platform android --profile preview",
+    "android-build-develop": "eas build --platform android --profile develop",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "postinstall": "lefthook install",

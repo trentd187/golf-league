@@ -28,6 +28,11 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 > **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
 
+> **Multi-profile Android installs** — `app.config.js` (dynamic config) replaces `app.json`. Each EAS build profile sets `APP_VARIANT` in its `env` block; `app.config.js` uses this to assign a unique Android package name and display name so all three profiles can coexist on one device:
+> - `development` → `com.trentd.golfstuffinhere.dev` / "Golf Stuff (Dev)"
+> - `preview` → `com.trentd.golfstuffinhere.preview` / "Golf Stuff (Preview)"
+> - `production` → `com.trentd.golfstuffinhere` / "Golf Stuff In Here"
+
 ---
 
 ## Universal Rules

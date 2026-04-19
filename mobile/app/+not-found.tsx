@@ -8,7 +8,7 @@
 //   1. The user taps "Continue with Google" on the sign-in screen.
 //   2. expo-web-browser opens Google's sign-in page.
 //   3. After the user authenticates, Google redirects to this app via a deep link, e.g.:
-//        golfstufinhere://oauth-native-callback
+//        golfstuffinhere://oauth-native-callback
 //   4. Expo Router receives that URL, finds no matching screen, and renders this file.
 //      Without it, the user would see the default red "Unmatched Route" error for ~500ms.
 //   5. Meanwhile, WebBrowser.maybeCompleteAuthSession() (called in sign-in.tsx) completes

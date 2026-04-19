@@ -28,9 +28,9 @@ type Config struct {
 	LokiAPIKey string
 
 	// OTLP — same gateway receives metrics (→ Mimir) and traces (→ Tempo); empty = disabled
-	OTLPEndpoint string
-	OTLPUser     string
-	OTLPAPIKey   string
+	OTLPURL    string
+	OTLPUser   string
+	OTLPAPIKey string
 
 	// Pyroscope — continuous profiling; empty = disabled
 	PyroscopeURL    string
@@ -69,7 +69,7 @@ func Load() *Config {
 		LokiURL:          os.Getenv("LOKI_URL"),
 		LokiUser:         os.Getenv("LOKI_USER"),
 		LokiAPIKey:       os.Getenv("LOKI_API_KEY"),
-		OTLPEndpoint:     os.Getenv("OTLP_ENDPOINT"),
+		OTLPURL:          os.Getenv("OTLP_URL"),
 		OTLPUser:         os.Getenv("OTLP_USER"),
 		OTLPAPIKey:       os.Getenv("OTLP_API_KEY"),
 		PyroscopeURL:     os.Getenv("PYROSCOPE_URL"),

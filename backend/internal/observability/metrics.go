@@ -68,9 +68,9 @@ func initMetrics(endpoint, user, apiKey, env string, wsConnCount func() int32) (
 	// WithEndpointURL accepts a full URL (scheme + host + path).
 	// WithEndpoint expects only host:port and prepends http:// or https:// itself,
 	// which would produce "http://https://..." when the env var is a full URL.
-	// The gateway requires the signal-specific path suffix (/v1/metrics).
+	// The gateway path is /otlp; the signal-specific suffix is /v1/metrics.
 	exp, err := otlpmetrichttp.New(context.Background(),
-		otlpmetrichttp.WithEndpointURL(endpoint+"/v1/metrics"),
+		otlpmetrichttp.WithEndpointURL(endpoint+"/otlp/v1/metrics"),
 		otlpmetrichttp.WithHeaders(map[string]string{
 			"Authorization": "Basic " + basicAuth,
 		}),

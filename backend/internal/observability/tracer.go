@@ -31,9 +31,9 @@ func initTracer(endpoint, user, apiKey, env string) (*sdktrace.TracerProvider, e
 	// WithEndpointURL accepts a full URL (scheme + host + path).
 	// WithEndpoint expects only host:port and prepends http:// or https:// itself,
 	// which would produce "http://https://..." when the env var is a full URL.
-	// The gateway requires the signal-specific path suffix (/v1/traces).
+	// The gateway path is /otlp; the signal-specific suffix is /v1/traces.
 	exp, err := otlptracehttp.New(context.Background(),
-		otlptracehttp.WithEndpointURL(endpoint+"/v1/traces"),
+		otlptracehttp.WithEndpointURL(endpoint+"/otlp/v1/traces"),
 		otlptracehttp.WithHeaders(map[string]string{
 			"Authorization": "Basic " + basicAuth,
 		}),

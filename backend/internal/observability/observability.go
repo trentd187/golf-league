@@ -38,12 +38,12 @@ func Init(cfg *config.Config, wsConnCount func() int32) (*Obs, error) {
 	// Wrap the LokiHandler so the stdlib slog global also writes through it.
 	logger := slog.New(&slogBridge{h: h})
 
-	m, err := initMetrics(cfg.OTLPEndpoint, cfg.OTLPUser, cfg.OTLPAPIKey, cfg.Env, wsConnCount)
+	m, err := initMetrics(cfg.OTLPURL, cfg.OTLPUser, cfg.OTLPAPIKey, cfg.Env, wsConnCount)
 	if err != nil {
 		return nil, err
 	}
 
-	tp, err := initTracer(cfg.OTLPEndpoint, cfg.OTLPUser, cfg.OTLPAPIKey, cfg.Env)
+	tp, err := initTracer(cfg.OTLPURL, cfg.OTLPUser, cfg.OTLPAPIKey, cfg.Env)
 	if err != nil {
 		return nil, err
 	}

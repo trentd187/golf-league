@@ -4,6 +4,17 @@
     "appVersionSource": "local"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://golf-league-production.up.railway.app",
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_YnJpZ2h0LXNvbGUtNzguY2xlcmsuYWNjb3VudHMuZGV2JA"
+      }
+    },
     "preview": {
       "distribution": "internal",
       "android": {

@@ -22,7 +22,7 @@ run:
 
   # Directories to exclude from linting (migrations contain raw SQL, not Go).
   # "vendor" is excluded by default.
-  exclude-dirs:
+  skip-dirs:
     - migrations
 
 # ---- Linter selection ----

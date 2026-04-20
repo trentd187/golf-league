@@ -361,9 +361,9 @@ function ScoringCard({
   });
 
   const parItems = [
-    { label: "Par 3", value: avgPar3 },
-    { label: "Par 4", value: avgPar4 },
-    { label: "Par 5", value: avgPar5 },
+    { label: "Par 3 Avg", value: avgPar3 },
+    { label: "Par 4 Avg", value: avgPar4 },
+    { label: "Par 5 Avg", value: avgPar5 },
   ];
 
   return (
@@ -379,21 +379,21 @@ function ScoringCard({
           <Text className={`text-2xl font-bold ${t.textPrimary}`}>
             {avgGrossScore === null ? "—" : avgGrossScore.toFixed(1)}
           </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>Avg</Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole Avg</Text>
         </View>
         <View className={`w-px ${t.border} border-l`} />
         <View className="flex-1 items-center">
           <Text className={`text-2xl font-bold ${lowScore === null ? t.textPrimary : "text-green-600"}`}>
             {lowScore ?? "—"}
           </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>Low</Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole Low</Text>
         </View>
         <View className={`w-px ${t.border} border-l`} />
         <View className="flex-1 items-center">
           <Text className={`text-2xl font-bold ${highScore === null ? t.textPrimary : "text-red-500"}`}>
             {highScore ?? "—"}
           </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>High</Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole High</Text>
         </View>
       </View>
 
@@ -1191,21 +1191,21 @@ export default function StatsScreen() {
                       {scoringSummary.avg.toFixed(1)}
                     </Text>
                     <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>
-                      Avg
+                      18-Hole Avg
                     </Text>
                   </View>
                   <View className={`w-px ${t.border} border-l`} />
                   <View className="flex-1 items-center py-3">
                     <Text className="text-xl font-bold text-green-600">{scoringSummary.low}</Text>
                     <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>
-                      Low
+                      18-Hole Low
                     </Text>
                   </View>
                   <View className={`w-px ${t.border} border-l`} />
                   <View className="flex-1 items-center py-3">
                     <Text className="text-xl font-bold text-red-500">{scoringSummary.high}</Text>
                     <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>
-                      High
+                      18-Hole High
                     </Text>
                   </View>
                 </View>

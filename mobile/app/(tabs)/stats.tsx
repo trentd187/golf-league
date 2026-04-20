@@ -306,13 +306,13 @@ function StatCard({
   const t = useTheme();
   return (
     <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
-      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-1`}>
+      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-1`}>
         {label}
       </Text>
       {rows.map((row) => (
         <View key={row.label} className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
-          <Text className={`text-sm ${t.textSecondary}`}>{row.label}</Text>
-          <Text className={`text-sm font-semibold ${row.dim ? t.textTertiary : t.textPrimary}`}>
+          <Text className={`text-base ${t.textSecondary}`}>{row.label}</Text>
+          <Text className={`text-base font-semibold ${row.dim ? t.textTertiary : t.textPrimary}`}>
             {row.value}
           </Text>
         </View>
@@ -350,69 +350,69 @@ function DirectionalMissCard({
   return (
     <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
       {/* Card section label */}
-      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-4`}>
+      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-2`}>
         {sectionLabel}
       </Text>
 
       {/* Distribution sub-label */}
-      <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+      <Text className={`text-sm font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
         {sectionLabel} Distribution
       </Text>
 
       {/* Compass layout: Long on top, Left/center/Right in the middle, Short below */}
       <View className="items-center">
         {/* Long */}
-        <View className="items-center mb-2">
-          <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.long)}</Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Long</Text>
+        <View className="items-center mb-1">
+          <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(miss.long)}</Text>
+          <Text className={`text-sm font-semibold ${t.textTertiary}`}>Long</Text>
         </View>
 
         {/* Middle row: Left | circle | Right */}
         <View className="flex-row items-center">
           {/* Left */}
           <View className="items-center w-16">
-            <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.left)}</Text>
-            <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Left</Text>
+            <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(miss.left)}</Text>
+            <Text className={`text-sm font-semibold ${t.textTertiary}`}>Left</Text>
           </View>
 
           {/* Center circle — green when data exists to celebrate the hit stat */}
-          <View className={`w-20 h-20 rounded-full border-2 items-center justify-center mx-4 ${hasData ? "bg-green-100 border-green-300" : t.border}`}>
-            <Text className={`text-lg font-bold ${hasData ? "text-green-700" : t.textPrimary}`}>{centerValue}</Text>
-            <Text className={`text-xs font-semibold uppercase tracking-widest ${hasData ? "text-green-600" : t.textTertiary}`}>{centerLabel}</Text>
+          <View className={`w-24 h-24 rounded-full border-2 items-center justify-center mx-4 ${hasData ? "bg-green-100 border-green-300" : t.border}`}>
+            <Text className={`text-xl font-bold ${hasData ? "text-green-700" : t.textPrimary}`}>{centerValue}</Text>
+            <Text className={`text-sm font-semibold ${hasData ? "text-green-600" : t.textTertiary}`}>{centerLabel}</Text>
           </View>
 
           {/* Right */}
           <View className="items-center w-16">
-            <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.right)}</Text>
-            <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Right</Text>
+            <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(miss.right)}</Text>
+            <Text className={`text-sm font-semibold ${t.textTertiary}`}>Right</Text>
           </View>
         </View>
 
         {/* Short */}
-        <View className="items-center mt-2">
-          <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.short)}</Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Short</Text>
+        <View className="items-center mt-1">
+          <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(miss.short)}</Text>
+          <Text className={`text-sm font-semibold ${t.textTertiary}`}>Short</Text>
         </View>
       </View>
 
       {/* N/A row — only shown for sections where some holes don't apply (e.g. par-3s for GIR) */}
       {naValue !== undefined && (
         <View className="flex-row justify-end mt-3">
-          <Text className={`text-xs ${t.textTertiary}`}>N/A  </Text>
-          <Text className={`text-xs font-semibold ${t.textSecondary}`}>{naValue}</Text>
+          <Text className={`text-sm ${t.textTertiary}`}>N/A  </Text>
+          <Text className={`text-sm font-semibold ${t.textSecondary}`}>{naValue}</Text>
         </View>
       )}
 
       {/* Extra rows (e.g. proximity by yardage) — separated by a divider with their own sub-label */}
       {extraRows && extraRows.length > 0 && (
         <View className={`mt-4 pt-4 border-t ${t.divider}`}>
-          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-1`}>
+          <Text className={`text-sm font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
             Proximity (GIR holes)
           </Text>
           {extraRows.map((row) => (
             <View key={row.label} className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
-              <Text className={`text-sm ${t.textSecondary}`}>{row.label}</Text>
-              <Text className={`text-sm font-semibold ${t.textPrimary}`}>{row.value}</Text>
+              <Text className={`text-base ${t.textSecondary}`}>{row.label}</Text>
+              <Text className={`text-base font-semibold ${t.textPrimary}`}>{row.value}</Text>
             </View>
           ))}
         </View>
@@ -447,8 +447,8 @@ function ScoringCard({
   // Labels are drawn as spoke lines radiating from the outer edge — no separate
   // legend block is needed. The viewBox scales to fill the card width.
   const CX = 150, CY = 90, R = 55, IR = 32;
-  const SPOKE_R  = 70; // where the radial line ends
-  const ELBOW_LEN = 12; // horizontal leg length
+  const SPOKE_R  = 74; // where the radial line ends
+  const ELBOW_LEN = 14; // horizontal leg length
 
   // Categorical colors — not theme tokens; color encodes the scoring outcome.
   const allSlices = [
@@ -592,7 +592,7 @@ function ScoringCard({
               x={s.textCenterX.toFixed(2)}
               y={(s.midY).toFixed(2)}
               textAnchor="middle"
-              fontSize={10}
+              fontSize={12}
               fontWeight="600"
               fill={s.color}
             >
@@ -601,9 +601,9 @@ function ScoringCard({
             <SvgText
               key={`pct-${s.label}`}
               x={s.textCenterX.toFixed(2)}
-              y={(s.midY + 12).toFixed(2)}
+              y={(s.midY + 14).toFixed(2)}
               textAnchor="middle"
-              fontSize={10}
+              fontSize={12}
               fontWeight="600"
               fill={s.color}
             >

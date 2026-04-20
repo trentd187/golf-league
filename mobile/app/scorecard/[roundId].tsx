@@ -167,6 +167,20 @@ const emptyHoleStat: HoleStatEntry = {
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
 };
 
+// withRetry runs fn up to delays.length + 1 times, waiting between each attempt.
+// Used for score and stat saves so transient network blips don't immediately surface an error.
+async function withRetry<T>(fn: () => Promise<T>, delays: number[]): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i <= delays.length; i++) {
+    try { return await fn(); }
+    catch (err) {
+      lastErr = err;
+      if (i < delays.length) await new Promise((r) => setTimeout(r, delays[i]));
+    }
+  }
+  throw lastErr;
+}
+
 // scoreColor returns a NativeWind class string for a score relative to par.
 // Used in both group and individual views to keep color logic in one place.
 function scoreColor(diff: number, textPrimary: string): string {
@@ -237,7 +251,9 @@ export default function ScorecardScreen() {
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
 
   // ── Advanced stats + hole navigation state ───────────────────────────────────
-  const [stats,       setStats]       = useState<LocalStats>({});
+  const [stats,          setStats]          = useState<LocalStats>({});
+  // statsSaveError is set when all retries for a stats PUT are exhausted.
+  const [statsSaveError, setStatsSaveError] = useState(false);
   // currentHole drives which hole is displayed in individual view (1-based).
   const [currentHole, setCurrentHole] = useState(1);
 
@@ -286,7 +302,9 @@ export default function ScorecardScreen() {
   const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
-  const inputRefs     = useRef<Map<string, TextInput | null>>(new Map());
+  const inputRefs      = useRef<Map<string, TextInput | null>>(new Map());
+  // statsInputRefs: individual view numeric stat fields, indexed by field position (0–3).
+  const statsInputRefs = useRef<(TextInput | null)[]>([]);
 
   // outerScrollRef: used to programmatically scroll the main ScrollView when
   // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
@@ -338,20 +356,24 @@ export default function ScorecardScreen() {
         setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saving" }));
         try {
           const token = await getToken();
-          const res = await fetch(
-            `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
-            {
-              method:  "PUT",
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body:    JSON.stringify({ scores: entries }),
+          // Retry up to 3 times (500 ms → 1 s → 2 s) before surfacing an error.
+          // saveStatus stays "saving" for the full sequence so the user sees one spinner.
+          await withRetry(async () => {
+            const res = await fetch(
+              `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
+              {
+                method:  "PUT",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body:    JSON.stringify({ scores: entries }),
+              }
+            );
+            if (!res.ok) {
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              const body = await res.json().catch(() => ({}));
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+              throw new Error(body?.error ?? "Save failed");
             }
-          );
-          if (!res.ok) {
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-            const body = await res.json().catch(() => ({}));
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-            throw new Error(body?.error ?? "Save failed");
-          }
+          }, [500, 1000, 2000]);
           setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saved" }));
           setTimeout(
             () => setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "idle" })),
@@ -400,18 +422,21 @@ export default function ScorecardScreen() {
           approach_yds:         toInt(entry.approach_yds),
         };
 
+        setStatsSaveError(false);
         try {
           const token = await getToken();
-          await fetch(
+          // Retry up to 3 times (500 ms → 1 s → 2 s) — same cadence as score saves.
+          await withRetry(() => fetch(
             `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
             {
               method:  "PUT",
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
               body:    JSON.stringify({ stats: [stat] }),
             }
-          );
+          ), [500, 1000, 2000]);
+          setStatsSaveError(false);
         } catch {
-          // Silent failure — stats are best-effort and don't block score entry.
+          setStatsSaveError(true);
         }
       }, delay);
 
@@ -1146,17 +1171,19 @@ export default function ScorecardScreen() {
                         { field: "first_putt_distance" as const, label: "First Putt", unit: "ft"  },
                         { field: "approach_yds" as const,        label: "Approach",   unit: "yds" },
                       ] as const
-                    ).map(({ field, label, unit }) => (
+                    ).map(({ field, label, unit }, index, arr) => (
                       <View key={field} className="flex-row items-center justify-between">
                         <Text className={`text-sm ${t.textSecondary}`}>
                           {label}{unit ? ` (${unit})` : ""}
                         </Text>
                         <TextInput
+                          ref={(el) => { statsInputRefs.current[index] = el; }}
                           className={`w-20 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                           keyboardType="number-pad"
                           maxLength={3}
                           placeholder="—"
                           placeholderTextColor={t.colors.tabBarInactive}
+                          returnKeyType={index < arr.length - 1 ? "next" : "done"}
                           value={holeStat[field]}
                           onChangeText={(v) => {
                             setStats((prev) => {
@@ -1177,6 +1204,12 @@ export default function ScorecardScreen() {
                               };
                             });
                           }}
+                          onSubmitEditing={() => {
+                            // Focus the next stat field; last field dismisses keyboard via returnKeyType="done".
+                            if (index < arr.length - 1) {
+                              statsInputRefs.current[index + 1]?.focus();
+                            }
+                          }}
                           onFocus={() => {
                             // Delay lets the keyboard animation start before we scroll,
                             // ensuring the inset has been applied and there is room to move.
@@ -1191,6 +1224,9 @@ export default function ScorecardScreen() {
                         />
                       </View>
                     ))}
+                    {statsSaveError && (
+                      <Text className="text-red-500 text-xs mt-1">Stats failed to save</Text>
+                    )}
                   </View>
 
                 </View>

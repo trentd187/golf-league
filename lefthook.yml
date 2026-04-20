@@ -112,4 +112,14 @@ pre-push:
       glob: "{backend/**,Dockerfile}"
       run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
 
-    # Mobile Jest coverage will be added here once the Jest framework is set up.
+    # -------------------------------------------------------------------------
+    # Mobile: Jest test suite on push
+    # -------------------------------------------------------------------------
+    # Runs the full Jest suite before pushing. Mirrors the mobile job in CI.
+    # --passWithNoTests ensures the hook doesn't fail if no test files exist yet.
+    # -------------------------------------------------------------------------
+    mobile-tests:
+      glob: "mobile/**/*.{ts,tsx}"
+      run: >
+        export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
+        && cd mobile && npx jest --passWithNoTests

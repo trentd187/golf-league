@@ -69,34 +69,102 @@ function findMyPlayer(sc: Scorecard): ScorecardPlayer | undefined {
   return undefined;
 }
 
-// buildRoundStats computes per-hole stats for one player in a single round.
+// buildRoundStats computes all per-hole stats for one player in a single round.
+// Returns the same shape used by the shared display components (ScoringCard,
+// DirectionalMissCard, PuttingCard) so the round modal reuses them unchanged.
 function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[]) {
   const holeMap = new Map(holes.map((h) => [h.hole_number, h.par]));
 
   let birdies = 0, pars = 0, bogeys = 0, doubles = 0;
+  let par3Total = 0, par3Count = 0;
+  let par4Total = 0, par4Count = 0;
+  let par5Total = 0, par5Count = 0;
+
   for (const s of player.scores) {
     const par = holeMap.get(s.hole_number);
     if (par == null) continue;
     const diff = s.gross_score - par;
-    if (diff <= -1)     birdies++;
+    if (diff <= -1)      birdies++;
     else if (diff === 0) pars++;
     else if (diff === 1) bogeys++;
     else                 doubles++;
+
+    if (par === 3)      { par3Total += s.gross_score; par3Count++; }
+    else if (par === 4) { par4Total += s.gross_score; par4Count++; }
+    else if (par === 5) { par5Total += s.gross_score; par5Count++; }
   }
 
-  const validPutts  = player.hole_stats.filter((hs) => hs.putts !== null);
-  const totalPutts  = validPutts.reduce((sum, hs) => sum + (hs.putts ?? 0), 0);
-  const greensHit   = player.hole_stats.filter((hs) => hs.gir === "hit").length;
-  const greensTotal = player.hole_stats.filter((hs) => hs.gir !== null && hs.gir !== "na").length;
-  const fairwaysHit   = player.hole_stats.filter((hs) => hs.fir === true).length;
-  const fairwaysTotal = player.hole_stats.filter((hs) => hs.fir !== null).length;
+  const greensHit       = player.hole_stats.filter((hs) => hs.gir === "hit").length;
+  const greensTotal     = player.hole_stats.filter((hs) => hs.gir !== null && hs.gir !== "na").length;
+  const girNaCount      = player.hole_stats.filter((hs) => hs.gir === "na").length;
+  const girTrackedTotal = player.hole_stats.filter((hs) => hs.gir !== null).length;
+  const fairwaysHit     = player.hole_stats.filter((hs) => hs.fir === true).length;
+  const fairwaysTotal   = player.hole_stats.filter((hs) => hs.fir !== null).length;
+
+  let firMissLeft = 0, firMissRight = 0, firMissShort = 0, firMissLong = 0;
+  let girMissLeft = 0, girMissRight = 0, girMissShort = 0, girMissLong = 0;
+  let putts1 = 0, putts2 = 0, putts3 = 0, putts4Plus = 0;
+  let totalPutts = 0, totalPuttHoles = 0;
+  let puttMadeTotal = 0, puttMadeCount = 0, puttMadeLongest = 0;
+  const proximityBuckets = new Map<number, { total: number; count: number }>();
+
+  for (const hs of player.hole_stats) {
+    if (hs.fir === false) {
+      if (hs.fir_miss_direction === "left")       firMissLeft++;
+      else if (hs.fir_miss_direction === "right") firMissRight++;
+      else if (hs.fir_miss_direction === "short") firMissShort++;
+      else if (hs.fir_miss_direction === "long")  firMissLong++;
+    }
+    if (hs.gir === "miss") {
+      if (hs.gir_miss_direction === "left")       girMissLeft++;
+      else if (hs.gir_miss_direction === "right") girMissRight++;
+      else if (hs.gir_miss_direction === "short") girMissShort++;
+      else if (hs.gir_miss_direction === "long")  girMissLong++;
+    }
+    if (hs.gir === "hit" && hs.approach_yds !== null && hs.first_putt_distance !== null) {
+      const band = Math.floor(hs.approach_yds / 20) * 20;
+      const bucket = proximityBuckets.get(band) ?? { total: 0, count: 0 };
+      bucket.total += hs.first_putt_distance;
+      bucket.count++;
+      proximityBuckets.set(band, bucket);
+    }
+    if (hs.putts !== null) {
+      if (hs.putts === 1)      putts1++;
+      else if (hs.putts === 2) putts2++;
+      else if (hs.putts === 3) putts3++;
+      else if (hs.putts >= 4)  putts4Plus++;
+      totalPutts++;
+      totalPuttHoles++;
+    }
+    if (hs.putt_distance_made !== null && hs.putt_distance_made > 0) {
+      puttMadeTotal += hs.putt_distance_made;
+      puttMadeCount++;
+      if (hs.putt_distance_made > puttMadeLongest) puttMadeLongest = hs.putt_distance_made;
+    }
+  }
 
   return {
     birdies, pars, bogeys, doubles,
-    totalPutts:     validPutts.length > 0 ? totalPutts : null,
-    puttsTracked:   validPutts.length,
-    greensHit,   greensTotal,
-    fairwaysHit, fairwaysTotal,
+    avgPar3: par3Count > 0 ? par3Total / par3Count : null,
+    avgPar4: par4Count > 0 ? par4Total / par4Count : null,
+    avgPar5: par5Count > 0 ? par5Total / par5Count : null,
+    firPercent:    fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
+    firMiss: { left: firMissLeft, right: firMissRight, short: firMissShort, long: firMissLong },
+    firTotal: fairwaysTotal,
+    girPercent:    greensTotal > 0   ? (greensHit / greensTotal) * 100     : null,
+    girMiss: { left: girMissLeft, right: girMissRight, short: girMissShort, long: girMissLong },
+    girTotal: greensTotal,
+    girNaPercent:  girTrackedTotal > 0 ? (girNaCount / girTrackedTotal) * 100 : null,
+    proximityRows: Array.from(proximityBuckets.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([band, { total, count }]) => ({
+        label: `${band}–${band + 19} yds`,
+        value: `${(total / count).toFixed(1)} ft`,
+      })),
+    avgPuttsPerRound: totalPuttHoles > 0 ? (totalPutts / totalPuttHoles) * 18 : null,
+    puttDist: { one: putts1, two: putts2, three: putts3, fourPlus: putts4Plus },
+    avgPuttMadeDistance: puttMadeCount > 0 ? puttMadeTotal / puttMadeCount : null,
+    longestPuttMade:     puttMadeCount > 0 ? puttMadeLongest                : null,
   };
 }
 
@@ -147,7 +215,7 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
   // ── Per-hole accumulators (all rounds, any length) ──────────────────────────
   let rounds = 0;
   let totalPutts = 0;
-  let puttRounds = 0;
+  let totalPuttHoles = 0; // sum of holes with putt data — used to normalise to per-18 average
   let greensHit = 0;
   let greensTotal = 0;
   let girNaCount = 0;
@@ -169,6 +237,11 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
   let bogeysCount = 0;
   let doublesPlus = 0;
 
+  // Putt distribution counts — only holes where putts is non-null.
+  let putts1 = 0, putts2 = 0, putts3 = 0, putts4Plus = 0;
+  // Putt made distance — putt_distance_made is feet; track avg and longest.
+  let puttMadeTotal = 0, puttMadeCount = 0, puttMadeLongest = 0;
+
   // Par-specific score accumulators for avg score by par.
   let par3Total = 0, par3Count = 0;
   let par4Total = 0, par4Count = 0;
@@ -183,8 +256,8 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
 
     const validPutts = player.hole_stats.filter((hs) => hs.putts !== null);
     if (validPutts.length > 0) {
-      totalPutts += validPutts.reduce((sum, hs) => sum + (hs.putts ?? 0), 0);
-      puttRounds++;
+      totalPutts    += validPutts.reduce((sum, hs) => sum + (hs.putts ?? 0), 0);
+      totalPuttHoles += validPutts.length;
     }
 
     // GIR: exclude "na" holes from the hit% denominator; track them separately for the N/A stat.
@@ -215,6 +288,19 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
         bucket.total += hs.first_putt_distance;
         bucket.count++;
         proximityBuckets.set(band, bucket);
+      }
+      // Putt distribution — only holes where putts were tracked.
+      if (hs.putts !== null) {
+        if (hs.putts === 1)      putts1++;
+        else if (hs.putts === 2) putts2++;
+        else if (hs.putts === 3) putts3++;
+        else if (hs.putts >= 4)  putts4Plus++;
+      }
+      // Putt made distance — track avg and longest when the field is recorded.
+      if (hs.putt_distance_made !== null && hs.putt_distance_made > 0) {
+        puttMadeTotal += hs.putt_distance_made;
+        puttMadeCount++;
+        if (hs.putt_distance_made > puttMadeLongest) puttMadeLongest = hs.putt_distance_made;
       }
     }
 
@@ -248,7 +334,10 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
     avgGrossScore,
     lowScore,
     highScore,
-    avgPuttsPerRound: puttRounds > 0    ? totalPutts / puttRounds             : null,
+    avgPuttsPerRound: totalPuttHoles > 0 ? (totalPutts / totalPuttHoles) * 18  : null,
+    puttDist: { one: putts1, two: putts2, three: putts3, fourPlus: putts4Plus },
+    avgPuttMadeDistance: puttMadeCount > 0 ? puttMadeTotal / puttMadeCount : null,
+    longestPuttMade: puttMadeCount > 0 ? puttMadeLongest : null,
     girPercent:       greensTotal > 0   ? (greensHit / greensTotal) * 100     : null,
     firPercent:       fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
     firMiss: { left: firMissLeft, right: firMissRight, short: firMissShort, long: firMissLong },
@@ -355,8 +444,8 @@ function DirectionalMissCard({
       </Text>
 
       {/* Distribution sub-label */}
-      <Text className={`text-sm font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
-        {sectionLabel} Distribution
+      <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
+        Distribution
       </Text>
 
       {/* Compass layout: Long on top, Left/center/Right in the middle, Short below */}
@@ -406,7 +495,7 @@ function DirectionalMissCard({
       {/* Extra rows (e.g. proximity by yardage) — separated by a divider with their own sub-label */}
       {extraRows && extraRows.length > 0 && (
         <View className={`mt-4 pt-4 border-t ${t.divider}`}>
-          <Text className={`text-sm font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
+          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
             Proximity (GIR holes)
           </Text>
           {extraRows.map((row) => (
@@ -421,17 +510,171 @@ function DirectionalMissCard({
   );
 }
 
+// PuttingCard renders the Putting section: a donut distribution chart (1/2/3/4+ putts per hole)
+// followed by avg and longest putt made distance rows.
+function PuttingCard({
+  avgPuttsPerRound, puttDist, avgPuttMadeDistance, longestPuttMade,
+}: Readonly<{
+  avgPuttsPerRound: number | null;
+  puttDist: { one: number; two: number; three: number; fourPlus: number };
+  avgPuttMadeDistance: number | null;
+  longestPuttMade: number | null;
+}>) {
+  const t = useTheme();
+
+  const CX = 150, CY = 90, R = 55, IR = 32;
+  const SPOKE_R  = 74;
+  const ELBOW_LEN = 14;
+
+  // 1-putt = green (best), 2-putt = blue (standard), 3-putt = amber, 4+ = red (worst).
+  const allSlices = [
+    { value: puttDist.one,     color: "#16a34a", label: "1 Putt"  },
+    { value: puttDist.two,     color: "#3b82f6", label: "2 Putts" },
+    { value: puttDist.three,   color: "#f59e0b", label: "3 Putts" },
+    { value: puttDist.fourPlus, color: "#ef4444", label: "4+ Putts" },
+  ];
+  const total  = allSlices.reduce((s, x) => s + x.value, 0);
+  const slices = allSlices.filter((s) => s.value > 0);
+
+  function toXY(angle: number, radius: number) {
+    return { x: CX + radius * Math.cos(angle), y: CY + radius * Math.sin(angle) };
+  }
+
+  function arcPath(startAngle: number, sweep: number): string {
+    const sw = Math.min(sweep, 2 * Math.PI - 0.001);
+    const ea = startAngle + sw;
+    const os = toXY(startAngle, R);
+    const oe = toXY(ea, R);
+    const is = toXY(startAngle, IR);
+    const ie = toXY(ea, IR);
+    const lg = sw > Math.PI ? 1 : 0;
+    return [
+      `M ${os.x.toFixed(2)} ${os.y.toFixed(2)}`,
+      `A ${R} ${R} 0 ${lg} 1 ${oe.x.toFixed(2)} ${oe.y.toFixed(2)}`,
+      `L ${ie.x.toFixed(2)} ${ie.y.toFixed(2)}`,
+      `A ${IR} ${IR} 0 ${lg} 0 ${is.x.toFixed(2)} ${is.y.toFixed(2)}`,
+      "Z",
+    ].join(" ");
+  }
+
+  let angle = -Math.PI / 2;
+  const paths = slices.map((s) => {
+    const sweep    = (s.value / total) * 2 * Math.PI;
+    const midAngle = angle + sweep / 2;
+    const d        = arcPath(angle, sweep);
+    angle += sweep;
+
+    const spokeEnd    = toXY(midAngle, SPOKE_R);
+    const isRight     = Math.cos(midAngle) >= 0;
+    const elbowX      = spokeEnd.x + (isRight ? ELBOW_LEN : -ELBOW_LEN);
+    const textCenterX = elbowX + (isRight ? 24 : -24);
+    const pct         = Math.round((s.value / total) * 100);
+    const spokeStart  = toXY(midAngle, R);
+
+    return { ...s, d, spokeStart, spokeEnd, elbowX, textCenterX, pct, midY: spokeEnd.y };
+  });
+
+  return (
+    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
+      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+        Putting
+      </Text>
+
+      {/* Avg putts / round — top-line summary */}
+      <View className={`flex-row border-b ${t.divider} pb-3 mb-3`}>
+        <View className="flex-1 items-center">
+          <Text className={`text-2xl font-bold ${avgPuttsPerRound === null ? t.textTertiary : t.textPrimary}`}>
+            {avgPuttsPerRound === null ? "—" : avgPuttsPerRound.toFixed(1)}
+          </Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>Avg Putts / 18 Holes</Text>
+        </View>
+      </View>
+
+      {/* Putt distribution donut */}
+      <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
+        Distribution
+      </Text>
+      {total > 0 ? (
+        <Svg viewBox="0 0 300 190" width="100%" height={190}>
+          {paths.map((s) => (
+            <Path key={`arc-${s.label}`} d={s.d} fill={s.color} />
+          ))}
+          {paths.map((s) => [
+            <Line
+              key={`spoke-${s.label}`}
+              x1={s.spokeStart.x.toFixed(2)} y1={s.spokeStart.y.toFixed(2)}
+              x2={s.spokeEnd.x.toFixed(2)}   y2={s.spokeEnd.y.toFixed(2)}
+              stroke={s.color} strokeWidth={1.5}
+            />,
+            <Line
+              key={`elbow-${s.label}`}
+              x1={s.spokeEnd.x.toFixed(2)} y1={s.spokeEnd.y.toFixed(2)}
+              x2={s.elbowX.toFixed(2)}     y2={s.spokeEnd.y.toFixed(2)}
+              stroke={s.color} strokeWidth={1.5}
+            />,
+            <SvgText
+              key={`label-${s.label}`}
+              x={s.textCenterX.toFixed(2)}
+              y={(s.midY).toFixed(2)}
+              textAnchor="middle"
+              fontSize={12}
+              fontWeight="600"
+              fill={s.color}
+            >
+              {s.label}
+            </SvgText>,
+            <SvgText
+              key={`pct-${s.label}`}
+              x={s.textCenterX.toFixed(2)}
+              y={(s.midY + 14).toFixed(2)}
+              textAnchor="middle"
+              fontSize={12}
+              fontWeight="600"
+              fill={s.color}
+            >
+              {s.pct}%
+            </SvgText>,
+          ])}
+        </Svg>
+      ) : (
+        <Text className={`text-sm text-center py-4 ${t.textTertiary}`}>No putt data recorded</Text>
+      )}
+
+      {/* Putt made distance */}
+      <View className={`mt-2 pt-4 border-t ${t.divider}`}>
+        <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-2`}>
+          Putt Made Distance
+        </Text>
+        <View className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
+          <Text className={`text-base ${t.textSecondary}`}>Avg Distance Made</Text>
+          <Text className={`text-base font-semibold ${avgPuttMadeDistance === null ? t.textTertiary : t.textPrimary}`}>
+            {avgPuttMadeDistance === null ? "—" : `${avgPuttMadeDistance.toFixed(1)} ft`}
+          </Text>
+        </View>
+        <View className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
+          <Text className={`text-base ${t.textSecondary}`}>Longest Putt Made</Text>
+          <Text className={`text-base font-semibold ${longestPuttMade === null ? t.textTertiary : t.textPrimary}`}>
+            {longestPuttMade === null ? "—" : `${longestPuttMade} ft`}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 // ScoringCard is the unified Scoring section: summary stats (avg/low/high,
 // par-type averages) followed by a scoring distribution donut chart with
 // SVG spoke labels — no separate legend row needed.
+// ScoringCard accepts optional lowScore/highScore. When omitted (single-round
+// view) only one centered "Score" column is rendered instead of three.
 function ScoringCard({
   avgGrossScore, lowScore, highScore,
   avgPar3, avgPar4, avgPar5,
   birdiesOrBetter, pars, bogeys, doublesPlus,
 }: Readonly<{
   avgGrossScore: number | null;
-  lowScore: number | null;
-  highScore: number | null;
+  lowScore?: number | null;
+  highScore?: number | null;
   avgPar3: number | null;
   avgPar4: number | null;
   avgPar5: number | null;
@@ -515,32 +758,38 @@ function ScoringCard({
   return (
     <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
       {/* Section header */}
-      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
         Scoring
       </Text>
 
-      {/* Row 1: Avg | Low | High */}
+      {/* Row 1: Avg | Low | High — or just Score for a single round */}
       <View className={`flex-row border-b ${t.divider} pb-3 mb-3`}>
         <View className="flex-1 items-center">
           <Text className={`text-2xl font-bold ${t.textPrimary}`}>
             {avgGrossScore === null ? "—" : avgGrossScore.toFixed(1)}
           </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole Avg</Text>
-        </View>
-        <View className={`w-px ${t.border} border-l`} />
-        <View className="flex-1 items-center">
-          <Text className={`text-2xl font-bold ${lowScore === null ? t.textPrimary : "text-green-600"}`}>
-            {lowScore ?? "—"}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>
+            {lowScore === undefined ? "Score" : "18-Hole Avg"}
           </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole Low</Text>
         </View>
-        <View className={`w-px ${t.border} border-l`} />
-        <View className="flex-1 items-center">
-          <Text className={`text-2xl font-bold ${highScore === null ? t.textPrimary : "text-red-500"}`}>
-            {highScore ?? "—"}
-          </Text>
-          <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole High</Text>
-        </View>
+        {lowScore !== undefined && highScore !== undefined && (
+          <>
+            <View className={`w-px ${t.border} border-l`} />
+            <View className="flex-1 items-center">
+              <Text className={`text-2xl font-bold ${lowScore === null ? t.textPrimary : "text-green-600"}`}>
+                {lowScore ?? "—"}
+              </Text>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole Low</Text>
+            </View>
+            <View className={`w-px ${t.border} border-l`} />
+            <View className="flex-1 items-center">
+              <Text className={`text-2xl font-bold ${highScore === null ? t.textPrimary : "text-red-500"}`}>
+                {highScore ?? "—"}
+              </Text>
+              <Text className={`text-xs font-semibold uppercase tracking-widest mt-0.5 ${t.textTertiary}`}>18-Hole High</Text>
+            </View>
+          </>
+        )}
       </View>
 
       {/* Row 2: Avg Par 3 | Avg Par 4 | Avg Par 5 */}
@@ -732,10 +981,6 @@ function RoundStatsModal({
     year: "numeric",
   });
 
-  // Format a percentage with fraction: "45% (5/11)" — "—" when not tracked.
-  const fmtPct = (hit: number, total: number) =>
-    total > 0 ? `${Math.round((hit / total) * 100)}% (${hit}/${total})` : "—";
-
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
       <View className={`flex-1 ${t.screen}`}>
@@ -771,33 +1016,37 @@ function RoundStatsModal({
 
           {roundStats ? (
             <>
-              <StatCard
-                label="Scoring"
-                rows={[
-                  { label: "Birdies or Better", value: roundStats.birdies > 0 ? roundStats.birdies.toString() : "—", dim: roundStats.birdies === 0 },
-                  { label: "Pars",    value: roundStats.pars.toString()    },
-                  { label: "Bogeys",  value: roundStats.bogeys.toString()  },
-                  { label: "Double+", value: roundStats.doubles > 0 ? roundStats.doubles.toString() : "—", dim: roundStats.doubles === 0 },
-                ]}
+              <ScoringCard
+                avgGrossScore={player?.total_gross ?? null}
+                avgPar3={roundStats.avgPar3}
+                avgPar4={roundStats.avgPar4}
+                avgPar5={roundStats.avgPar5}
+                birdiesOrBetter={roundStats.birdies}
+                pars={roundStats.pars}
+                bogeys={roundStats.bogeys}
+                doublesPlus={roundStats.doubles}
               />
-              <StatCard
-                label="Driving"
-                rows={[
-                  { label: "Fairways Hit", value: fmtPct(roundStats.fairwaysHit, roundStats.fairwaysTotal), dim: roundStats.fairwaysTotal === 0 },
-                ]}
+              <DirectionalMissCard
+                sectionLabel="Driving"
+                centerLabel="FIR"
+                centerValue={roundStats.firPercent === null ? "—" : `${roundStats.firPercent.toFixed(0)}%`}
+                miss={roundStats.firMiss}
+                denominator={roundStats.firTotal}
               />
-              <StatCard
-                label="Approach"
-                rows={[
-                  { label: "Greens in Regulation", value: fmtPct(roundStats.greensHit, roundStats.greensTotal), dim: roundStats.greensTotal === 0 },
-                ]}
+              <DirectionalMissCard
+                sectionLabel="Approach"
+                centerLabel="GIR"
+                centerValue={roundStats.girPercent === null ? "—" : `${roundStats.girPercent.toFixed(0)}%`}
+                miss={roundStats.girMiss}
+                denominator={roundStats.girTotal}
+                naValue={roundStats.girNaPercent === null ? "—" : `${roundStats.girNaPercent.toFixed(0)}%`}
+                extraRows={roundStats.proximityRows}
               />
-              <StatCard
-                label="Putting"
-                rows={[
-                  { label: "Total Putts",      value: roundStats.totalPutts === null ? "—" : roundStats.totalPutts.toString(), dim: roundStats.totalPutts === null },
-                  { label: "Avg Putts / Hole", value: (roundStats.totalPutts !== null && roundStats.puttsTracked > 0) ? (roundStats.totalPutts / roundStats.puttsTracked).toFixed(1) : "—", dim: roundStats.totalPutts === null },
-                ]}
+              <PuttingCard
+                avgPuttsPerRound={roundStats.avgPuttsPerRound}
+                puttDist={roundStats.puttDist}
+                avgPuttMadeDistance={roundStats.avgPuttMadeDistance}
+                longestPuttMade={roundStats.longestPuttMade}
               />
             </>
           ) : (
@@ -1310,11 +1559,11 @@ export default function StatsScreen() {
                 naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
                 extraRows={stats.proximityRows}
               />
-              <StatCard
-                label="Putting"
-                rows={[
-                  { label: "Avg Putts / Round", value: stats.avgPuttsPerRound === null ? "—" : stats.avgPuttsPerRound.toFixed(1), dim: stats.avgPuttsPerRound === null },
-                ]}
+              <PuttingCard
+                avgPuttsPerRound={stats.avgPuttsPerRound}
+                puttDist={stats.puttDist}
+                avgPuttMadeDistance={stats.avgPuttMadeDistance}
+                longestPuttMade={stats.longestPuttMade}
               />
             </>
           ) : (

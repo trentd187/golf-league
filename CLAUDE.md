@@ -753,7 +753,7 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 cd mobile && pnpm install
 
 # golangci-lint must be installed globally (not via pnpm):
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 ```
 
 ### Bypass (escape hatch)

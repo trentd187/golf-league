@@ -28,7 +28,7 @@ pre-commit:
     # Config: backend/.golangci.yml
     #
     # Requires golangci-lint to be installed globally (one-time per dev machine):
-    #   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+    #   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
     # -------------------------------------------------------------------------
     backend-lint:
       glob: "backend/**/*.go"

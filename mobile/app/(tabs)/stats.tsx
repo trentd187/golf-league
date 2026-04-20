@@ -150,8 +150,18 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
   let puttRounds = 0;
   let greensHit = 0;
   let greensTotal = 0;
+  let girNaCount = 0;
+  let girTrackedTotal = 0; // hit + miss + na
   let fairwaysHit = 0;
   let fairwaysTotal = 0;
+  // Missed-fairway direction counts — only holes where fir=false and a direction was recorded.
+  let firMissLeft = 0, firMissRight = 0, firMissShort = 0, firMissLong = 0;
+  // Missed-green direction counts — only holes where gir="miss" and a direction was recorded.
+  let girMissLeft = 0, girMissRight = 0, girMissShort = 0, girMissLong = 0;
+
+  // Approach proximity: for GIR holes, bucket approach_yds into 20-yd bands and
+  // average first_putt_distance (feet). Key = band start (0, 20, 40, …).
+  const proximityBuckets = new Map<number, { total: number; count: number }>();
 
   // Scoring distribution counters for the pie chart.
   let birdiesOrBetter = 0;
@@ -177,12 +187,36 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
       puttRounds++;
     }
 
-    // GIR: exclude "na" holes (par-3s don't have fairways but do track greens).
-    greensHit   += player.hole_stats.filter((hs) => hs.gir === "hit").length;
-    greensTotal += player.hole_stats.filter((hs) => hs.gir !== null && hs.gir !== "na").length;
+    // GIR: exclude "na" holes from the hit% denominator; track them separately for the N/A stat.
+    greensHit      += player.hole_stats.filter((hs) => hs.gir === "hit").length;
+    greensTotal    += player.hole_stats.filter((hs) => hs.gir !== null && hs.gir !== "na").length;
+    girNaCount     += player.hole_stats.filter((hs) => hs.gir === "na").length;
+    girTrackedTotal += player.hole_stats.filter((hs) => hs.gir !== null).length;
 
     fairwaysHit   += player.hole_stats.filter((hs) => hs.fir === true).length;
     fairwaysTotal += player.hole_stats.filter((hs) => hs.fir !== null).length;
+    for (const hs of player.hole_stats) {
+      if (hs.fir === false) {
+        if (hs.fir_miss_direction === "left")  firMissLeft++;
+        else if (hs.fir_miss_direction === "right") firMissRight++;
+        else if (hs.fir_miss_direction === "short") firMissShort++;
+        else if (hs.fir_miss_direction === "long")  firMissLong++;
+      }
+      if (hs.gir === "miss") {
+        if (hs.gir_miss_direction === "left")  girMissLeft++;
+        else if (hs.gir_miss_direction === "right") girMissRight++;
+        else if (hs.gir_miss_direction === "short") girMissShort++;
+        else if (hs.gir_miss_direction === "long")  girMissLong++;
+      }
+      // Proximity: only GIR holes with both approach distance and first putt distance recorded.
+      if (hs.gir === "hit" && hs.approach_yds !== null && hs.first_putt_distance !== null) {
+        const band = Math.floor(hs.approach_yds / 20) * 20;
+        const bucket = proximityBuckets.get(band) ?? { total: 0, count: 0 };
+        bucket.total += hs.first_putt_distance;
+        bucket.count++;
+        proximityBuckets.set(band, bucket);
+      }
+    }
 
     for (const s of player.scores) {
       const par = holeMap.get(s.hole_number);
@@ -217,6 +251,18 @@ function buildMyStats(scorecards: Scorecard[], roundsList: RoundSummary[]) {
     avgPuttsPerRound: puttRounds > 0    ? totalPutts / puttRounds             : null,
     girPercent:       greensTotal > 0   ? (greensHit / greensTotal) * 100     : null,
     firPercent:       fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
+    firMiss: { left: firMissLeft, right: firMissRight, short: firMissShort, long: firMissLong },
+    firTotal: fairwaysTotal, // denominator for directional %s: hit + missed (no N/A for FIR)
+    girMiss: { left: girMissLeft, right: girMissRight, short: girMissShort, long: girMissLong },
+    girTotal: greensTotal,   // denominator for directional %s: hit + missed, N/A excluded
+    girNaPercent: girTrackedTotal > 0 ? (girNaCount / girTrackedTotal) * 100 : null,
+    // Proximity rows sorted by yardage band — only bands with actual data included.
+    proximityRows: Array.from(proximityBuckets.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([band, { total, count }]) => ({
+        label: `${band}–${band + 19} yds`,
+        value: `${(total / count).toFixed(1)} ft`,
+      })),
     birdiesOrBetter, parsCount, bogeysCount, doublesPlus,
     avgPar3: par3Count > 0 ? par3Total / par3Count : null,
     avgPar4: par4Count > 0 ? par4Total / par4Count : null,
@@ -271,6 +317,106 @@ function StatCard({
           </Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+// DirectionalMissCard renders a stat card with a compass-style miss direction graphic.
+// Used by both Driving (FIR miss directions) and Approach (GIR miss directions).
+// The compass section is always sub-labelled "<sectionLabel> Distribution".
+// Optional extraRows render below the compass (e.g. proximity by yardage for Approach).
+function DirectionalMissCard({
+  sectionLabel, centerLabel, centerValue, miss, denominator, naValue, extraRows,
+}: Readonly<{
+  sectionLabel: string;
+  centerLabel: string;
+  centerValue: string;
+  miss: { left: number; right: number; short: number; long: number };
+  // Total tracked holes (hits + misses, N/A excluded) — directional %s use this so
+  // all directions + center FIR/GIR % sum to 100%.
+  denominator: number;
+  naValue?: string;  // bottom-right N/A label; omit for sections where N/A doesn't apply
+  extraRows?: { label: string; value: string }[]; // additional stat rows shown below the compass
+}>) {
+  const t = useTheme();
+  const hasData = centerValue !== "—";
+
+  // Each direction's share of all tracked holes (not just missed ones).
+  function pct(count: number): string {
+    if (denominator === 0) return "—";
+    return `${Math.round((count / denominator) * 100)}%`;
+  }
+
+  return (
+    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
+      {/* Card section label */}
+      <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-4`}>
+        {sectionLabel}
+      </Text>
+
+      {/* Distribution sub-label */}
+      <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+        {sectionLabel} Distribution
+      </Text>
+
+      {/* Compass layout: Long on top, Left/center/Right in the middle, Short below */}
+      <View className="items-center">
+        {/* Long */}
+        <View className="items-center mb-2">
+          <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.long)}</Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Long</Text>
+        </View>
+
+        {/* Middle row: Left | circle | Right */}
+        <View className="flex-row items-center">
+          {/* Left */}
+          <View className="items-center w-16">
+            <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.left)}</Text>
+            <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Left</Text>
+          </View>
+
+          {/* Center circle — green when data exists to celebrate the hit stat */}
+          <View className={`w-20 h-20 rounded-full border-2 items-center justify-center mx-4 ${hasData ? "bg-green-100 border-green-300" : t.border}`}>
+            <Text className={`text-lg font-bold ${hasData ? "text-green-700" : t.textPrimary}`}>{centerValue}</Text>
+            <Text className={`text-xs font-semibold uppercase tracking-widest ${hasData ? "text-green-600" : t.textTertiary}`}>{centerLabel}</Text>
+          </View>
+
+          {/* Right */}
+          <View className="items-center w-16">
+            <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.right)}</Text>
+            <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Right</Text>
+          </View>
+        </View>
+
+        {/* Short */}
+        <View className="items-center mt-2">
+          <Text className={`text-base font-bold ${t.textPrimary}`}>{pct(miss.short)}</Text>
+          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>Short</Text>
+        </View>
+      </View>
+
+      {/* N/A row — only shown for sections where some holes don't apply (e.g. par-3s for GIR) */}
+      {naValue !== undefined && (
+        <View className="flex-row justify-end mt-3">
+          <Text className={`text-xs ${t.textTertiary}`}>N/A  </Text>
+          <Text className={`text-xs font-semibold ${t.textSecondary}`}>{naValue}</Text>
+        </View>
+      )}
+
+      {/* Extra rows (e.g. proximity by yardage) — separated by a divider with their own sub-label */}
+      {extraRows && extraRows.length > 0 && (
+        <View className={`mt-4 pt-4 border-t ${t.divider}`}>
+          <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary} mb-1`}>
+            Proximity (GIR holes)
+          </Text>
+          {extraRows.map((row) => (
+            <View key={row.label} className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
+              <Text className={`text-sm ${t.textSecondary}`}>{row.label}</Text>
+              <Text className={`text-sm font-semibold ${t.textPrimary}`}>{row.value}</Text>
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -1148,17 +1294,21 @@ export default function StatsScreen() {
                 bogeys={stats.bogeysCount}
                 doublesPlus={stats.doublesPlus}
               />
-              <StatCard
-                label="Driving"
-                rows={[
-                  { label: "Fairways Hit", value: stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`, dim: stats.firPercent === null },
-                ]}
+              <DirectionalMissCard
+                sectionLabel="Driving"
+                centerLabel="FIR"
+                centerValue={stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`}
+                miss={stats.firMiss}
+                denominator={stats.firTotal}
               />
-              <StatCard
-                label="Approach"
-                rows={[
-                  { label: "Greens in Regulation", value: stats.girPercent === null ? "—" : `${stats.girPercent.toFixed(0)}%`, dim: stats.girPercent === null },
-                ]}
+              <DirectionalMissCard
+                sectionLabel="Approach"
+                centerLabel="GIR"
+                centerValue={stats.girPercent === null ? "—" : `${stats.girPercent.toFixed(0)}%`}
+                miss={stats.girMiss}
+                denominator={stats.girTotal}
+                naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
+                extraRows={stats.proximityRows}
               />
               <StatCard
                 label="Putting"

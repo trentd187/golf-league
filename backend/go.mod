@@ -1,6 +1,6 @@
 module github.com/trentd187/golf-league
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0

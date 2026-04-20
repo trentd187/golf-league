@@ -27,11 +27,11 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.8
-          working-directory: backend
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+
+      - name: Run golangci-lint
+        run: golangci-lint run ./...
 
       - name: Run tests with coverage
         run: go test ./... -coverprofile=coverage.out -timeout 120s

@@ -13,7 +13,7 @@ jest.mock("@/constants/api", () => ({ API_URL: "http://localhost:8080" }));
 
 // Mock fetch globally so flush() doesn't attempt a real network call.
 const mockFetch = jest.fn(() => Promise.resolve({ ok: true }));
-global.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 import type { getTelemetryClient as GetTelemetryClient } from "@/utils/telemetry";
 
@@ -151,7 +151,7 @@ describe("TelemetryClient.flush", () => {
     await client.flush();
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const [url, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("http://localhost:8080/api/v1/telemetry/logs");
     expect(opts.method).toBe("POST");
     const body = JSON.parse(opts.body as string) as { entries: { level: string }[] };
@@ -165,7 +165,7 @@ describe("TelemetryClient.flush", () => {
     client.log("debug", "ev", "msg");
     await client.flush();
 
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect((opts.headers as Record<string, string>)["Authorization"]).toBe("Bearer bearer-token");
   });
 

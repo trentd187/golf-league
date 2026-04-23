@@ -13,6 +13,30 @@
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CryptoDigestAlgorithm, CryptoEncoding, digestStringAsync } from 'expo-crypto';
+
+// React Native's JS engine does not expose `globalThis.crypto.subtle`, so Supabase's PKCE
+// implementation cannot use SHA-256 and warns that it will fall back to the `plain` challenge
+// method. Polyfill only `subtle.digest` — the one surface Supabase actually uses — via
+// expo-crypto. The PKCE code verifier is always a base64url ASCII string, so passing it
+// through TextDecoder before hashing is safe (UTF-8 of ASCII bytes == the ASCII bytes).
+if (!globalThis.crypto) {
+  // @ts-expect-error: assigning to read-only global in RN
+  globalThis.crypto = {};
+}
+if (!globalThis.crypto.subtle) {
+  // @ts-expect-error: polyfilling non-standard partial SubtleCrypto
+  globalThis.crypto.subtle = {
+    digest: async (_algorithm: string, data: ArrayBuffer | Uint8Array): Promise<ArrayBuffer> => {
+      const input = new TextDecoder().decode(data instanceof Uint8Array ? data : new Uint8Array(data));
+      const hashBase64 = await digestStringAsync(CryptoDigestAlgorithm.SHA256, input, {
+        encoding: CryptoEncoding.BASE64,
+      });
+      const bytes = Uint8Array.from(atob(hashBase64), (c) => c.charCodeAt(0));
+      return bytes.buffer;
+    },
+  };
+}
 
 export const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,

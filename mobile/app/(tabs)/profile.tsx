@@ -15,6 +15,7 @@
 
 import { useUser } from "@/hooks/useUser";
 import { useAuth } from "@/hooks/useAuth";
+import { useMe } from "@/hooks/useMe";
 import { supabase } from "@/utils/supabase";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
@@ -31,23 +32,10 @@ import {
   Image,
 } from "react-native";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type MeResponse = {
-  id: string;
-  display_name: string;
-  email: string;
-  avatar_url?: string;
-  role: string;
-};
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -72,7 +60,8 @@ function SystemRoleBadge({ role }: { role?: string }) {
 
 export default function ProfileScreen() {
   const { user, loading: userLoading } = useUser();
-  const { getToken, signOut } = useAuth();
+  const { signOut } = useAuth();
+  const { data: meData } = useMe();
   const router = useRouter();
   const t = useTheme();
 
@@ -92,21 +81,6 @@ export default function ProfileScreen() {
   const [localPhotoUri, setLocalPhotoUri] = useState<string | null>(null);
 
   const [displayNameInput, setDisplayNameInput] = useState("");
-
-  // Fetch the caller's profile from the backend to get their platform role.
-  // Role lives only in our PostgreSQL DB — it is not included in the Supabase JWT.
-  const { data: meData } = useQuery<MeResponse>({
-    queryKey: ["me"],
-    queryFn: async () => {
-      const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to fetch profile");
-      return res.json();
-    },
-    enabled: !!user,
-  });
 
   if (userLoading) return null;
 

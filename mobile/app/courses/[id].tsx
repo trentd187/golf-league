@@ -21,7 +21,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
-import { useUser } from "@/hooks/useUser";
+import { useMe } from "@/hooks/useMe";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
@@ -33,8 +33,6 @@ import type { CourseDetail, TeeDetail } from "@/types/courses";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// isAdminOrManager returns true for users who can edit course data.
-// Role is stored in Clerk public metadata and available via useUser.
 function isAdminOrManager(role: unknown): boolean {
   return role === "admin" || role === "manager";
 }
@@ -45,7 +43,7 @@ export default function CourseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router  = useRouter();
   const { getToken } = useAuth();
-  const { user }     = useUser();
+  const { data: me } = useMe();
   const t            = useTheme();
   const queryClient  = useQueryClient();
 
@@ -63,7 +61,7 @@ export default function CourseDetailScreen() {
   const [editCity,  setEditCity]  = useState("");
   const [editState, setEditState] = useState("");
 
-  const canEdit = isAdminOrManager((user?.app_metadata as { role?: string })?.role);
+  const canEdit = isAdminOrManager(me?.role);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {

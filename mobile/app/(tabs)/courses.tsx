@@ -19,7 +19,7 @@ import {
 import { useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
-import { useUser } from "@/hooks/useUser";
+import { useMe } from "@/hooks/useMe";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
@@ -38,14 +38,14 @@ function isAdminOrManager(role: unknown): boolean {
 export default function CoursesScreen() {
   const router       = useRouter();
   const { getToken } = useAuth();
-  const { user }     = useUser();
+  const { data: me } = useMe();
   const t            = useTheme();
   const queryClient  = useQueryClient();
 
   const [searchQuery,    setSearchQuery]    = useState("");
   const [createVisible,  setCreateVisible]  = useState(false);
 
-  const canEdit = isAdminOrManager((user?.app_metadata as { role?: string })?.role);
+  const canEdit = isAdminOrManager(me?.role);
 
   // ── Fetch courses (re-fetches when searchQuery changes) ───────────────────
   const fetchCourses = useCallback(async (): Promise<CourseSummary[]> => {

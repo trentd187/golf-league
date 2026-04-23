@@ -367,7 +367,8 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 | `react-native-css-interop` | `latest` | NativeWind peer dep not auto-hoisted |
 | `expo-web-browser` | `~15.0.10` | Used for Supabase Google OAuth web flow (`WebBrowser.openAuthSessionAsync`) |
 | `expo-auth-session` | `~7.0.10` | Provides `makeRedirectUri()` for Supabase OAuth redirect URL; without it pnpm may resolve to SDK 55 version causing `Cannot find native module 'ExpoCryptoAES'` |
-| `expo-sqlite` | `~16.0.10` | Provides `localStorage` polyfill used by Supabase for session persistence (`expo-sqlite/localStorage/install`) |
+| `expo-sqlite` | `~16.0.10` | Plugin registered in `app.config.js`; the `localStorage` polyfill (`expo-sqlite/localStorage/install`) is no longer used for Supabase auth — see below |
+| `@react-native-async-storage/async-storage` | `2.2.0` | Supabase auth session + PKCE code verifier storage. The expo-sqlite localStorage polyfill was replaced because its sync surface hides async SQLite I/O — the PKCE verifier write wasn't flushing before `openAuthSessionAsync` backgrounded the app, causing "both auth code and code verifier should be non-empty" on OAuth return |
 | `react-native-url-polyfill` | `3.x` | Required by `@supabase/supabase-js` — React Native's JS env doesn't include the URL API natively |
 | `@supabase/supabase-js` | `2.x` | Supabase Auth + Storage client; includes storage functionality (no separate `@supabase/storage-js` needed) |
 | `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |

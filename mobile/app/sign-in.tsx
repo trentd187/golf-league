@@ -54,10 +54,11 @@ export default function SignIn() {
   const handleGoogleOAuth = async () => {
     try {
       setLoading(true);
-      // makeRedirectUri() returns the correct redirect URI for the current environment:
-      //   Expo Go dev → exp://192.168.x.x:8081 (must be added to Supabase redirect URLs)
-      //   Standalone build → com.trentd.golfstuffinhere:// (or variant per build profile)
-      const redirectTo = AuthSession.makeRedirectUri();
+      // Always use the custom scheme so the redirect URL is the same across Expo Go,
+      // development builds, and production builds. Without { scheme }, development
+      // builds return "exp+golfstuffinhere://expo-development-client" which Supabase
+      // doesn't recognise, causing it to fall back to the project's Site URL (localhost:3000).
+      const redirectTo = AuthSession.makeRedirectUri({ scheme: "golfstuffinhere" });
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",

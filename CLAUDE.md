@@ -374,6 +374,7 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 | `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
 | `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
 | `@expo/vector-icons` | `~15.1.1` | Transitive dep of expo; pnpm strict mode means TypeScript can't find its types unless it's a direct dep — causes `Cannot find module '@expo/vector-icons/Ionicons'` in CI |
+| `expo-font` | `~14.0.11` | Required peer dep of `@expo/vector-icons`; missing causes expo-doctor check failure and potential runtime crash outside Expo Go |
 
 **Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
 
@@ -721,6 +722,7 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 | `backend-coverage` | `backend/**/*.go` staged | Runs Go tests; blocks if coverage dropped below `.go-coverage-baseline` |
 | `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
 | `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
+| `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | Runs `expo-doctor`; blocks if any of the 17 SDK/dependency checks fail |
 
 **`pre-push` — runs on every `git push`:**
 

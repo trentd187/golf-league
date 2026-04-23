@@ -53,6 +53,7 @@ module.exports = {
       "expo-secure-store",
       "expo-sqlite",
       "expo-web-browser",
+      "expo-font",
       "@react-native-community/datetimepicker",
     ],
     extra: {

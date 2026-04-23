@@ -77,6 +77,20 @@ pre-commit:
         export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
         && npx expo lint
 
+    # -------------------------------------------------------------------------
+    # Mobile: Expo Doctor
+    # -------------------------------------------------------------------------
+    # Validates that all Expo SDK peer dependencies are installed and at the
+    # expected versions. Catches issues like missing native modules or version
+    # mismatches that compile fine but crash at runtime.
+    # -------------------------------------------------------------------------
+    mobile-expo-doctor:
+      glob: "mobile/**/*.{ts,tsx,js,json}"
+      root: "mobile"
+      run: >
+        export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
+        && npx expo-doctor
+
 # ---------------------------------------------------------------------------
 # Pre-push: runs before `git push` sends commits to the remote.
 # Good place for slower checks (full test suites, coverage) that would be

@@ -58,7 +58,13 @@ export default function SignIn() {
       // development builds, and production builds. Without { scheme }, development
       // builds return "exp+golfstuffinhere://expo-development-client" which Supabase
       // doesn't recognise, causing it to fall back to the project's Site URL (localhost:3000).
-      const redirectTo = AuthSession.makeRedirectUri({ scheme: "golfstuffinhere" });
+      //
+      // The path "oauth-callback" is intentional: without it, makeRedirectUri returns
+      // "golfstuffinhere://" which Expo Router routes to app/index.tsx when Android delivers
+      // the deep link. index.tsx runs before the session is set, redirecting to /sign-in.
+      // A non-root path hits +not-found.tsx instead (a blank screen for < 1 second) and
+      // does not interfere with the navigation stack.
+      const redirectTo = AuthSession.makeRedirectUri({ scheme: "golfstuffinhere", path: "oauth-callback" });
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
@@ -73,8 +79,17 @@ export default function SignIn() {
       const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
 
       if (result.type === "success") {
-        // exchangeCodeForSession parses the code from the redirect URL and sets the session.
-        const { error: sessionError } = await supabase.auth.exchangeCodeForSession(result.url);
+        // Extract just the code from the callback URL. Passing the full custom-scheme URL
+        // (golfstuffinhere://...) to exchangeCodeForSession causes GoTrue's server-side
+        // URL parser to fail on the non-HTTP scheme, so it can't extract the code and
+        // returns "invalid flow state, no valid flow state found".
+        const callbackUrl = new URL(result.url);
+        const code = callbackUrl.searchParams.get("code");
+        if (!code) {
+          showErrorAlert("Authorization code missing from callback URL.");
+          return;
+        }
+        const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
         if (sessionError) {
           showErrorAlert(sessionError.message);
         } else {

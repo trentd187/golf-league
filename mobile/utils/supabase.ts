@@ -26,6 +26,11 @@ export const supabase = createClient(
       persistSession: true,
       // Must be false in React Native — the URL scheme is not a browser URL.
       detectSessionInUrl: false,
+      // Explicitly use PKCE so signInWithOAuth generates response_type=code.
+      // Without this, Supabase JS may default to implicit flow (response_type=token),
+      // which puts tokens in the URL fragment instead of a code — causing exchangeCodeForSession
+      // to fail with "both auth code and code verifier should be non-empty".
+      flowType: 'pkce',
     },
   }
 );

@@ -97,35 +97,63 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 				})
 			}
 
-			// First visit: create the user record. Role defaults to "user".
-			// Try to get the display name from OAuth user_metadata (e.g. Google sets full_name).
-			displayName := "User"
-			if name, ok := claims.UserMetadata["full_name"].(string); ok && name != "" {
-				displayName = name
-			} else if email != "" {
-				// Fall back to the part of the email before the @ symbol.
-				if idx := strings.Index(email, "@"); idx > 0 {
-					displayName = email[:idx]
+			// auth_id not found — check if a row already exists for this email.
+			// This handles Clerk→Supabase migration: the same user has a new provider UUID
+			// but the same email. Rather than inserting a duplicate (which would violate the
+			// UNIQUE constraint on email), we adopt the existing row by writing the new auth_id.
+			if email != "" {
+				var existing models.User
+				emailResult := db.Where("email = ?", email).First(&existing)
+				if emailResult.Error == nil {
+					// Existing row found — migrate it to the new Supabase auth_id.
+					if err := db.Model(&existing).Update("auth_id", authID).Error; err != nil {
+						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+							"error": "failed to migrate user auth_id",
+						})
+					}
+					existing.AuthID = &authID
+					user = existing
+					// Skip the create block below.
+					goto userResolved
+				} else if emailResult.Error != gorm.ErrRecordNotFound {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": "database error",
+					})
 				}
 			}
-			user = models.User{
-				AuthID:      &authID,
-				DisplayName: displayName,
-				Email:       email,
-				Role:        models.UserRoleUser,
-			}
-			if err := db.Create(&user).Error; err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "failed to create user record",
-				})
+
+			// Truly new user — create the record. Role defaults to "user".
+			// Try to get the display name from OAuth user_metadata (e.g. Google sets full_name).
+			{
+				displayName := "User"
+				if name, ok := claims.UserMetadata["full_name"].(string); ok && name != "" {
+					displayName = name
+				} else if email != "" {
+					if idx := strings.Index(email, "@"); idx > 0 {
+						displayName = email[:idx]
+					}
+				}
+				user = models.User{
+					AuthID:      &authID,
+					DisplayName: displayName,
+					Email:       email,
+					Role:        models.UserRoleUser,
+				}
+				if err := db.Create(&user).Error; err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": "failed to create user record",
+					})
+				}
 			}
 		} else {
-			// User found — sync email if it changed (role is managed only via DB, never from JWT).
+			// User found by auth_id — sync email if it changed.
 			if email != "" && user.Email != email {
 				db.Model(&user).Update("email", email)
 				user.Email = email
 			}
 		}
+
+	userResolved:
 
 		// Store user info in request-scoped locals for downstream handlers.
 		c.Locals("userID", user.ID.String())

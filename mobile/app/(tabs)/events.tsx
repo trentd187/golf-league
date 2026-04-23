@@ -26,7 +26,8 @@ import {
   RefreshControl,
 } from "react-native";
 
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useUser } from "@/hooks/useUser";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -179,8 +180,8 @@ export default function EventsScreen() {
     }
   };
 
-  // publicMetadata is typed as Record<string, unknown> so we cast it.
-  const userRole = (user?.publicMetadata as { role?: string })?.role ?? "user";
+  // app_metadata is set server-side by Supabase; role lives in our DB and is synced here.
+  const userRole = (user?.app_metadata as { role?: string })?.role ?? "user";
   const canCreate = userRole === "admin" || userRole === "manager";
 
   const { data: events, isLoading, isError, refetch } = useQuery<EventResponse[]>({

@@ -1,36 +1,40 @@
 // app/index.tsx
-// This is the root index screen — it's the first screen Expo Router renders when the app loads.
-// Its only job is to redirect the user to the correct part of the app based on their auth state.
-// It renders no visible UI: it immediately redirects and is never seen by the user.
+// Root index screen — redirects to the correct part of the app based on auth state.
+// Renders no visible UI: it immediately redirects and is never seen by the user.
 //
-// This pattern (a "gate" or "index redirect") keeps route protection centralized:
-// instead of checking auth in every screen, we send all unauthenticated users here first.
+// This pattern keeps route protection centralized: instead of checking auth in every
+// screen, all users pass through here first on app load.
 
-// useAuth provides the current Clerk authentication state: isSignedIn, isLoaded, userId, etc.
-import { useAuth } from "@clerk/clerk-expo";
-
-// Redirect is an Expo Router component that immediately navigates to a new route.
-// It works like a <Navigate /> in React Router or a server-side 302 redirect.
+import { useEffect, useState } from "react";
 import { Redirect } from "expo-router";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/utils/supabase";
 
 export default function Index() {
-  // isSignedIn: true if the user has an active Clerk session, false if not.
-  // isLoaded: false until Clerk has finished checking for a stored token.
-  //           Always wait for isLoaded before making routing decisions — otherwise
-  //           you might redirect away from the app before Clerk has restored the session.
-  const { isSignedIn, isLoaded } = useAuth();
+  const [session, setSession] = useState<Session | null>(null);
+  // loading stays true until getSession() resolves — prevents a flash of the sign-in
+  // screen before Supabase has restored a persisted session from localStorage.
+  const [loading, setLoading] = useState(true);
 
-  // While Clerk is still initializing (checking SecureStore for a saved token),
-  // return null to render nothing. This avoids a "flash" where the sign-in screen
-  // briefly appears before Clerk realizes the user is already signed in.
-  if (!isLoaded) return null;
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
 
-  // Once loaded, send the user to the right place:
-  // - Signed in → the main tab navigator at "/(tabs)"
-  // - Not signed in → the sign-in screen at "/sign-in"
-  // The parentheses in "/(tabs)" are an Expo Router convention for "route groups" —
-  // a folder named with parentheses groups screens without adding to the URL path.
-  return isSignedIn ? (
+    // Keep session state in sync if the auth state changes while the app is open.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session);
+      }
+    );
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (loading) return null;
+
+  return session ? (
     <Redirect href="/(tabs)" />
   ) : (
     <Redirect href="/sign-in" />

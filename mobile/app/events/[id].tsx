@@ -31,7 +31,8 @@ import {
 } from "react-native";
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useUser } from "@/hooks/useUser";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -264,8 +265,8 @@ export default function EventDetailScreen() {
 
   // --- Derived values ---
 
-  // Match by email — that's what Clerk exposes and what our DB uses as the unique key.
-  const myEmail = user?.primaryEmailAddress?.emailAddress;
+  // Match by email — that's what our DB uses as the unique key.
+  const myEmail = user?.email;
   const myMembership = event?.members.find((m) => m.email === myEmail);
   const isOrganizer = myMembership?.role === "organizer";
 

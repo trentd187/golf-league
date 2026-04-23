@@ -20,7 +20,8 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useUser } from "@/hooks/useUser";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
@@ -62,7 +63,7 @@ export default function CourseDetailScreen() {
   const [editCity,  setEditCity]  = useState("");
   const [editState, setEditState] = useState("");
 
-  const canEdit = isAdminOrManager(user?.publicMetadata?.role);
+  const canEdit = isAdminOrManager((user?.app_metadata as { role?: string })?.role);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {

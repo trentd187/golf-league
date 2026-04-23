@@ -113,13 +113,14 @@ pre-push:
       run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
 
     # -------------------------------------------------------------------------
-    # Mobile: Jest test suite on push
+    # Mobile: Jest coverage ratchet
     # -------------------------------------------------------------------------
-    # Runs the full Jest suite before pushing. Mirrors the mobile job in CI.
-    # --passWithNoTests ensures the hook doesn't fail if no test files exist yet.
+    # Runs Jest with coverage and blocks pushes that lower statement coverage
+    # below the stored baseline in .mobile-coverage-baseline.
+    # The baseline auto-updates when coverage improves — it can never decrease.
+    # See scripts/check-mobile-coverage.sh for details.
     # -------------------------------------------------------------------------
-    mobile-tests:
+    mobile-coverage:
       glob: "mobile/**/*.{ts,tsx}"
-      run: >
-        export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
-        && cd mobile && npx jest --passWithNoTests
+      root: "mobile"
+      run: bash ../scripts/check-mobile-coverage.sh

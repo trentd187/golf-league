@@ -749,9 +749,9 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
 ```
 
-### Mobile test hook (coming soon)
+### Mobile coverage ratchet
 
-`mobile-coverage` will be added to `pre-push` once Jest is set up for the mobile app.
+`mobile-coverage` runs on `pre-push` (same trigger as `backend-tests`). It runs Jest with `--coverage`, parses the Statements percentage, and blocks pushes that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
 
 ---
 

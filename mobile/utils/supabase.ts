@@ -13,13 +13,21 @@
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CryptoDigestAlgorithm, CryptoEncoding, digestStringAsync } from 'expo-crypto';
+import {
+  CryptoDigestAlgorithm,
+  CryptoEncoding,
+  digestStringAsync,
+  getRandomValues as expoGetRandomValues,
+} from 'expo-crypto';
 
-// React Native's JS engine does not expose `globalThis.crypto.subtle`, so Supabase's PKCE
-// implementation cannot use SHA-256 and warns that it will fall back to the `plain` challenge
-// method. Polyfill only `subtle.digest` — the one surface Supabase actually uses — via
-// expo-crypto. The PKCE code verifier is always a base64url ASCII string, so passing it
-// through TextDecoder before hashing is safe (UTF-8 of ASCII bytes == the ASCII bytes).
+// Hermes/JSC (React Native's JS engines) do not expose a full WebCrypto API.
+// Supabase's PKCE implementation uses two surfaces:
+//   1. crypto.getRandomValues — to generate the code verifier
+//   2. crypto.subtle.digest   — to SHA-256 hash the verifier (S256 challenge)
+// Without both, Supabase warns and falls back to `plain` PKCE. Adding `subtle.digest`
+// alone (as we did first) caused Supabase to attempt S256, which then called
+// `getRandomValues` and threw "crypto.getRandomValues is not a function".
+// Both must be polyfilled together.
 
 // Exported with _ prefix for unit testing — not part of the public API.
 export async function _subtleDigest(
@@ -38,6 +46,10 @@ export async function _subtleDigest(
 if (!globalThis.crypto) {
   // @ts-expect-error: assigning to read-only global in RN
   globalThis.crypto = {};
+}
+if (!globalThis.crypto.getRandomValues) {
+  // @ts-expect-error: polyfilling missing getRandomValues
+  globalThis.crypto.getRandomValues = expoGetRandomValues;
 }
 if (!globalThis.crypto.subtle) {
   // @ts-expect-error: polyfilling non-standard partial SubtleCrypto

@@ -10,14 +10,19 @@ jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn(() => ({})) })
 jest.mock('@react-native-async-storage/async-storage', () => ({}));
 jest.mock('react-native-url-polyfill/auto', () => {});
 
-// expo-crypto's digestStringAsync requires a native module — mock it with a stable hash.
-// The value is the base64-encoded SHA-256 of "hello": 2cf24db...
+// expo-crypto requires native modules — mock all surfaces used by the polyfill.
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA256' },
   CryptoEncoding: { BASE64: 'base64' },
   digestStringAsync: jest.fn(() =>
+    // base64-encoded SHA-256 of "hello"
     Promise.resolve('LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ='),
   ),
+  getRandomValues: jest.fn((array: Uint8Array) => {
+    // Fill with deterministic values so tests are reproducible.
+    for (let i = 0; i < array.length; i++) array[i] = i % 256;
+    return array;
+  }),
 }));
 
 import { _subtleDigest } from '@/utils/supabase';

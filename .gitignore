@@ -13,6 +13,7 @@ backend/coverage.out
 .mcp.json
 
 # Expo / React Native
+mobile/coverage/
 mobile/node_modules/
 mobile/.expo/
 mobile/dist/

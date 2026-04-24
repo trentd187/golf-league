@@ -115,10 +115,10 @@ const (
 // and pluralizing the struct name: User → users, Event → events, etc.
 
 // User represents a registered person in the system.
-// Created automatically the first time a Clerk-authenticated user hits the API.
+// Created automatically the first time a Supabase-authenticated user hits the API.
 type User struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"` // DB generates the UUID
-	ClerkID     *string   `gorm:"uniqueIndex:idx_users_clerk_id"`                 // Pointer = nullable for legacy rows
+	AuthID      *string   `gorm:"column:auth_id;uniqueIndex:idx_users_auth_id"`   // Supabase Auth user UUID; pointer = nullable for legacy rows
 	DisplayName string    `gorm:"not null"`
 	Email       string    `gorm:"uniqueIndex;not null"`
 	AvatarURL   *string   // Pointer = nullable in DB

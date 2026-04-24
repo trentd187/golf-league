@@ -81,7 +81,7 @@ func main() {
 	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
 	app.Get("/health", handlers.HealthCheck)
 
-	// All routes under /api/v1 require a valid Clerk JWT.
+	// All routes under /api/v1 require a valid Supabase JWT.
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
 
@@ -142,8 +142,8 @@ func main() {
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin", "manager"), handlers.RefreshCourse(db, golfAPI))
 
 	// User routes
+	api.Get("/me", handlers.GetMe(db))
 	api.Get("/users", handlers.GetUsers(db))
-	api.Patch("/me/profile-image", handlers.UpdateProfileImage(cfg, db))
 
 	// Start the server in a goroutine so we can listen for OS signals below.
 	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;

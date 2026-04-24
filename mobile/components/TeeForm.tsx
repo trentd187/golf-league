@@ -16,7 +16,7 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import ModalHeader from "@/components/ModalHeader";

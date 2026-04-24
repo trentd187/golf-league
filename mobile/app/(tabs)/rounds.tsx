@@ -22,7 +22,7 @@ import {
   RefreshControl,
 } from "react-native";
 
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";

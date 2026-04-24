@@ -70,6 +70,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # Validates SDK peer deps, version alignment, and plugin config.
+      # Fails the build if any of the 17 checks fail.
+      - name: Expo Doctor
+        run: npx expo-doctor
+
       - name: TypeScript type-check
         run: npx tsc --noEmit
 
@@ -96,6 +101,22 @@ jobs:
         with:
           # SonarCloud requires full git history for blame information and new-code detection.
           fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+
+      # node_modules must exist so the scanner can resolve "expo/tsconfig.base"
+      # referenced in mobile/tsconfig.json's "extends" field.
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: pnpm install --frozen-lockfile
 
       - name: Download backend coverage
         uses: actions/download-artifact@v4

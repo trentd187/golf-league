@@ -33,7 +33,8 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useUser } from "@/hooks/useUser";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";

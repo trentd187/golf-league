@@ -25,7 +25,7 @@ import {
   Modal,
   RefreshControl,
 } from "react-native";
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import Svg, { Path, Line, Text as SvgText } from "react-native-svg";

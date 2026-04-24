@@ -1,23 +1,17 @@
 // app/_layout.tsx
-// This is the Root Layout — the top-level wrapper that wraps every screen in the app.
-// In Expo Router, a _layout.tsx file in a directory defines the shared layout for all
-// routes within that directory. The root _layout.tsx applies to the entire app.
+// Root Layout — wraps every screen in the app with shared providers.
 //
-// This file sets up:
-//   1. ClerkProvider       — authentication state (is the user signed in? who are they?)
-//   2. QueryClientProvider — server state management (caching API responses)
-//   3. TelemetrySetup      — wires the Clerk token getter into the telemetry client
-//   4. ErrorBoundary       — catches uncaught render errors and ships them to Loki
-//   5. Stack               — native screen navigation
+// Sets up:
+//   1. QueryClientProvider — server state management (caching API responses)
+//   2. TelemetrySetup      — wires the Supabase JWT getter into the telemetry client
+//   3. ErrorBoundary       — catches uncaught render errors and ships them to Loki
+//   4. Stack               — native screen navigation
+//
+// No auth provider wrapper needed — the Supabase client is a singleton (utils/supabase.ts)
+// and auth state is managed by the individual screens via useUser/useAuth hooks.
 
 // Import global Tailwind/NativeWind styles — must be done exactly once at the app root.
 import "../global.css";
-
-// ClerkProvider is the authentication context wrapper. All Clerk hooks (useAuth, useUser, etc.)
-// must be used inside ClerkProvider — it makes auth state available throughout the component tree.
-// ClerkLoaded delays rendering children until Clerk has finished initializing, preventing
-// a flash of unauthenticated UI while Clerk checks for a stored session.
-import { ClerkProvider, ClerkLoaded, useAuth } from "@clerk/clerk-expo";
 
 // React Query manages server state: fetching, caching, synchronizing, and updating data.
 // QueryCache lets us add a global error handler for 5xx API errors.
@@ -32,13 +26,12 @@ import { useEffect } from "react";
 import { AppState, AppStateStatus } from "react-native";
 import { Stack } from "expo-router";
 
-import { tokenCache } from "@/utils/cache";
 import { getTelemetryClient } from "@/utils/telemetry";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { useAuth } from "@/hooks/useAuth";
 
 // QueryClient is created with a global QueryCache error handler that ships 5xx API
-// errors and unexpected 4xx errors to Loki. trace_id and correlation_id are included
-// automatically by the TelemetryClient so each error can be linked to a Tempo span.
+// errors and unexpected 4xx errors to Loki.
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error: unknown) => {
@@ -75,10 +68,8 @@ focusManager.setEventListener((handleFocus) => {
   return () => subscription.remove();
 });
 
-// TelemetrySetup must be rendered inside ClerkProvider so it can access useAuth.
-// It wires the Clerk getToken function into the TelemetryClient (which needs it to
-// attach a Bearer JWT to flush requests). The component renders nothing — it's
-// purely a side-effect container.
+// TelemetrySetup wires the Supabase JWT getter into the TelemetryClient so telemetry
+// flush requests are authenticated. Renders nothing — purely a side-effect component.
 function TelemetrySetup(): null {
   const { getToken } = useAuth();
 
@@ -86,9 +77,7 @@ function TelemetrySetup(): null {
     getTelemetryClient().setTokenGetter(() => getToken());
   }, [getToken]);
 
-  // Flush queued telemetry entries when the app goes to the background so events
-  // aren't lost if the process is killed. Log when the app returns to the foreground
-  // so we can see session activity in Grafana.
+  // Flush queued telemetry when the app backgrounds; log when it foregrounds.
   useEffect(() => {
     const subscription = AppState.addEventListener(
       "change",
@@ -107,24 +96,15 @@ function TelemetrySetup(): null {
   return null;
 }
 
-// RootLayout is the default export — Expo Router automatically renders this as the root.
 export default function RootLayout() {
-  // The publishable key is safe to embed in the app — it's not a secret.
-  const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY!;
-
   return (
-    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-      <ClerkLoaded>
-        {/* TelemetrySetup must be inside ClerkLoaded so useAuth is available. */}
-        <TelemetrySetup />
-        <QueryClientProvider client={queryClient}>
-          {/* ErrorBoundary catches any uncaught render error in the screen tree,
-              ships it to Loki, and shows a recovery UI instead of a blank screen. */}
-          <ErrorBoundary>
-            <Stack screenOptions={{ headerShown: false }} />
-          </ErrorBoundary>
-        </QueryClientProvider>
-      </ClerkLoaded>
-    </ClerkProvider>
+    <QueryClientProvider client={queryClient}>
+      <TelemetrySetup />
+      {/* ErrorBoundary catches any uncaught render error, ships it to Loki,
+          and shows a recovery UI instead of a blank screen. */}
+      <ErrorBoundary>
+        <Stack screenOptions={{ headerShown: false }} />
+      </ErrorBoundary>
+    </QueryClientProvider>
   );
 }

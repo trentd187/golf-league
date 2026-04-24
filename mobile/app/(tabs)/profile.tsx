@@ -1,24 +1,22 @@
 // app/(tabs)/profile.tsx
 // The Profile screen — shows the signed-in user's information and lets them:
-//   1. Upload or change their profile photo (stored by Clerk, works for all sign-in methods)
-//   2. Edit their first and last name
+//   1. Upload or change their profile photo (stored in Supabase Storage, avatars bucket)
+//   2. Edit their display name (stored in Supabase user_metadata)
 //   3. Switch the app theme (Light, Dark, Colorful, Grey)
 //   4. Sign out
 //
+// Role is fetched from GET /api/v1/me because it lives only in our PostgreSQL DB,
+// not in the Supabase JWT (role is a DB-managed field to prevent self-elevation).
+//
 // Profile photo flow:
 //   - Tap the avatar → expo-image-picker opens the photo library
-//   - User selects a photo → sent to our backend (PATCH /api/v1/me/profile-image)
-//   - Backend forwards the file to Clerk's Backend API using the secret key
-//   - Clerk stores the image and serves it via user.imageUrl
-//
-// Why we proxy through our backend instead of calling Clerk directly:
-//   - user.setProfileImage() (Clerk SDK): silently fails in React Native because
-//     BlobManager produces untyped Blobs that Clerk's API ignores.
-//   - Clerk's Frontend API: uses browser-cookie auth and rejects native clients.
-//   - Our backend receives the image with the normal JWT auth we use everywhere else,
-//     then calls Clerk's Backend API with the secret key (which only lives server-side).
+//   - User selects a photo → uploaded directly to Supabase Storage (avatars bucket)
+//   - avatar_url is saved to user_metadata via supabase.auth.updateUser()
 
-import { useUser, useAuth } from "@clerk/clerk-expo";
+import { useUser } from "@/hooks/useUser";
+import { useAuth } from "@/hooks/useAuth";
+import { useMe } from "@/hooks/useMe";
+import { supabase } from "@/utils/supabase";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -35,8 +33,6 @@ import {
 } from "react-native";
 import { useState } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
@@ -44,7 +40,6 @@ import { THEME_META } from "@/themes";
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 // SystemRoleBadge renders a small coloured pill showing the user's platform-level role.
-// This is distinct from the event-level RoleBadge in components/badges.tsx.
 // Role colors are categorical — hardcoded and NOT affected by the theme.
 function SystemRoleBadge({ role }: { role?: string }) {
   const styles: Record<string, { bg: string; text: string; label: string }> = {
@@ -64,8 +59,9 @@ function SystemRoleBadge({ role }: { role?: string }) {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ProfileScreen() {
-  const { user, isLoaded } = useUser();
-  const { signOut, getToken } = useAuth();
+  const { user, loading: userLoading } = useUser();
+  const { signOut } = useAuth();
+  const { data: meData } = useMe();
   const router = useRouter();
   const t = useTheme();
 
@@ -81,20 +77,23 @@ export default function ProfileScreen() {
   const [signingOut, setSigningOut] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // localPhotoUri: displayed immediately after picking so the avatar updates without
-  // waiting for Clerk's CDN, bypassing React Native's aggressive image cache.
+  // waiting for Supabase's CDN, bypassing React Native's aggressive image cache.
   const [localPhotoUri, setLocalPhotoUri] = useState<string | null>(null);
 
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [displayNameInput, setDisplayNameInput] = useState("");
 
-  if (!isLoaded) return null;
+  if (userLoading) return null;
+
+  // Derive display values from the Supabase user object.
+  // full_name is set by OAuth providers (Google) and by manual edits below.
+  const fullName = (user?.user_metadata?.full_name as string | undefined) ?? "";
+  const email = user?.email ?? "";
+  const avatarUrl = (user?.user_metadata?.avatar_url as string | undefined) ?? undefined;
 
   const displayName =
-    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
-    user?.primaryEmailAddress?.emailAddress?.split("@")[0] ||
+    fullName ||
+    email.split("@")[0] ||
     "Unknown User";
-
-  const email = user?.primaryEmailAddress?.emailAddress ?? "";
 
   const initials = displayName
     .split(" ")
@@ -106,20 +105,6 @@ export default function ProfileScreen() {
   // --- Handlers ---
 
   const handlePickImage = async () => {
-    // Fetch the Clerk token BEFORE opening the image picker. When launchImageLibraryAsync()
-    // opens the native photo library, the app goes to the background. On some Expo Go +
-    // Clerk SDK versions this resets Clerk's in-memory session state, causing getToken()
-    // to throw "You are signed out" if called after the picker closes.
-    const token = await getToken();
-    if (!token) {
-      Alert.alert(
-        "Session expired",
-        "Your session has expired. Please sign out and sign back in.",
-        [{ text: "OK" }]
-      );
-      return;
-    }
-
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
       Alert.alert(
@@ -131,87 +116,77 @@ export default function ProfileScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      // String array form — ImagePicker.MediaType enum isn't reliably exported in v17.0.10
-      // at runtime, and MediaTypeOptions is deprecated. ['images'] works in both.
       mediaTypes: ["images"],
       allowsEditing: true,
-      aspect: [1, 1], // square crop for circular avatar
+      aspect: [1, 1],
       quality: 0.8,
     });
 
     if (result.canceled) return;
 
     const asset = result.assets[0];
-
-    // Show the picked image instantly before the upload completes.
     setLocalPhotoUri(asset.uri);
     setUploadingPhoto(true);
+
     try {
-      // React Native's native networking layer understands { uri, type, name } in FormData —
-      // it reads the file:// URI at the OS level, bypassing BlobManager entirely.
-      // This avoids all known RN Blob limitations (untyped blobs, no ArrayBuffer support).
-      // "as any" is required because TS's FormData types don't include RN's extended format.
       const mimeType = asset.mimeType ?? "image/jpeg";
-      const ext = mimeType.split("/")[1] || "jpg";
+      const fileName = `${user!.id}/avatar.jpg`;
 
-      const formData = new FormData();
-      formData.append("file", {
-        uri: asset.uri,
-        type: mimeType,
-        name: `profile.${ext}`,
-      } as any);
+      // Read the file:// URI as a blob via fetch — React Native's native fetch layer
+      // streams file:// URIs directly at the OS level, bypassing BlobManager limitations.
+      const fileResponse = await fetch(asset.uri);
+      const blob = await fileResponse.blob();
 
-      // Do NOT set Content-Type manually — RN sets "multipart/form-data; boundary=..."
-      // automatically when the body is FormData. Setting it manually omits the boundary.
-      const res = await apiFetch(`${API_URL}/api/v1/me/profile-image`, {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
+      // Upload to Supabase Storage. contentType is set explicitly because the blob's
+      // .type property may be empty after reading from a file:// URI.
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(fileName, blob, { upsert: true, contentType: mimeType });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from("avatars")
+        .getPublicUrl(fileName);
+
+      // Persist the public URL in user_metadata so it's available after re-login.
+      const { error: updateError } = await supabase.auth.updateUser({
+        data: { avatar_url: publicUrl },
       });
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const message =
-          body.errors?.[0]?.long_message ??
-          body.errors?.[0]?.message ??
-          body.error ??
-          `Upload failed with status ${res.status}`;
-        throw new Error(message);
-      }
-
-      // Reload the Clerk user so user.imageUrl reflects the new photo.
-      // The React Native SDK doesn't always push the update reactively.
-      await user?.reload();
+      if (updateError) throw updateError;
     } catch (err) {
       setLocalPhotoUri(null);
       console.error("[Profile] profile image upload failed:", err);
-      const message =
-        (err as Error)?.message ??
-        "Could not upload profile photo. Please try again.";
-      Alert.alert("Upload failed", message, [{ text: "OK" }]);
+      Alert.alert(
+        "Upload failed",
+        (err as Error)?.message ?? "Could not upload profile photo. Please try again.",
+        [{ text: "OK" }]
+      );
     } finally {
       setUploadingPhoto(false);
     }
   };
 
   const enterEditMode = () => {
-    setFirstName(user?.firstName ?? "");
-    setLastName(user?.lastName ?? "");
+    setDisplayNameInput(fullName);
     setEditing(true);
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await user?.update({ firstName: firstName.trim(), lastName: lastName.trim() });
+      const { error } = await supabase.auth.updateUser({
+        data: { full_name: displayNameInput.trim() },
+      });
+      if (error) throw error;
       setEditing(false);
     } catch (err) {
-      const clerkErr = err as { errors?: { longMessage?: string; message?: string }[] };
-      const msg =
-        clerkErr.errors?.[0]?.longMessage ??
-        clerkErr.errors?.[0]?.message ??
-        "Could not save your name. Please try again.";
-      Alert.alert("Something went wrong", msg, [{ text: "OK" }]);
+      Alert.alert(
+        "Something went wrong",
+        (err as Error)?.message ?? "Could not save your name. Please try again.",
+        [{ text: "OK" }]
+      );
     } finally {
       setSaving(false);
     }
@@ -219,8 +194,7 @@ export default function ProfileScreen() {
 
   const handleCancelEdit = () => {
     setEditing(false);
-    setFirstName("");
-    setLastName("");
+    setDisplayNameInput("");
   };
 
   const handleSignOut = () => {
@@ -268,10 +242,10 @@ export default function ProfileScreen() {
                 disabled={uploadingPhoto || saving}
                 style={{ position: "relative", flexShrink: 0 }}
               >
-                {localPhotoUri || user?.imageUrl ? (
+                {localPhotoUri || avatarUrl ? (
                   // Wrap in overflow:hidden View to clip the image to the circle on Android
                   // (borderRadius alone doesn't clip on Android).
-                  // Priority: localPhotoUri (immediate preview) > user.imageUrl (CDN)
+                  // Priority: localPhotoUri (immediate preview) > stored avatar URL
                   <View
                     style={{
                       width: 64,
@@ -281,7 +255,7 @@ export default function ProfileScreen() {
                     }}
                   >
                     <Image
-                      source={{ uri: localPhotoUri ?? user!.imageUrl }}
+                      source={{ uri: localPhotoUri ?? avatarUrl }}
                       style={{ width: 64, height: 64 }}
                     />
                   </View>
@@ -329,7 +303,7 @@ export default function ProfileScreen() {
                 <Text className={`text-sm mb-1 ${t.textSecondary}`} numberOfLines={1}>
                   {email}
                 </Text>
-                <SystemRoleBadge role={(user?.publicMetadata as { role?: string })?.role} />
+                <SystemRoleBadge role={meData?.role} />
               </View>
 
               {/* Edit / Cancel toggle for name editing */}
@@ -351,30 +325,14 @@ export default function ProfileScreen() {
 
                 <View>
                   <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
-                    First Name
+                    Display Name
                   </Text>
                   <TextInput
                     className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                    placeholder="First name"
+                    placeholder="Your name"
                     placeholderTextColor={t.colors.tabBarInactive}
-                    value={firstName}
-                    onChangeText={setFirstName}
-                    autoCapitalize="words"
-                    editable={!saving}
-                    returnKeyType="next"
-                  />
-                </View>
-
-                <View>
-                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-1 ${t.textTertiary}`}>
-                    Last Name
-                  </Text>
-                  <TextInput
-                    className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                    placeholder="Last name"
-                    placeholderTextColor={t.colors.tabBarInactive}
-                    value={lastName}
-                    onChangeText={setLastName}
+                    value={displayNameInput}
+                    onChangeText={setDisplayNameInput}
                     autoCapitalize="words"
                     editable={!saving}
                     returnKeyType="done"
@@ -407,8 +365,6 @@ export default function ProfileScreen() {
               return (
                 <TouchableOpacity
                   key={meta.name}
-                  // Selected: thicker border (border-2) + sunken background.
-                  // Both border-width and border-color are separate literals so Tailwind JIT scans them.
                   className={`flex-1 rounded-xl py-3 px-2 items-center gap-1.5 ${
                     isSelected
                       ? `border-2 ${t.borderInput} ${t.surfaceSunken}`
@@ -416,7 +372,6 @@ export default function ProfileScreen() {
                   }`}
                   onPress={() => setTheme(meta.name)}
                 >
-                  {/* Color swatch */}
                   <View
                     style={{
                       width: 20,

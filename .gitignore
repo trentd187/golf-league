@@ -9,7 +9,11 @@ backend/coverage.out
 .env
 **/.env
 
+# MCP server config — contains API keys, never commit
+.mcp.json
+
 # Expo / React Native
+mobile/coverage/
 mobile/node_modules/
 mobile/.expo/
 mobile/dist/

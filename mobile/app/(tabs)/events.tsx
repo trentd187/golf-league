@@ -26,7 +26,8 @@ import {
   RefreshControl,
 } from "react-native";
 
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useMe } from "@/hooks/useMe";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -149,7 +150,7 @@ function EventCard({ event, onPress }: { event: EventResponse; onPress: () => vo
 
 export default function EventsScreen() {
   const { getToken } = useAuth();
-  const { user } = useUser();
+  const { data: me } = useMe();
   const router = useRouter();
   const t = useTheme();
   const queryClient = useQueryClient();
@@ -179,9 +180,7 @@ export default function EventsScreen() {
     }
   };
 
-  // publicMetadata is typed as Record<string, unknown> so we cast it.
-  const userRole = (user?.publicMetadata as { role?: string })?.role ?? "user";
-  const canCreate = userRole === "admin" || userRole === "manager";
+  const canCreate = me?.role === "admin" || me?.role === "manager";
 
   const { data: events, isLoading, isError, refetch } = useQuery<EventResponse[]>({
     queryKey: ["events"],

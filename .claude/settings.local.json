@@ -1,4 +1,5 @@
 {
+  "enabledMcpjsonServers": ["grafana"],
   "permissions": {
     "allow": [
       "Bash(gofmt -w .)",

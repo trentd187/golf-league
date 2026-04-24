@@ -1,21 +1,19 @@
 // app/sign-in.tsx
-// The sign-in / sign-up screen — the first screen unauthenticated users see.
+// Sign-in / sign-up screen — the first screen unauthenticated users see.
 //
-// Supports three authentication methods:
-//   1. Google OAuth    — one-tap sign in with a Google account
-//   2. Apple Sign In   — sign in with an Apple ID (required on iOS when other OAuth is offered)
-//   3. Email OTP       — passwordless: enter email → 6-digit code → done
+// Supports two authentication methods:
+//   1. Google OAuth    — web-based flow via expo-web-browser
+//   2. Email OTP       — passwordless: enter email → 6-digit code → done
 //
-// The email flow is "combined" — it handles both new users (sign-up) and
-// returning users (sign-in) from the same screen:
-//   - If the email already exists in Clerk → sign-in OTP flow
-//   - If the email is new                  → sign-up OTP flow (creates account)
+// The email OTP flow handles both new and returning users automatically —
+// Supabase creates the account if the email is new, or signs in if it exists.
 //
-// Error handling:
-//   - Inline red text: form-level issues (wrong code, invalid email format)
-//   - Alert dialog:    unexpected/network errors
+// Prerequisites (manual setup required before OAuth works):
+//   - Supabase: Authentication → URL Configuration → add your redirect URL
+//     (e.g. exp://* for Expo Go dev, com.trentd.golfstuffinhere:// for production)
+//   - Google Cloud Console: add the same redirect URL to "Authorized redirect URIs"
 
-import { useSignIn, useSignUp, useOAuth } from "@clerk/clerk-expo";
+import { useState } from "react";
 import { useRouter } from "expo-router";
 import {
   Text,
@@ -28,31 +26,21 @@ import {
   ScrollView,
   Platform,
 } from "react-native";
-import { useState } from "react";
 import * as WebBrowser from "expo-web-browser";
+import * as AuthSession from "expo-auth-session";
+import { supabase } from "@/utils/supabase";
 import { useTheme } from "@/hooks/useTheme";
 
-// Required for OAuth redirects to complete correctly — safe to call unconditionally.
+// Required for OAuth redirects to complete correctly in Expo — safe to call unconditionally.
 WebBrowser.maybeCompleteAuthSession();
 
-// authMode tracks which Clerk API to call when the user submits their OTP code.
-type AuthMode = "signIn" | "signUp";
-
 export default function SignIn() {
-  const { signIn, setActive: setSignInActive, isLoaded: signInLoaded } = useSignIn();
-  const { signUp, setActive: setSignUpActive, isLoaded: signUpLoaded } = useSignUp();
-
-  // One hook per OAuth provider — each returns a startOAuthFlow() function.
-  const { startOAuthFlow: startGoogleOAuth } = useOAuth({ strategy: "oauth_google" });
-  const { startOAuthFlow: startAppleOAuth }  = useOAuth({ strategy: "oauth_apple" });
-
   const router = useRouter();
   const t = useTheme();
 
   const [email, setEmail]                             = useState("");
   const [code, setCode]                               = useState("");
   const [pendingVerification, setPendingVerification] = useState(false);
-  const [authMode, setAuthMode]                       = useState<AuthMode>("signIn");
   const [loading, setLoading]                         = useState(false);
   const [inlineError, setInlineError]                 = useState("");
 
@@ -62,95 +50,97 @@ export default function SignIn() {
     Alert.alert("Something went wrong", message, [{ text: "OK" }]);
   };
 
-  // extractClerkMessage: pulls a human-readable string out of a Clerk error object.
-  const extractClerkMessage = (err: unknown): string => {
-    const clerkErr = err as { errors?: { longMessage?: string; message?: string }[] };
-    return (
-      clerkErr.errors?.[0]?.longMessage ??
-      clerkErr.errors?.[0]?.message ??
-      "An unexpected error occurred."
-    );
-  };
-
-  // handleOAuth: generic OAuth handler — accepts any flow-starter function so
-  // Google and Apple can share the same try/catch logic.
-  const handleOAuth = async (
-    startFlow: () => Promise<{ createdSessionId?: string | null; setActive?: ((opts: { session: string }) => Promise<void>) | null }>
-  ) => {
+  // --- Google OAuth ---
+  const handleGoogleOAuth = async () => {
     try {
       setLoading(true);
-      const { createdSessionId, setActive: setActiveSession } = await startFlow();
-      if (createdSessionId && setActiveSession) {
-        await setActiveSession({ session: createdSessionId });
-        router.replace("/(tabs)");
+      // Always use the custom scheme so the redirect URL is the same across Expo Go,
+      // development builds, and production builds. Without { scheme }, development
+      // builds return "exp+golfstuffinhere://expo-development-client" which Supabase
+      // doesn't recognise, causing it to fall back to the project's Site URL (localhost:3000).
+      //
+      // The path "oauth-callback" is intentional: without it, makeRedirectUri returns
+      // "golfstuffinhere://" which Expo Router routes to app/index.tsx when Android delivers
+      // the deep link. index.tsx runs before the session is set, redirecting to /sign-in.
+      // A non-root path hits +not-found.tsx instead (a blank screen for < 1 second) and
+      // does not interfere with the navigation stack.
+      const redirectTo = AuthSession.makeRedirectUri({ scheme: "golfstuffinhere", path: "oauth-callback" });
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo, skipBrowserRedirect: true },
+      });
+
+      if (error || !data.url) {
+        showErrorAlert(error?.message ?? "Could not start Google sign-in.");
+        return;
+      }
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+
+      if (result.type === "success") {
+        // Extract just the code from the callback URL. Passing the full custom-scheme URL
+        // (golfstuffinhere://...) to exchangeCodeForSession causes GoTrue's server-side
+        // URL parser to fail on the non-HTTP scheme, so it can't extract the code and
+        // returns "invalid flow state, no valid flow state found".
+        const callbackUrl = new URL(result.url);
+        const code = callbackUrl.searchParams.get("code");
+        if (!code) {
+          showErrorAlert("Authorization code missing from callback URL.");
+          return;
+        }
+        const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
+        if (sessionError) {
+          showErrorAlert(sessionError.message);
+        } else {
+          router.replace("/(tabs)");
+        }
       }
     } catch (err) {
-      showErrorAlert(extractClerkMessage(err));
+      showErrorAlert((err as Error)?.message ?? "An unexpected error occurred.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- Email OTP: Step 1 — send a code ---
+  // --- Email OTP: Step 1 — send a 6-digit code ---
   const handleSendEmail = async () => {
-    if (!signInLoaded || !signUpLoaded) return;
     setLoading(true);
     setInlineError("");
 
-    try {
-      // Attempt sign-in first (assumes the email already has a Clerk account).
-      await signIn!.create({ identifier: email, strategy: "email_code" });
-      setAuthMode("signIn");
-      setPendingVerification(true);
-    } catch (signInErr) {
-      const clerkErr = signInErr as { errors?: { code?: string }[] };
-      const errCode = clerkErr.errors?.[0]?.code ?? "";
-      const isNewUser =
-        errCode === "form_identifier_not_found" ||
-        errCode === "form_password_incorrect";
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      // shouldCreateUser: true is the default — creates an account if the email is new.
+      options: { shouldCreateUser: true },
+    });
 
-      if (isNewUser) {
-        try {
-          await signUp!.create({ emailAddress: email });
-          await signUp!.prepareEmailAddressVerification({ strategy: "email_code" });
-          setAuthMode("signUp");
-          setPendingVerification(true);
-        } catch (signUpErr) {
-          setInlineError(extractClerkMessage(signUpErr));
-        }
-      } else {
-        showErrorAlert(extractClerkMessage(signInErr));
-      }
-    } finally {
-      setLoading(false);
+    setLoading(false);
+
+    if (error) {
+      showErrorAlert(error.message);
+    } else {
+      setPendingVerification(true);
     }
   };
 
   // --- Email OTP: Step 2 — verify the code ---
   const handleVerifyCode = async () => {
-    if (!signInLoaded || !signUpLoaded) return;
     setLoading(true);
     setInlineError("");
 
-    try {
-      if (authMode === "signIn") {
-        const result = await signIn!.attemptFirstFactor({ strategy: "email_code", code });
-        if (result.status === "complete") {
-          await setSignInActive!({ session: result.createdSessionId });
-          router.replace("/(tabs)");
-        }
-      } else {
-        const result = await signUp!.attemptEmailAddressVerification({ code });
-        if (result.status === "complete") {
-          await setSignUpActive!({ session: result.createdSessionId });
-          router.replace("/(tabs)");
-        }
-      }
-    } catch (err) {
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token: code,
+      type: "email",
+    });
+
+    setLoading(false);
+
+    if (error) {
       // Wrong code — show inline so the user can retry without dismissing a dialog.
-      setInlineError(extractClerkMessage(err));
-    } finally {
-      setLoading(false);
+      setInlineError(error.message);
+    } else {
+      router.replace("/(tabs)");
     }
   };
 
@@ -181,26 +171,13 @@ export default function SignIn() {
               <>
                 <TouchableOpacity
                   className="w-full bg-blue-600 rounded-xl py-4 items-center justify-center"
-                  onPress={() => handleOAuth(startGoogleOAuth)}
+                  onPress={handleGoogleOAuth}
                   disabled={loading}
                 >
                   {loading ? (
                     <ActivityIndicator color="white" />
                   ) : (
                     <Text className="text-white font-semibold text-base">Continue with Google</Text>
-                  )}
-                </TouchableOpacity>
-
-                {/* Apple button — black per Apple HIG; required when any other OAuth is offered on iOS */}
-                <TouchableOpacity
-                  className="w-full bg-black rounded-xl py-4 items-center justify-center"
-                  onPress={() => handleOAuth(startAppleOAuth)}
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <ActivityIndicator color="white" />
-                  ) : (
-                    <Text className="text-white font-semibold text-base">Continue with Apple</Text>
                   )}
                 </TouchableOpacity>
 

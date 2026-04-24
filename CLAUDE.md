@@ -23,7 +23,7 @@ When updating, **edit the relevant existing section** rather than appending a ne
 - **Backend:** Go + Fiber v2 API server with WebSockets, deployed on Railway (Docker-based)
 - **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
-- **Auth:** Clerk (Google OAuth + Email OTP; sign-in and sign-up share one screen with email OTP fallback to sign-up)
+- **Auth:** Supabase Auth (Google OAuth + Email OTP; sign-in and sign-up share one screen — Supabase handles both automatically with `signInWithOtp`)
 - **Module path:** `github.com/trentd187/golf-league`
 
 > **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
@@ -128,7 +128,7 @@ Add the struct to `internal/models/models.go`. Then create a new migration to ad
 
 Apply middleware to routes in this order:
 ```go
-// 1. Parse and validate the Clerk JWT
+// 1. Parse and validate the Supabase JWT (RS256/JWKS)
 app.Use(middleware.Auth(cfg))
 
 // 2. Restrict by role (apply per-route or per-group)
@@ -150,8 +150,7 @@ All config is read in `internal/config/config.go`. To add a new variable:
 
 Current required variables:
 - `DATABASE_URL` — PostgreSQL connection string
-- `CLERK_SECRET_KEY` — Clerk Backend API key (for metadata updates, profile image proxy)
-- `CLERK_JWKS_URL` — Clerk's JWKS endpoint for JWT signature verification. Found in Clerk Dashboard → API Keys → Advanced. Format: `https://<your-clerk-domain>.clerk.accounts.dev/.well-known/jwks.json`
+- `SUPABASE_JWKS_URL` — Supabase's JWKS endpoint for RS256 JWT verification. Format: `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` (project ref is in Supabase Dashboard → Project Settings → Data API → Project URL)
 - `PORT` — HTTP port (default: `8080`)
 - `ENV` — runtime environment (default: `development`)
 - `GOLF_COURSE_API_KEY` — Free API key from [golfcourseapi.com](https://golfcourseapi.com) (sign-up required). Enables `POST /courses/search-external`, `POST /courses/import-external`, and `POST /courses/:courseId/refresh`. Leave empty to disable external course import (manual course entry still works).
@@ -320,7 +319,7 @@ const mutation = useMutation({
 - **Server state** (API data): TanStack Query
 - **Client/UI state** (modals open, form inputs, etc.): Zustand stores in `stores/`
 - **Theme state**: `stores/themeStore.ts` — persisted to SecureStore; access via `useTheme()` hook
-- **Auth state**: Clerk hooks (`useAuth`, `useUser`)
+- **Auth state**: `hooks/useAuth.ts` (getToken, signOut) and `hooks/useUser.ts` (Supabase User object + loading state)
 
 ### Adding a New Expo Package
 
@@ -337,39 +336,24 @@ pnpm add some-js-library
 
 ### File Upload from React Native (Profile Image Pattern)
 
-React Native's `BlobManager` has fundamental limitations that affect file uploads. These are **React Native core issues**, not Expo-specific, and may or may not be resolved in SDK 55 / React Native 0.77+:
-
-- `fetch(file://).blob()` returns a `Blob` with `type: ""` (empty MIME type)
-- `new Blob([arrayBuffer])` throws "Creating blobs from ArrayBuffer not supported"
-- `new Blob([rawBlob], { type })` re-wraps without crashing, but Clerk's SDK still silently drops the upload
-
-**The correct pattern** for uploading a local file from React Native is to use FormData with React Native's native file entry format. The native networking layer reads the `file://` URI at the OS level and streams it directly, bypassing BlobManager entirely:
+React Native's `BlobManager` has limitations, but they are mitigated when uploading to Supabase Storage. The `fetch(file://)` approach works because Supabase's storage client passes a separate `contentType` option rather than relying on the blob's `.type` property:
 
 ```tsx
-const formData = new FormData();
-formData.append("file", {
-  uri: asset.uri,   // file:// URI — RN native layer reads this directly
-  type: mimeType,   // explicit MIME type
-  name: `photo.jpg`,
-} as any); // "as any" because TS FormData types don't include RN's extended format
+// Read the file:// URI as a blob — React Native's native fetch streams it at the OS level.
+const fileResponse = await fetch(asset.uri);
+const blob = await fileResponse.blob();
 
-// Do NOT set Content-Type manually — RN sets multipart/form-data boundary automatically
-await fetch(uploadUrl, {
-  method: "POST",
-  headers: { Authorization: `Bearer ${token}` },
-  body: formData,
-});
+// contentType is passed explicitly so Supabase ignores the blob's (possibly empty) .type.
+const { error } = await supabase.storage
+  .from("avatars")
+  .upload(`${user.id}/avatar.jpg`, blob, { upsert: true, contentType: mimeType });
+
+// Save the public URL to user_metadata so it persists across sessions.
+const { data: { publicUrl } } = supabase.storage.from("avatars").getPublicUrl(`${user.id}/avatar.jpg`);
+await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
 ```
 
-This pattern is used in `app/(tabs)/profile.tsx` to upload to our backend (`PATCH /api/v1/me/profile-image`), which proxies to Clerk's Backend API using the secret key.
-
-**Do NOT call Clerk's Frontend API directly from React Native.** It uses browser-cookie auth and will return "Unable to authenticate this browser" for native clients. The correct pattern is:
-- Mobile → our backend (JWT auth) → Clerk Backend API (secret key auth)
-- Handler: `handlers.UpdateProfileImage` in `backend/internal/handlers/users.go`
-
-**Clerk session after background/foreground transitions:** When a native UI (image picker, camera, share sheet, etc.) opens, the app goes to the background. On some versions of Expo Go + Clerk Expo SDK, this resets Clerk's in-memory session state. Calling `getToken()` _after_ the native UI closes may throw "You are signed out" even though the user is still authenticated. Fix: always call `getToken()` **before** opening the native UI, while the app is in the foreground.
-
-**TODO when upgrading to SDK 55:** Test whether `user.setProfileImage()` works correctly with SDK 55 / React Native 0.77+. If blob handling is fixed in the new architecture, we could simplify back to the SDK method. Until confirmed, keep the direct FormData API call approach.
+This pattern is used in `app/(tabs)/profile.tsx`. Profile images are uploaded directly to Supabase Storage (the `avatars` bucket) — no backend proxy needed.
 
 ---
 
@@ -381,12 +365,17 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 |---|---|---|
 | `@expo/metro-runtime` | `~6.1.2` | expo-router 6.0.23 imports it directly; without it: `Unable to resolve "@expo/metro-runtime/error-overlay"` |
 | `react-native-css-interop` | `latest` | NativeWind peer dep not auto-hoisted |
-| `expo-web-browser` | `~15.0.10` | Clerk OAuth peer dep |
-| `expo-auth-session` | `~7.0.10` | Without this, pnpm resolves clerk's peer to 55.0.6 (SDK 55) → `expo-crypto@55.0.8` → `Cannot find native module 'ExpoCryptoAES'` crash |
+| `expo-web-browser` | `~15.0.10` | Used for Supabase Google OAuth web flow (`WebBrowser.openAuthSessionAsync`) |
+| `expo-auth-session` | `~7.0.10` | Provides `makeRedirectUri()` for Supabase OAuth redirect URL; without it pnpm may resolve to SDK 55 version causing `Cannot find native module 'ExpoCryptoAES'` |
+| `expo-sqlite` | `~16.0.10` | Plugin registered in `app.config.js`; the `localStorage` polyfill (`expo-sqlite/localStorage/install`) is no longer used for Supabase auth — see below |
+| `@react-native-async-storage/async-storage` | `2.2.0` | Supabase auth session + PKCE code verifier storage. The expo-sqlite localStorage polyfill was replaced because its sync surface hides async SQLite I/O — the PKCE verifier write wasn't flushing before `openAuthSessionAsync` backgrounded the app, causing "both auth code and code verifier should be non-empty" on OAuth return |
+| `react-native-url-polyfill` | `3.x` | Required by `@supabase/supabase-js` — React Native's JS env doesn't include the URL API natively |
+| `@supabase/supabase-js` | `2.x` | Supabase Auth + Storage client; includes storage functionality (no separate `@supabase/storage-js` needed) |
 | `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |
 | `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
 | `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
 | `@expo/vector-icons` | `~15.1.1` | Transitive dep of expo; pnpm strict mode means TypeScript can't find its types unless it's a direct dep — causes `Cannot find module '@expo/vector-icons/Ionicons'` in CI |
+| `expo-font` | `~14.0.11` | Required peer dep of `@expo/vector-icons`; missing causes expo-doctor check failure and potential runtime crash outside Expo Go |
 
 **Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
 
@@ -712,7 +701,7 @@ Compare the result against `.go-coverage-baseline`. If it drops, add Tier 1 test
 **Production deployment is Railway:**
 - Railway detects the `Dockerfile` in `backend/` and builds + deploys it automatically on push to `main`
 - PostgreSQL is provisioned as a Railway managed database service (no self-managed RDS)
-- Environment variables (`DATABASE_URL`, `CLERK_SECRET_KEY`, `CLERK_JWKS_URL`, etc.) are configured in the Railway project settings
+- Environment variables (`DATABASE_URL`, `SUPABASE_JWKS_URL`, etc.) are configured in the Railway project settings
 
 ---
 
@@ -734,6 +723,7 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 | `backend-coverage` | `backend/**/*.go` staged | Runs Go tests; blocks if coverage dropped below `.go-coverage-baseline` |
 | `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
 | `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
+| `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | Runs `expo-doctor`; blocks if any of the 17 SDK/dependency checks fail |
 
 **`pre-push` — runs on every `git push`:**
 
@@ -762,9 +752,9 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
 ```
 
-### Mobile test hook (coming soon)
+### Mobile coverage ratchet
 
-`mobile-coverage` will be added to `pre-push` once Jest is set up for the mobile app.
+`mobile-coverage` runs on `pre-push` (same trigger as `backend-tests`). It runs Jest with `--coverage`, parses the Statements percentage, and blocks pushes that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
 
 ---
 

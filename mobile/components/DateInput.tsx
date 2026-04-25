@@ -223,10 +223,8 @@ export default function DateInput({
               <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
                 <Text className={`font-semibold ${t.textSecondary}`}>Select Date</Text>
                 <TouchableOpacity onPress={() => setShowPicker(false)}>
-                  {/* "Done" uses theme hex — inline style required for Text color */}
                   <Text
                     className="font-semibold text-base"
-                    // eslint-disable-next-line react-native/no-inline-styles
                     style={{ color: t.colors.tabBarActive }}
                   >
                     Done

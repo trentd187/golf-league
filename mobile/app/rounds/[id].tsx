@@ -914,8 +914,12 @@ export default function RoundDetailScreen() {
                           />
                         </TouchableOpacity>
                       ) : (
-                        // Non-organizer: player row is read-only
-                        <View className="flex-1 flex-row items-center gap-3">
+                        // Non-organizer: player row navigates to the player's public profile
+                        <TouchableOpacity
+                          className="flex-1 flex-row items-center gap-3"
+                          activeOpacity={0.7}
+                          onPress={() => router.push(`/users/${player.user_id}`)}
+                        >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
                             <Text
@@ -928,7 +932,7 @@ export default function RoundDetailScreen() {
                               {player.email}
                             </Text>
                           </View>
-                        </View>
+                        </TouchableOpacity>
                       )
                     ) : (
                       <Text className={`text-sm italic ${t.textTertiary}`}>
@@ -948,7 +952,6 @@ export default function RoundDetailScreen() {
                 >
                   <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
                   <Text
-                    // eslint-disable-next-line react-native/no-inline-styles
                     style={{ color: t.colors.tabBarActive }}
                     className="text-sm font-semibold"
                   >
@@ -970,7 +973,6 @@ export default function RoundDetailScreen() {
                 >
                   <Ionicons name="list-outline" size={16} color={t.colors.tabBarActive} />
                   <Text
-                    // eslint-disable-next-line react-native/no-inline-styles
                     style={{ color: t.colors.tabBarActive }}
                     className="text-sm font-semibold"
                   >
@@ -1171,7 +1173,6 @@ export default function RoundDetailScreen() {
                   activeOpacity={0.7}
                 >
                   <Ionicons name="search-outline" size={15} color={t.colors.tabBarActive} />
-                  {/* eslint-disable-next-line react-native/no-inline-styles */}
                   <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
                     {editNewCourse ? "Change Course" : "Change Course"}
                   </Text>
@@ -1442,7 +1443,6 @@ export default function RoundDetailScreen() {
                           <TouchableOpacity onPress={() => setTeeTimePickerOpen(false)}>
                             <Text
                               className="font-semibold text-base"
-                              // eslint-disable-next-line react-native/no-inline-styles
                               style={{ color: t.colors.tabBarActive }}
                             >
                               Done

@@ -1,5 +1,5 @@
 // __tests__/app/profile.test.tsx
-// Tests for the ProfileScreen's name-save and avatar-upload flows.
+// Tests for the ProfileScreen's name-save, avatar-upload, and following-list flows.
 //
 // Covers:
 //   - refreshSession is called after a successful display name save (bug fix:
@@ -8,6 +8,10 @@
 //   - refreshSession is NOT called when updateUser returns an error
 //   - Avatar upload saves to custom_avatar_url (not avatar_url) so Google OAuth
 //     re-logins cannot overwrite user-uploaded photos
+//   - Following section shows a loading spinner while the query is in flight
+//   - Following section shows an empty-state message when the list is empty
+//   - Following section renders a row per followed player with name and round count
+//   - Tapping a following row navigates to that user's profile
 
 import React from "react";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
@@ -16,6 +20,13 @@ import { Alert } from "react-native";
 // --- Mocks ---
 // jest.mock() is hoisted before imports; variables from the outer scope are
 // not yet defined inside factory functions, so we use jest.fn() directly.
+
+// mockUseQuery controls what the following list query returns across tests.
+const mockUseQuery = jest.fn();
+
+jest.mock("@tanstack/react-query", () => ({
+  useQuery: (...args: unknown[]) => mockUseQuery(...args),
+}));
 
 jest.mock("@/hooks/useUser", () => ({
   useUser: () => ({
@@ -29,8 +40,25 @@ jest.mock("@/hooks/useUser", () => ({
 }));
 
 jest.mock("@/hooks/useAuth", () => ({
-  useAuth: () => ({ signOut: jest.fn() }),
+  useAuth: () => ({ signOut: jest.fn(), getToken: jest.fn().mockResolvedValue("test-token") }),
 }));
+
+jest.mock("@/utils/api", () => ({
+  apiFetch: jest.fn(),
+}));
+
+jest.mock("@/constants/api", () => ({
+  API_URL: "http://localhost:8080",
+}));
+
+jest.mock("@/components/UserAvatar", () => {
+  const { View, Text } = require("react-native");
+  return ({ displayName }: { displayName: string }) => (
+    <View>
+      <Text>{displayName}</Text>
+    </View>
+  );
+});
 
 jest.mock("@/hooks/useMe", () => ({
   useMe: () => ({ data: { role: "user" } }),
@@ -50,8 +78,10 @@ jest.mock("@/utils/supabase", () => ({
   },
 }));
 
+// useRouter is a jest.fn() so individual tests can call .mockReturnValue to
+// capture push/replace calls (e.g. the following-row navigation test).
 jest.mock("expo-router", () => ({
-  useRouter: () => ({ replace: jest.fn() }),
+  useRouter: jest.fn(() => ({ replace: jest.fn(), push: jest.fn() })),
 }));
 
 jest.mock("expo-image-picker", () => ({
@@ -106,6 +136,8 @@ const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Default: following query is idle (not loading, no data) so existing tests are unaffected.
+  mockUseQuery.mockReturnValue({ data: undefined, isLoading: false });
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -225,4 +257,56 @@ it("does not call refreshSession when updateUser returns an error", async () => 
   await waitFor(() => {
     expect(supabase.auth.refreshSession).not.toHaveBeenCalled();
   });
+});
+
+// ─── Following section ────────────────────────────────────────────────────────
+
+it("shows a loading spinner while the following list is fetching", () => {
+  mockUseQuery.mockReturnValue({ data: undefined, isLoading: true });
+
+  const { UNSAFE_getByType } = render(<ProfileScreen />);
+  const { ActivityIndicator } = require("react-native");
+  expect(UNSAFE_getByType(ActivityIndicator)).toBeTruthy();
+});
+
+it("shows an empty-state message when following nobody", () => {
+  mockUseQuery.mockReturnValue({ data: [], isLoading: false });
+
+  const { getByText } = render(<ProfileScreen />);
+  expect(getByText("You're not following anyone yet.")).toBeTruthy();
+});
+
+it("renders a row for each followed player", () => {
+  mockUseQuery.mockReturnValue({
+    data: [
+      { id: "u1", display_name: "Alice Fairway", avatar_url: null, rounds_played: 5 },
+      { id: "u2", display_name: "Bob Bunker", avatar_url: null, rounds_played: 1 },
+    ],
+    isLoading: false,
+  });
+
+  const { getAllByText, getByText } = render(<ProfileScreen />);
+  expect(getAllByText("Alice Fairway").length).toBeGreaterThanOrEqual(1);
+  expect(getAllByText("Bob Bunker").length).toBeGreaterThanOrEqual(1);
+  // Singular "round" for 1 round, plural "rounds" for 5
+  expect(getByText("5 rounds played")).toBeTruthy();
+  expect(getByText("1 round played")).toBeTruthy();
+});
+
+it("navigates to the player profile when a following row is tapped", async () => {
+  const mockPush = jest.fn();
+  // Override the router mock just for this test via jest.requireMock.
+  const routerMock = require("expo-router");
+  routerMock.useRouter.mockReturnValue({ replace: jest.fn(), push: mockPush });
+
+  mockUseQuery.mockReturnValue({
+    data: [{ id: "u1", display_name: "Alice Fairway", avatar_url: null, rounds_played: 3 }],
+    isLoading: false,
+  });
+
+  const { getAllByText } = render(<ProfileScreen />);
+  await act(async () => {
+    fireEvent.press(getAllByText("Alice Fairway")[0]);
+  });
+  expect(mockPush).toHaveBeenCalledWith("/users/u1");
 });

@@ -752,11 +752,13 @@ export default function EventDetailScreen() {
             // overflow-hidden clips the border-radius on the first and last rows
             <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
               {event.members.map((member, idx) => (
-                <View
+                <TouchableOpacity
                   key={member.user_id}
                   className={`px-4 py-3 flex-row items-center gap-3 ${
                     idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
+                  activeOpacity={0.7}
+                  onPress={() => router.push(`/users/${member.user_id}`)}
                 >
                   <UserAvatar avatarUrl={member.avatar_url} displayName={member.display_name} size={36} />
 
@@ -772,7 +774,7 @@ export default function EventDetailScreen() {
 
                   {/* RoleBadge renders null for "player" — safe to always include */}
                   <RoleBadge role={member.role} />
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           )}
@@ -1396,8 +1398,6 @@ export default function EventDetailScreen() {
                       >
                         <Text
                           className={`text-sm ${groupTeeTimes[i] ? t.textPrimary : ""}`}
-                          // Inline style required for dynamic hex — can't use className on plain Text
-                          // eslint-disable-next-line react-native/no-inline-styles
                           style={!groupTeeTimes[i] ? { color: t.colors.tabBarInactive } : undefined}
                         >
                           {groupTeeTimes[i] ? formatTeeTime(groupTeeTimes[i]) : "Set tee time (optional)"}
@@ -1452,10 +1452,8 @@ export default function EventDetailScreen() {
                               : "Tee Time"}
                           </Text>
                           <TouchableOpacity onPress={() => setOpenTeeTimePicker(null)}>
-                            {/* "Done" uses theme hex — inline style required for Text color */}
                             <Text
                               className="font-semibold text-base"
-                              // eslint-disable-next-line react-native/no-inline-styles
                               style={{ color: t.colors.tabBarActive }}
                             >
                               Done

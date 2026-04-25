@@ -131,6 +131,16 @@ export function findMyPlayer(sc: Scorecard): ScorecardPlayer | undefined {
   return undefined;
 }
 
+// findPlayerById finds any player in a scorecard by their DB user UUID.
+// Used when viewing another user's stats (where caller_user_id is not the target).
+export function findPlayerById(sc: Scorecard, userId: string): ScorecardPlayer | undefined {
+  for (const group of sc.groups) {
+    const p = group.players.find((pl) => pl.user_id === userId);
+    if (p) return p;
+  }
+  return undefined;
+}
+
 // buildRoundStats computes all per-hole stats for one player in a single round.
 // Returns the same shape used by the shared display components (ScoringCard,
 // DirectionalMissCard, PuttingCard) so the round modal reuses them unchanged.
@@ -230,10 +240,16 @@ export function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[])
   };
 }
 
-// buildMyStats aggregates the caller's personal stats across a set of scorecards.
+// buildMyStats aggregates a player's stats across a set of scorecards.
+// When userId is provided, stats are computed for that player; otherwise defaults
+// to the caller (via caller_user_id) for the personal stats screen.
 // roundsList is used to pair 9-hole rounds by event + date so front and back halves
 // form one 18-hole equivalent score. Only id and scheduled_date are needed.
-export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[]) {
+export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], userId?: string) {
+  // Pick the finder based on whether we're computing for a specific user or the caller.
+  const findPlayer = userId
+    ? (sc: Scorecard) => findPlayerById(sc, userId)
+    : findMyPlayer;
   // ── Gross score collection ──────────────────────────────────────────────────
   // Only 18-hole-equivalent totals go into avg/low/high.
   //   • Full 18-hole rounds: use total_gross directly.
@@ -251,7 +267,7 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[]) {
   // Full 18-hole rounds count directly.
   for (const sc of scorecards) {
     if (sc.nine_hole_selection !== null) continue;
-    const player = findMyPlayer(sc);
+    const player = findPlayer(sc);
     if (player?.total_gross != null) grossScores.push(player.total_gross);
   }
 
@@ -263,7 +279,7 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[]) {
     if (sc.nine_hole_selection === null) continue;
     const r = roundMap.get(sc.round_id);
     if (!r) continue;
-    const player = findMyPlayer(sc);
+    const player = findPlayer(sc);
     if (player?.total_gross != null) {
       nineHoleEntries.push({ gross: player.total_gross, date: r.scheduled_date });
     }
@@ -305,7 +321,7 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[]) {
 
   for (const sc of scorecards) {
     const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-    const player = findMyPlayer(sc);
+    const player = findPlayer(sc);
     if (!player) continue;
 
     rounds++;

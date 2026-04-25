@@ -62,7 +62,6 @@ export default function CoursesScreen() {
     data: courses,
     isLoading,
     isError,
-    refetch,
   } = useQuery<CourseSummary[]>({
     queryKey: ["courses", searchQuery],
     queryFn:  fetchCourses,

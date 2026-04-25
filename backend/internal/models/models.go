@@ -127,6 +127,17 @@ type User struct {
 	UpdatedAt   time.Time
 }
 
+// Follow records a directed follow relationship: FollowerID follows FolloweeID.
+// The composite primary key (follower_id, followee_id) enforces uniqueness and
+// doubles as the covering index for the primary lookup direction.
+type Follow struct {
+	FollowerID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Follower   User      `gorm:"foreignKey:FollowerID"`
+	FolloweeID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Followee   User      `gorm:"foreignKey:FolloweeID"`
+	CreatedAt  time.Time
+}
+
 // Event is the top-level container for any golf competition.
 // There is no separate "League" model — an Event with EventType = "league" IS the league.
 // Who can manage an event is controlled by EventPlayer.Role = "organizer".

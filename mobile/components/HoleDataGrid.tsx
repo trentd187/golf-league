@@ -237,7 +237,6 @@ export default function HoleDataGrid({
             onPress={enterEdit}
           >
             <Ionicons name="create-outline" size={16} color={t.colors.tabBarActive} />
-            {/* eslint-disable-next-line react-native/no-inline-styles */}
             <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
               {holes.length === 0 ? "Enter Hole Data" : "Edit Holes"}
             </Text>

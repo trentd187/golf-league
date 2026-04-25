@@ -21,7 +21,9 @@ import (
 func Correlation() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		correlationID := c.Get("X-Correlation-ID")
-		if correlationID == "" {
+		if _, err := uuid.Parse(correlationID); err != nil {
+			// Discard malformed values (e.g. garbled Date+UUID observed in production traces).
+			// uuid.Parse("") also returns an error, so the empty-header case is handled here too.
 			correlationID = uuid.New().String()
 		}
 

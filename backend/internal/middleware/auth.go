@@ -17,6 +17,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -49,7 +50,13 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	if err != nil {
 		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
 	}
+	return MakeAuthHandler(jwks, db)
+}
 
+// MakeAuthHandler returns the auth handler closure using a pre-built JWKS keyfunc and DB.
+// Exported so that tests can supply a nil JWKS and nil DB for paths that return 401
+// before JWT parsing or any DB access is attempted.
+func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, bearerPrefix) {
@@ -92,6 +99,10 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 
 		if result.Error != nil {
 			if result.Error != gorm.ErrRecordNotFound {
+				observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on auth_id query",
+					"error", result.Error.Error(),
+					"auth_id", authID,
+				)
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "database error",
 				})
@@ -107,6 +118,10 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 				if emailResult.Error == nil {
 					// Existing row found — migrate it to the new Supabase auth_id.
 					if err := db.Model(&existing).Update("auth_id", authID).Error; err != nil {
+						observability.LogError(c.UserContext(), "auth.db_error", "Failed to migrate user auth_id",
+							"error", err.Error(),
+							"auth_id", authID,
+						)
 						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 							"error": "failed to migrate user auth_id",
 						})
@@ -116,6 +131,10 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 					// Skip the create block below.
 					goto userResolved
 				} else if emailResult.Error != gorm.ErrRecordNotFound {
+					observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on email query",
+						"error", emailResult.Error.Error(),
+						"email", email,
+					)
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "database error",
 					})
@@ -140,6 +159,10 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 					Role:        models.UserRoleUser,
 				}
 				if err := db.Create(&user).Error; err != nil {
+					observability.LogError(c.UserContext(), "auth.db_error", "Failed to create new user record",
+						"error", err.Error(),
+						"auth_id", authID,
+					)
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "failed to create user record",
 					})

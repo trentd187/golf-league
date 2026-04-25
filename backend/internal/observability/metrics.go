@@ -46,6 +46,7 @@ func (m *Metrics) RecordHTTP(ctx context.Context, method, route string, statusCo
 	m.HTTPRequestsTotal.Add(ctx, 1, otelmetric.WithAttributes(attrs...))
 	m.HTTPRequestDuration.Record(ctx, duration.Seconds(), otelmetric.WithAttributes(
 		attribute.String("route", route),
+		attribute.String("status_code", strconv.Itoa(statusCode)),
 	))
 }
 

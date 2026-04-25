@@ -1,25 +1,36 @@
 // app/users/[userId].tsx
 // Public profile screen for any registered user.
 //
-// Shows:
-//   - Avatar, display name, rounds/events played counts
-//   - Follow / Unfollow button (hidden for the caller's own profile via is_me)
-//   - Career stats: avg gross, low/high round, par-type breakdown, FIR/GIR/putts
+// Shows the same stats display as the personal Stats screen (Scoring, Driving,
+// Approach, Putting) computed from the player's last 20 completed rounds.
+// No filter picker — always "last 20" for public profiles.
+//
+// Data flow:
+//   1. GET /users/:userId        — profile card (name, avatar, rounds/events counts)
+//   2. GET /users/:userId/rounds — IDs + dates of last 20 completed rounds
+//   3. GET /rounds/:id/scorecard — fetched in parallel for each round
+//   4. buildMyStats(scorecards, rounds, userId) — client-side stat computation
+//      identical to the personal stats screen (userId param finds the target player)
 //
 // Navigated to from:
+//   - profile tab Following list → tap player row
 //   - profile tab "Find Players" → search screen → tap row
 //   - event detail members list → tap member row
 //   - round detail group player list → tap player row
 
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, useQueries } from "@tanstack/react-query";
+import { useMemo } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import UserAvatar from "@/components/UserAvatar";
+import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
+import { buildMyStats } from "@/utils/stats";
+import type { Scorecard } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,55 +44,8 @@ type UserProfile = {
   is_me: boolean;
 };
 
-type UserStats = {
-  avg_gross_per_round: number | null;
-  low_round: number | null;
-  high_round: number | null;
-  eagles: number;
-  birdies: number;
-  pars: number;
-  bogeys: number;
-  double_plus: number;
-  fir_pct: number | null;
-  gir_pct: number | null;
-  avg_putts_per_round: number | null;
-  rounds_counted: number;
-  filter: string;
-};
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-// StatRow renders a single label + value pair inside a stat card.
-function StatRow({ label, value }: { label: string; value: string }) {
-  const t = useTheme();
-  return (
-    <View className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
-      <Text className={`text-sm ${t.textSecondary}`}>{label}</Text>
-      <Text className={`text-sm font-semibold ${t.textPrimary}`}>{value}</Text>
-    </View>
-  );
-}
-
-// StatCard renders a labeled group of stat rows.
-function StatCard({ label, rows }: { label: string; rows: { label: string; value: string }[] }) {
-  const t = useTheme();
-  return (
-    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
-      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-1`}>
-        {label}
-      </Text>
-      {rows.map((row) => (
-        <StatRow key={row.label} label={row.label} value={row.value} />
-      ))}
-    </View>
-  );
-}
-
-// fmt formats a nullable number to a fixed-decimal string, showing "—" when null.
-function fmt(value: number | null | undefined, decimals = 1): string {
-  if (value == null) return "—";
-  return value.toFixed(decimals);
-}
+// UserRoundRef is the shape returned by GET /users/:userId/rounds.
+type UserRoundRef = { id: string; scheduled_date: string };
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -109,18 +73,47 @@ export default function UserProfileScreen() {
     enabled: !!userId,
   });
 
-  const { data: stats, isLoading: statsLoading } = useQuery<UserStats>({
-    queryKey: ["user", userId, "stats"],
+  // Fetch the user's last 20 completed round IDs so we can load their scorecards.
+  const { data: roundRefs, isLoading: roundsLoading } = useQuery<UserRoundRef[]>({
+    queryKey: ["user", userId, "rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/stats`, {
+      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/rounds`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
       return res.json();
     },
     enabled: !!userId && !!profile,
   });
+
+  // Fetch scorecards for each of the user's rounds in parallel.
+  const scorecardQueries = useQueries({
+    queries: (roundRefs ?? []).map((round) => ({
+      queryKey: ["scorecard", round.id],
+      queryFn: async () => {
+        const token = await getToken();
+        const res = await apiFetch(`${API_URL}/api/v1/rounds/${round.id}/scorecard`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
+        return res.json() as Promise<Scorecard>;
+      },
+      enabled: (roundRefs ?? []).length > 0,
+    })),
+  });
+
+  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
+  const scorecards = scorecardQueries
+    .map((q) => q.data)
+    .filter((sc): sc is Scorecard => sc !== undefined);
+
+  // Compute stats using the same function as the personal stats screen, passing
+  // userId so buildMyStats finds this player instead of the caller.
+  const stats = useMemo(
+    () => buildMyStats(scorecards, roundRefs ?? [], userId),
+    [scorecards, roundRefs, userId]
+  );
 
   const followMutation = useMutation({
     mutationFn: async ({ following }: { following: boolean }) => {
@@ -134,12 +127,11 @@ export default function UserProfileScreen() {
       }
     },
     onSuccess: (_, { following }) => {
-      // Flip the is_following field in the cached profile.
       queryClient.setQueryData<UserProfile>(["user", userId], (prev) =>
         prev ? { ...prev, is_following: !following } : prev
       );
-      // Invalidate the following list so it stays in sync.
-      queryClient.invalidateQueries({ queryKey: ["following"] });
+      // Keep the profile tab's following list in sync.
+      queryClient.invalidateQueries({ queryKey: ["users", "following"] });
     },
   });
 
@@ -164,6 +156,7 @@ export default function UserProfileScreen() {
   }
 
   const isFollowing = profile.is_following;
+  const statsReady  = !roundsLoading && !scorecardsLoading;
 
   return (
     <View className={`flex-1 ${t.screen}`}>
@@ -199,7 +192,7 @@ export default function UserProfileScreen() {
             </View>
           </View>
 
-          {/* Follow / Unfollow button — hidden for the caller's own profile */}
+          {/* Follow / Unfollow — hidden for own profile */}
           {!profile.is_me && (
             <TouchableOpacity
               className={`mt-4 flex-row items-center justify-center gap-2 rounded-xl py-2.5 px-4 ${
@@ -218,9 +211,7 @@ export default function UserProfileScreen() {
                     size={16}
                     color={isFollowing ? t.colors.tabBarActive : "#fff"}
                   />
-                  <Text
-                    className={`text-sm font-semibold ${isFollowing ? t.textPrimary : "text-white"}`}
-                  >
+                  <Text className={`text-sm font-semibold ${isFollowing ? t.textPrimary : "text-white"}`}>
                     {isFollowing ? "Unfollow" : "Follow"}
                   </Text>
                 </>
@@ -230,55 +221,58 @@ export default function UserProfileScreen() {
         </View>
 
         {/* Stats section */}
-        {statsLoading ? (
+        {!statsReady ? (
           <View className="items-center py-8">
             <ActivityIndicator color={t.colors.tabBarActive} />
           </View>
-        ) : stats && stats.rounds_counted > 0 ? (
-          <>
-            <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
-              Career Stats ({stats.rounds_counted} rounds)
-            </Text>
-
-            <StatCard
-              label="Scoring"
-              rows={[
-                { label: "Avg gross / round", value: fmt(stats.avg_gross_per_round, 1) },
-                { label: "Low round", value: fmt(stats.low_round, 0) },
-                { label: "High round", value: fmt(stats.high_round, 0) },
-              ]}
-            />
-
-            <StatCard
-              label="Par Breakdown"
-              rows={[
-                { label: "Eagles", value: String(stats.eagles) },
-                { label: "Birdies", value: String(stats.birdies) },
-                { label: "Pars", value: String(stats.pars) },
-                { label: "Bogeys", value: String(stats.bogeys) },
-                { label: "Double +", value: String(stats.double_plus) },
-              ]}
-            />
-
-            {(stats.fir_pct != null || stats.gir_pct != null || stats.avg_putts_per_round != null) && (
-              <StatCard
-                label="Advanced"
-                rows={[
-                  { label: "FIR %", value: stats.fir_pct != null ? `${fmt(stats.fir_pct, 1)}%` : "—" },
-                  { label: "GIR %", value: stats.gir_pct != null ? `${fmt(stats.gir_pct, 1)}%` : "—" },
-                  { label: "Avg putts / round", value: fmt(stats.avg_putts_per_round, 1) },
-                ]}
-              />
-            )}
-          </>
-        ) : stats ? (
-          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center`}>
+        ) : stats.rounds === 0 ? (
+          <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
             <Ionicons name="golf-outline" size={32} color={t.colors.tabBarInactive} />
             <Text className={`text-sm mt-2 ${t.textTertiary}`}>No completed rounds yet.</Text>
           </View>
-        ) : null}
+        ) : (
+          <>
+            <Text className={`text-xs font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+              Stats · Last {stats.rounds} round{stats.rounds === 1 ? "" : "s"}
+            </Text>
 
-        {/* Bottom padding */}
+            <ScoringCard
+              avgGrossScore={stats.avgGrossScore}
+              lowScore={stats.lowScore}
+              highScore={stats.highScore}
+              avgPar3={stats.avgPar3}
+              avgPar4={stats.avgPar4}
+              avgPar5={stats.avgPar5}
+              birdiesOrBetter={stats.birdiesOrBetter}
+              pars={stats.parsCount}
+              bogeys={stats.bogeysCount}
+              doublesPlus={stats.doublesPlus}
+            />
+            <DirectionalMissCard
+              sectionLabel="Driving"
+              centerLabel="FIR"
+              centerValue={stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`}
+              miss={stats.firMiss}
+              denominator={stats.firTotal}
+            />
+            <DirectionalMissCard
+              sectionLabel="Approach"
+              centerLabel="GIR"
+              centerValue={stats.girPercent === null ? "—" : `${stats.girPercent.toFixed(0)}%`}
+              miss={stats.girMiss}
+              denominator={stats.girTotal}
+              naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
+              extraRows={stats.proximityRows}
+            />
+            <PuttingCard
+              avgPuttsPerRound={stats.avgPuttsPerRound}
+              puttDist={stats.puttDist}
+              avgPuttMadeDistance={stats.avgPuttMadeDistance}
+              longestPuttMade={stats.longestPuttMade}
+            />
+          </>
+        )}
+
         <View className="h-8" />
       </ScrollView>
     </View>

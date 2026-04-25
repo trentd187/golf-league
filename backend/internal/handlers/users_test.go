@@ -180,6 +180,27 @@ func TestGetFollowing_MissingAuth(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+// ─── GetUserRounds ────────────────────────────────────────────────────────────
+
+// TestGetUserRounds_MissingAuth verifies GET /users/:userId/rounds returns 401 without auth.
+func TestGetUserRounds_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, "/users/:userId/rounds", handlers.GetUserRounds(nil))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/"+validUUID+"/rounds", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestGetUserRounds_InvalidUserID verifies GET /users/:userId/rounds returns 400
+// for a malformed UUID before any DB call.
+func TestGetUserRounds_InvalidUserID(t *testing.T) {
+	app := newUserAppWithAuth(http.MethodGet, "/users/:userId/rounds", handlers.GetUserRounds(nil))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/not-a-uuid/rounds", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // TestGetUsers_AvatarURL_RequiresTier2 documents that the old GetUsers handler was
 // replaced by SearchUsers. SearchUsers hits the DB for the user list, so its full
 // response shape (including avatar_url and is_following) can only be verified in

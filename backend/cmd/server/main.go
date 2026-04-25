@@ -162,6 +162,7 @@ func main() {
 	api.Get("/users/following", handlers.GetFollowing(db))
 	api.Get("/users/:userId", handlers.GetUserProfile(db))
 	api.Get("/users/:userId/stats", handlers.GetUserStats(db))
+	api.Get("/users/:userId/rounds", handlers.GetUserRounds(db))
 	api.Post("/users/:userId/follow", handlers.FollowUser(db))
 	api.Delete("/users/:userId/follow", handlers.UnfollowUser(db))
 	api.Get("/users", handlers.SearchUsers(db))

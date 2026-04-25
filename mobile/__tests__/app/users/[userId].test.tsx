@@ -7,25 +7,28 @@
 //   - Successful render shows the user's name, rounds/events counts
 //   - Follow button is hidden when is_me is true (own profile)
 //   - Follow button shows "Follow" when is_following is false
-//   - Stats section renders scoring / par breakdown / advanced cards
-//   - Empty stats state ("No completed rounds yet") renders correctly
+//   - Unfollow button shows when is_following is true
+//   - Stats section shows a loading spinner while scorecards are fetching
+//   - Empty stats state ("No completed rounds yet.") when no rounds returned
+//   - Stats cards render when scorecard data is present
 
 import React from "react";
 import { render, fireEvent, act } from "@testing-library/react-native";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
-const mockQueryData: Record<string, unknown> = {};
-const mockUseQuery = jest.fn();
+const mockUseQuery  = jest.fn();
 const mockUseMutation = jest.fn();
+const mockUseQueries  = jest.fn();
 const mockUseQueryClient = jest.fn(() => ({
   setQueryData: jest.fn(),
   invalidateQueries: jest.fn(),
 }));
 
 jest.mock("@tanstack/react-query", () => ({
-  useQuery: (...args: unknown[]) => mockUseQuery(...args),
-  useMutation: (...args: unknown[]) => mockUseMutation(...args),
+  useQuery:       (...args: unknown[]) => mockUseQuery(...args),
+  useMutation:    (...args: unknown[]) => mockUseMutation(...args),
+  useQueries:     (...args: unknown[]) => mockUseQueries(...args),
   useQueryClient: () => mockUseQueryClient(),
 }));
 
@@ -63,17 +66,31 @@ jest.mock("@/constants/api", () => ({
 jest.mock("@/components/UserAvatar", () => {
   const { View, Text } = require("react-native");
   return ({ displayName }: { displayName: string }) => (
-    <View>
-      <Text>{displayName}</Text>
-    </View>
+    <View><Text>{displayName}</Text></View>
   );
 });
+
+// Mock the shared stat cards so tests don't need to supply full scorecard geometry.
+jest.mock("@/components/StatCards", () => {
+  const { View, Text } = require("react-native");
+  return {
+    ScoringCard:          () => <View><Text>ScoringCard</Text></View>,
+    DirectionalMissCard:  () => <View><Text>DirectionalMissCard</Text></View>,
+    PuttingCard:          () => <View><Text>PuttingCard</Text></View>,
+  };
+});
+
+// Mock buildMyStats so tests control the returned stats shape without real scorecard data.
+const mockBuildMyStats = jest.fn();
+jest.mock("@/utils/stats", () => ({
+  buildMyStats: (...args: unknown[]) => mockBuildMyStats(...args),
+}));
 
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 
 import UserProfileScreen from "@/app/users/[userId]";
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const mockProfile = {
   id: "test-user-id-123",
@@ -85,32 +102,35 @@ const mockProfile = {
   is_me: false,
 };
 
-const mockStats = {
-  avg_gross_per_round: 82.5,
-  low_round: 77,
-  high_round: 91,
-  eagles: 0,
-  birdies: 8,
-  pars: 42,
-  bogeys: 30,
-  double_plus: 12,
-  fir_pct: 45.5,
-  gir_pct: 38.2,
-  avg_putts_per_round: 31.4,
-  rounds_counted: 12,
-  filter: "all_time",
+// Empty stats returned by buildMyStats when there are no scorecards.
+const emptyStats = {
+  rounds: 0,
+  grossScores: [],
+  avgGrossScore: null, lowScore: null, highScore: null,
+  avgPar3: null, avgPar4: null, avgPar5: null,
+  birdiesOrBetter: 0, parsCount: 0, bogeysCount: 0, doublesPlus: 0,
+  firPercent: null, firMiss: { left: 0, right: 0, short: 0, long: 0 }, firTotal: 0,
+  girPercent: null, girMiss: { left: 0, right: 0, short: 0, long: 0 }, girTotal: 0,
+  girNaPercent: null, proximityRows: [],
+  avgPuttsPerRound: null, puttDist: { one: 0, two: 0, three: 0, fourPlus: 0 },
+  avgPuttMadeDistance: null, longestPuttMade: null,
 };
+
+// Stats with data — just needs rounds > 0 for the cards to render.
+const filledStats = { ...emptyStats, rounds: 5, avgGrossScore: 82.5 };
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Default: profile query loading, all others idle.
+  mockUseQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
   mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: false });
+  mockUseQueries.mockReturnValue([]);
+  mockBuildMyStats.mockReturnValue(emptyStats);
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 it("renders a loading spinner while the profile is fetching", () => {
-  mockUseQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
-
   const { UNSAFE_getByType } = render(<UserProfileScreen />);
   const { ActivityIndicator } = require("react-native");
   expect(UNSAFE_getByType(ActivityIndicator)).toBeTruthy();
@@ -125,20 +145,19 @@ it("renders an error state when the profile fetch fails", () => {
 });
 
 it("renders the user's name and activity counts", () => {
-  // First call: profile query. Second call: stats query (disabled until profile loads).
+  // First call: profile. Second call: rounds (still loading).
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: undefined, isLoading: true });
+    .mockReturnValueOnce({ data: undefined, isLoading: true, isError: false });
 
   const { getAllByText } = render(<UserProfileScreen />);
-  // display_name appears in both the header and the profile card
   expect(getAllByText("Jane Golfer").length).toBeGreaterThanOrEqual(1);
 });
 
 it("shows Follow button for another user (is_me false, is_following false)", () => {
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: undefined, isLoading: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
 
   const { getByText } = render(<UserProfileScreen />);
   expect(getByText("Follow")).toBeTruthy();
@@ -148,7 +167,7 @@ it("shows Unfollow button when already following", () => {
   const following = { ...mockProfile, is_following: true };
   mockUseQuery
     .mockReturnValueOnce({ data: following, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: undefined, isLoading: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
 
   const { getByText } = render(<UserProfileScreen />);
   expect(getByText("Unfollow")).toBeTruthy();
@@ -158,45 +177,47 @@ it("hides the follow button for own profile (is_me true)", () => {
   const ownProfile = { ...mockProfile, is_me: true };
   mockUseQuery
     .mockReturnValueOnce({ data: ownProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: undefined, isLoading: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
 
   const { queryByText } = render(<UserProfileScreen />);
   expect(queryByText("Follow")).toBeNull();
   expect(queryByText("Unfollow")).toBeNull();
 });
 
-it("renders scoring and par breakdown stats when rounds_counted > 0", () => {
+it("shows a stats loading spinner while scorecards are still fetching", () => {
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: mockStats, isLoading: false });
+    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false });
+  // One scorecard still loading.
+  mockUseQueries.mockReturnValue([{ isLoading: true, data: undefined }]);
 
-  const { getByText } = render(<UserProfileScreen />);
-  // Stat card labels
-  expect(getByText("Avg gross / round")).toBeTruthy();
-  expect(getByText("Low round")).toBeTruthy();
-  expect(getByText("Eagles")).toBeTruthy();
-  expect(getByText("Birdies")).toBeTruthy();
+  const { UNSAFE_getAllByType } = render(<UserProfileScreen />);
+  const { ActivityIndicator } = require("react-native");
+  expect(UNSAFE_getAllByType(ActivityIndicator).length).toBeGreaterThanOrEqual(1);
 });
 
-it("renders advanced stats card when FIR/GIR data is present", () => {
+it("shows no-rounds empty state when round refs list is empty", () => {
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: mockStats, isLoading: false });
-
-  const { getByText } = render(<UserProfileScreen />);
-  expect(getByText("FIR %")).toBeTruthy();
-  expect(getByText("GIR %")).toBeTruthy();
-  expect(getByText("Avg putts / round")).toBeTruthy();
-});
-
-it("renders the no-rounds empty state when rounds_counted is 0", () => {
-  const emptyStats = { ...mockStats, rounds_counted: 0 };
-  mockUseQuery
-    .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: emptyStats, isLoading: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+  mockBuildMyStats.mockReturnValue(emptyStats);
 
   const { getByText } = render(<UserProfileScreen />);
   expect(getByText("No completed rounds yet.")).toBeTruthy();
+});
+
+it("renders stat cards when scorecards are loaded", () => {
+  mockUseQuery
+    .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false });
+  mockUseQueries.mockReturnValue([{ isLoading: false, data: { round_id: "r1", groups: [], holes: [] } }]);
+  mockBuildMyStats.mockReturnValue(filledStats);
+
+  const { getByText, getAllByText } = render(<UserProfileScreen />);
+  expect(getByText("ScoringCard")).toBeTruthy();
+  // Two DirectionalMissCards: one for Driving, one for Approach.
+  expect(getAllByText("DirectionalMissCard").length).toBe(2);
+  expect(getByText("PuttingCard")).toBeTruthy();
 });
 
 it("calls the follow mutation when the Follow button is pressed", async () => {
@@ -204,7 +225,7 @@ it("calls the follow mutation when the Follow button is pressed", async () => {
   mockUseMutation.mockReturnValue({ mutate: mutateFn, isPending: false });
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
-    .mockReturnValueOnce({ data: undefined, isLoading: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
 
   const { getByText } = render(<UserProfileScreen />);
   await act(async () => {

@@ -115,6 +115,14 @@ type FollowingUserResponse struct {
 	RoundsPlayed int     `json:"rounds_played"`
 }
 
+// UserRoundRef is one entry returned by GET /api/v1/users/:userId/rounds.
+// The mobile client uses round IDs to fetch scorecards in parallel and compute
+// stats client-side with the same logic used on the personal stats screen.
+type UserRoundRef struct {
+	ID            string `json:"id"`
+	ScheduledDate string `json:"scheduled_date"`
+}
+
 // SearchUsers returns a handler for GET /api/v1/users?q=.
 // Returns all users except the caller, filtered by ?q= (optional name/email prefix search).
 // Each result includes is_following to indicate whether the caller follows that user.
@@ -190,11 +198,13 @@ func GetUserProfile(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 		}
 
-		// Count completed round_player rows via the event_player join.
+		// Count rounds where the round itself is completed; round_players.status is
+		// never updated from "registered" today, so we join to rounds and check there.
 		var roundsPlayed int64
 		db.Model(&models.RoundPlayer{}).
 			Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
-			Where("ep.user_id = ? AND round_players.status = ?", targetID, models.RoundPlayerStatusCompleted).
+			Joins("JOIN rounds ON rounds.id = round_players.round_id").
+			Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
 			Count(&roundsPlayed)
 
 		var eventsPlayed int64
@@ -294,7 +304,8 @@ func GetFollowing(db *gorm.DB) fiber.Handler {
 			var roundsPlayed int64
 			db.Model(&models.RoundPlayer{}).
 				Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
-				Where("ep.user_id = ? AND round_players.status = ?", u.ID, models.RoundPlayerStatusCompleted).
+				Joins("JOIN rounds ON rounds.id = round_players.round_id").
+				Where("ep.user_id = ? AND rounds.status = ?", u.ID, models.RoundStatusCompleted).
 				Count(&roundsPlayed)
 
 			results = append(results, FollowingUserResponse{
@@ -338,7 +349,8 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 		rpQuery := db.Model(&models.RoundPlayer{}).
 			Select("round_players.id, round_players.round_id").
 			Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
-			Where("ep.user_id = ? AND round_players.status = ?", targetID, models.RoundPlayerStatusCompleted).
+			Joins("JOIN rounds ON rounds.id = round_players.round_id").
+			Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
 			Order("round_players.created_at DESC")
 		if filter == "last_20" {
 			rpQuery = rpQuery.Limit(20)
@@ -516,5 +528,38 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 			RoundsCounted:    roundCount,
 			Filter:           filter,
 		})
+	}
+}
+
+// GetUserRounds returns a handler for GET /api/v1/users/:userId/rounds.
+// Returns the last 20 completed rounds the target user participated in (id + date).
+// The mobile client uses these IDs to fetch scorecards in parallel and compute
+// the full stats display client-side, matching the personal stats screen exactly.
+func GetUserRounds(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, _ := c.Locals("userID").(string)
+		if _, err := uuid.Parse(callerIDStr); err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		targetID, err := uuid.Parse(c.Params("userId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+		}
+
+		var results []UserRoundRef
+		db.Model(&models.RoundPlayer{}).
+			Select("rounds.id, rounds.scheduled_date").
+			Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
+			Joins("JOIN rounds ON rounds.id = round_players.round_id").
+			Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
+			Order("rounds.scheduled_date DESC").
+			Limit(20).
+			Scan(&results)
+
+		if results == nil {
+			results = []UserRoundRef{}
+		}
+		return c.JSON(results)
 	}
 }

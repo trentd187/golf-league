@@ -460,6 +460,18 @@ import { tokenCache } from "../../utils/cache"; // avoid relative paths
 
 These rules prevent recurring issues that make files large and hard to maintain.
 
+### Use `globalThis` not `global` in test files
+
+`global` is a Node.js-specific identifier. TypeScript's `lib: ["DOM", "ESNext"]` (set by `expo/tsconfig.base`) does not include it, so `tsc --noEmit` will error with *Cannot find name 'global'*. Use `globalThis` with a cast instead — it is the ES2020 standard name for the same object and IS in the ESNext lib:
+
+```ts
+// Wrong — TS2304: Cannot find name 'global'
+global.fetch = jest.fn().mockResolvedValue({ ... });
+
+// Correct
+(globalThis as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({ ... });
+```
+
 ### Only destructure what you use from hooks
 
 Unused destructured variables cause TypeScript warnings and mislead future readers.

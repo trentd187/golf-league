@@ -177,9 +177,11 @@ it("avatar upload saves to custom_avatar_url, not avatar_url", async () => {
   });
 
   // Mock fetch so arrayBuffer() resolves — handlePickImage reads the file URI as ArrayBuffer.
-  global.fetch = jest.fn().mockResolvedValue({
+  // globalThis is used instead of global — `global` is Node-specific and not in TypeScript's
+  // ESNext lib; globalThis is the ES2020 standard name for the same object.
+  (globalThis as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({
     arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
-  }) as jest.Mock;
+  });
 
   (supabase.auth.updateUser as jest.Mock).mockResolvedValue({ error: null });
 

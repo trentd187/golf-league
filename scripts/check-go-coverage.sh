@@ -73,24 +73,29 @@ fi
 
 echo ""
 echo "==> Go coverage ratchet check"
-echo "    Packages:  ${PACKAGES[*]}"
-echo "    Baseline:  ${BASELINE}%"
+echo "    Coverage packages:  ${PACKAGES[*]}"
+echo "    Baseline:           ${BASELINE}%"
 echo ""
 
-# Expand the packages array into a space-separated list for the go test command.
-# IFS=" " sets the field separator so "${PACKAGES[*]}" joins with spaces.
-IFS=" " PACKAGE_LIST="${PACKAGES[*]}"
+# Build a comma-separated list of packages for -coverpkg.
+# -coverpkg limits which packages are instrumented for coverage while
+# ./... still runs every test in the repo, so failures in websocket,
+# database, etc. are caught in the same pass.
+COVERPKG=$(IFS=,; echo "${PACKAGES[*]}")
 
-# Run the test suite.
+# Run the full test suite with coverage instrumented only for PACKAGES.
 # -coverprofile: write per-statement hit counts to COVERAGE_FILE
 # -covermode=count: record how many times each statement executes (more
 #                   precise than the default "set" mode which just marks hit/miss)
+# -coverpkg: instrument only the listed packages so the ratchet baseline
+#            is stable regardless of which other packages gain or lose tests
 # -timeout 60s: fail fast if any test hangs for more than 60 seconds
 if ! go test \
     -coverprofile="$COVERAGE_FILE" \
     -covermode=count \
+    -coverpkg="$COVERPKG" \
     -timeout 60s \
-    ${PACKAGE_LIST}; then
+    ./...; then
   echo ""
   echo "✗ Tests are failing — fix them before committing."
   exit 1

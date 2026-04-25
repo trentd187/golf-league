@@ -720,16 +720,14 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 | Hook | Trigger | What it does |
 |---|---|---|
 | `backend-lint` | `backend/**/*.go` staged | Runs golangci-lint; blocks on errors. Config: `backend/.golangci.yml` |
-| `backend-coverage` | `backend/**/*.go` staged | Runs Go tests; blocks if coverage dropped below `.go-coverage-baseline` |
+| `backend-coverage` | `backend/**/*.go` staged | Runs `go test ./...` (all packages) with coverage measured for handlers/middleware; blocks if coverage dropped below `.go-coverage-baseline` |
+| `backend-docker-build` | `backend/**` or `Dockerfile` changed vs origin/main | Builds the Railway Dockerfile; skipped if Docker is not running |
 | `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
 | `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
 | `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | Runs `expo-doctor`; blocks if any of the 17 SDK/dependency checks fail |
+| `mobile-coverage` | `mobile/**/*.{ts,tsx}` staged | Runs Jest with coverage; blocks if coverage dropped below `.mobile-coverage-baseline` |
 
-**`pre-push` — runs on every `git push`:**
-
-| Hook | Trigger | What it does |
-|---|---|---|
-| `backend-tests` | `backend/**/*.go` staged | Runs full `go test ./...` suite to catch any failures before push |
+There is no `pre-push` hook — all checks run at commit time.
 
 **Coverage ratchet rule:**
 - Baseline stored in `.go-coverage-baseline` at repo root (committed to git)
@@ -754,7 +752,7 @@ LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
 
 ### Mobile coverage ratchet
 
-`mobile-coverage` runs on `pre-push` (same trigger as `backend-tests`). It runs Jest with `--coverage`, parses the Statements percentage, and blocks pushes that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
+`mobile-coverage` runs on `pre-commit`. It runs Jest with `--coverage`, parses the Statements percentage, and blocks commits that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
 
 ---
 

@@ -4,6 +4,7 @@
 
 import React from "react";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
+import { Alert } from "react-native";
 
 // --- Mocks ---
 // jest.mock() is hoisted before imports, so mock factories must use jest.fn()
@@ -66,6 +67,8 @@ jest.mock("@/hooks/useTheme", () => ({
 
 import SignIn from "@/app/sign-in";
 import { supabase } from "@/utils/supabase";
+
+const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -144,5 +147,49 @@ it("calls warn telemetry on failed OTP verification", async () => {
       "OTP verification failed",
       { message: "Token has expired or is invalid" }
     );
+  });
+});
+
+it("shows an alert when OTP send fails", async () => {
+  (supabase.auth.signInWithOtp as jest.Mock).mockResolvedValue({
+    error: { message: "Rate limit exceeded" },
+  });
+
+  const { getByPlaceholderText, getByText } = render(<SignIn />);
+
+  fireEvent.changeText(getByPlaceholderText("Email address"), "test@example.com");
+  await act(async () => {
+    fireEvent.press(getByText("Continue with Email"));
+  });
+
+  await waitFor(() => {
+    expect(alertSpy).toHaveBeenCalledWith(
+      "Something went wrong",
+      "Rate limit exceeded",
+      [{ text: "OK" }]
+    );
+  });
+});
+
+it("returns to email entry when 'Use a different email' is pressed", async () => {
+  (supabase.auth.signInWithOtp as jest.Mock).mockResolvedValue({ error: null });
+
+  const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(<SignIn />);
+
+  // Transition to code-entry state
+  fireEvent.changeText(getByPlaceholderText("Email address"), "test@example.com");
+  await act(async () => {
+    fireEvent.press(getByText("Continue with Email"));
+  });
+  await waitFor(() => getByPlaceholderText("000000"));
+
+  // Go back
+  await act(async () => {
+    fireEvent.press(getByText("Use a different email"));
+  });
+
+  await waitFor(() => {
+    expect(queryByPlaceholderText("000000")).toBeNull();
+    expect(getByPlaceholderText("Email address")).toBeTruthy();
   });
 });

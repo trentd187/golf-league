@@ -50,13 +50,14 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	if err != nil {
 		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
 	}
-	return MakeAuthHandler(jwks, db)
+	return MakeAuthHandler(jwks.Keyfunc, db)
 }
 
-// MakeAuthHandler returns the auth handler closure using a pre-built JWKS keyfunc and DB.
-// Exported so that tests can supply a nil JWKS and nil DB for paths that return 401
-// before JWT parsing or any DB access is attempted.
-func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
+// MakeAuthHandler returns the auth handler closure using a jwt.Keyfunc and DB.
+// Exported so that tests can supply a custom keyfunc (or nil for paths that
+// return 401 before JWT parsing) and a nil DB for paths that return before any
+// DB access is attempted.
+func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, bearerPrefix) {
@@ -70,7 +71,7 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 		// jwt.ParseWithClaims verifies the cryptographic signature, the key ID (kid),
 		// and the expiry claim. An attacker cannot forge a valid signature without
 		// Supabase's private key.
-		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, jwks.Keyfunc)
+		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
 		if err != nil || !token.Valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "invalid token",
@@ -93,6 +94,10 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 		}
 
 		email := claims.Email
+		// full_name and avatar_url are set by Google OAuth and updated by the mobile app.
+		// Sync them to our DB so all member/player lists reflect the latest values.
+		fullName, _ := claims.UserMetadata["full_name"].(string)
+		avatarURL, _ := claims.UserMetadata["avatar_url"].(string)
 
 		var user models.User
 		result := db.Where("auth_id = ?", authID).First(&user)
@@ -117,7 +122,11 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 				emailResult := db.Where("email = ?", email).First(&existing)
 				if emailResult.Error == nil {
 					// Existing row found — migrate it to the new Supabase auth_id.
-					if err := db.Model(&existing).Update("auth_id", authID).Error; err != nil {
+					migrationUpdates := map[string]interface{}{"auth_id": authID}
+					if avatarURL != "" {
+						migrationUpdates["avatar_url"] = avatarURL
+					}
+					if err := db.Model(&existing).Updates(migrationUpdates).Error; err != nil {
 						observability.LogError(c.UserContext(), "auth.db_error", "Failed to migrate user auth_id",
 							"error", err.Error(),
 							"auth_id", authID,
@@ -127,6 +136,9 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 						})
 					}
 					existing.AuthID = &authID
+					if avatarURL != "" {
+						existing.AvatarURL = &avatarURL
+					}
 					user = existing
 					// Skip the create block below.
 					goto userResolved
@@ -152,10 +164,15 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 						displayName = email[:idx]
 					}
 				}
+				var avatarURLPtr *string
+				if avatarURL != "" {
+					avatarURLPtr = &avatarURL
+				}
 				user = models.User{
 					AuthID:      &authID,
 					DisplayName: displayName,
 					Email:       email,
+					AvatarURL:   avatarURLPtr,
 					Role:        models.UserRoleUser,
 				}
 				if err := db.Create(&user).Error; err != nil {
@@ -169,10 +186,22 @@ func MakeAuthHandler(jwks keyfunc.Keyfunc, db *gorm.DB) fiber.Handler {
 				}
 			}
 		} else {
-			// User found by auth_id — sync email if it changed.
+			// User found by auth_id — sync fields that may have changed.
+			updates := map[string]interface{}{}
 			if email != "" && user.Email != email {
-				db.Model(&user).Update("email", email)
+				updates["email"] = email
 				user.Email = email
+			}
+			if fullName != "" && user.DisplayName != fullName {
+				updates["display_name"] = fullName
+				user.DisplayName = fullName
+			}
+			if avatarURL != "" && (user.AvatarURL == nil || *user.AvatarURL != avatarURL) {
+				updates["avatar_url"] = avatarURL
+				user.AvatarURL = &avatarURL
+			}
+			if len(updates) > 0 {
+				db.Model(&user).Updates(updates)
 			}
 		}
 

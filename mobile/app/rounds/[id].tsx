@@ -63,6 +63,7 @@ import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/dat
 import type { Scorecard } from "@/types/scorecard";
 import { buildStats } from "@/utils/stats";
 import StatsCards from "@/components/StatsCards";
+import UserAvatar from "@/components/UserAvatar";
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ type GroupMember = {
   round_player_id: string;
   display_name: string;
   email: string;
+  avatar_url: string | null;
 };
 
 type RoundGroup = {
@@ -892,12 +894,7 @@ export default function RoundDetailScreen() {
                           activeOpacity={0.7}
                           disabled={removePlayerMutation.isPending}
                         >
-                          {/* Initials avatar — green-100/green-700 is categorical, not themed */}
-                          <View className="w-8 h-8 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
-                            <Text className="text-green-700 font-bold text-xs">
-                              {player.display_name.charAt(0).toUpperCase()}
-                            </Text>
-                          </View>
+                          <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
                             <Text
                               className={`font-semibold text-sm ${t.textPrimary}`}
@@ -918,11 +915,7 @@ export default function RoundDetailScreen() {
                       ) : (
                         // Non-organizer: player row is read-only
                         <View className="flex-1 flex-row items-center gap-3">
-                          <View className="w-8 h-8 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
-                            <Text className="text-green-700 font-bold text-xs">
-                              {player.display_name.charAt(0).toUpperCase()}
-                            </Text>
-                          </View>
+                          <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
                             <Text
                               className={`font-semibold text-sm ${t.textPrimary}`}

@@ -36,6 +36,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
+import { getTelemetryClient } from "@/utils/telemetry";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -155,9 +156,13 @@ export default function ProfileScreen() {
       });
 
       if (updateError) throw updateError;
+
+      getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
     } catch (err) {
       setLocalPhotoUri(null);
-      console.error("[Profile] profile image upload failed:", err);
+      getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
+        message: (err as Error)?.message,
+      });
       Alert.alert(
         "Upload failed",
         (err as Error)?.message ?? "Could not upload profile photo. Please try again.",

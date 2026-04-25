@@ -57,6 +57,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
+import UserAvatar from "@/components/UserAvatar";
 import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
 import StatsCards from "@/components/StatsCards";
@@ -67,6 +68,7 @@ type MemberResponse = {
   user_id: string;
   display_name: string;
   email: string;
+  avatar_url: string | null;
   role: "organizer" | "player";
   status: string;
   joined_at: string;
@@ -756,12 +758,7 @@ export default function EventDetailScreen() {
                     idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
                 >
-                  {/* Initials avatar — green-100/green-700 is categorical, not themed */}
-                  <View className="w-9 h-9 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
-                    <Text className="text-green-700 font-bold text-sm">
-                      {member.display_name.charAt(0).toUpperCase()}
-                    </Text>
-                  </View>
+                  <UserAvatar avatarUrl={member.avatar_url} displayName={member.display_name} size={36} />
 
                   {/* min-w-0 prevents text from overflowing the flex container */}
                   <View className="flex-1 min-w-0">

@@ -46,10 +46,11 @@ import (
 
 // GroupMemberResponse represents one player assigned to a group.
 type GroupMemberResponse struct {
-	UserID        string `json:"user_id"`
-	RoundPlayerID string `json:"round_player_id"` // used for removal operations
-	DisplayName   string `json:"display_name"`
-	Email         string `json:"email"`
+	UserID        string  `json:"user_id"`
+	RoundPlayerID string  `json:"round_player_id"` // used for removal operations
+	DisplayName   string  `json:"display_name"`
+	Email         string  `json:"email"`
+	AvatarURL     *string `json:"avatar_url"`
 }
 
 // GroupResponse represents one tee-time group with its assigned players.
@@ -241,10 +242,11 @@ func GetRound(db *gorm.DB) fiber.Handler {
 				UserID        string
 				DisplayName   string
 				Email         string
+				AvatarURL     *string
 			}
 			var playerRows []playerRow
 			db.Table("group_players gp").
-				Select("gp.round_player_id, u.id as user_id, u.display_name, u.email").
+				Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
 				Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 				Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
 				Joins("JOIN users u ON u.id = ep.user_id").
@@ -258,6 +260,7 @@ func GetRound(db *gorm.DB) fiber.Handler {
 					RoundPlayerID: row.RoundPlayerID,
 					DisplayName:   row.DisplayName,
 					Email:         row.Email,
+					AvatarURL:     row.AvatarURL,
 				})
 			}
 
@@ -637,10 +640,11 @@ func buildGroupResponse(db *gorm.DB, g models.Group) GroupResponse {
 		UserID        string
 		DisplayName   string
 		Email         string
+		AvatarURL     *string
 	}
 	var playerRows []playerRow
 	db.Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
 		Joins("JOIN users u ON u.id = ep.user_id").
@@ -654,6 +658,7 @@ func buildGroupResponse(db *gorm.DB, g models.Group) GroupResponse {
 			RoundPlayerID: row.RoundPlayerID,
 			DisplayName:   row.DisplayName,
 			Email:         row.Email,
+			AvatarURL:     row.AvatarURL,
 		})
 	}
 

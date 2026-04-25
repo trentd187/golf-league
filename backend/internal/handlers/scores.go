@@ -69,6 +69,7 @@ type ScorecardPlayer struct {
 	RoundPlayerID  string              `json:"round_player_id"`
 	UserID         string              `json:"user_id"`
 	DisplayName    string              `json:"display_name"`
+	AvatarURL      *string             `json:"avatar_url"`
 	CourseHandicap *int                `json:"course_handicap"`
 	Scores         []ScorecardScore    `json:"scores"`
 	HoleStats      []ScorecardHoleStat `json:"hole_stats"`
@@ -283,11 +284,12 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 				RoundPlayerID  string
 				UserID         string
 				DisplayName    string
+				AvatarURL      *string
 				CourseHandicap *int
 			}
 			var playerRows []playerRow
 			db.Table("group_players gp").
-				Select("gp.round_player_id, u.id as user_id, u.display_name, rp.course_handicap").
+				Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap").
 				Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 				Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
 				Joins("JOIN users u ON u.id = ep.user_id").
@@ -345,6 +347,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 					RoundPlayerID:  pr.RoundPlayerID,
 					UserID:         pr.UserID,
 					DisplayName:    pr.DisplayName,
+					AvatarURL:      pr.AvatarURL,
 					CourseHandicap: pr.CourseHandicap,
 					Scores:         scores,
 					HoleStats:      holeStats,

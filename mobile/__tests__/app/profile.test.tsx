@@ -1,11 +1,13 @@
 // __tests__/app/profile.test.tsx
-// Tests for the ProfileScreen's name-save flow.
+// Tests for the ProfileScreen's name-save and avatar-upload flows.
 //
 // Covers:
 //   - refreshSession is called after a successful display name save (bug fix:
 //     without this the old JWT re-syncs the stale name back to the DB on the
 //     next API request, making the change appear not to persist)
 //   - refreshSession is NOT called when updateUser returns an error
+//   - Avatar upload saves to custom_avatar_url (not avatar_url) so Google OAuth
+//     re-logins cannot overwrite user-uploaded photos
 
 import React from "react";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
@@ -20,7 +22,7 @@ jest.mock("@/hooks/useUser", () => ({
     user: {
       id: "test-user-id",
       email: "test@example.com",
-      user_metadata: { full_name: "Original Name", avatar_url: null },
+      user_metadata: { full_name: "Original Name", avatar_url: null, custom_avatar_url: null },
     },
     loading: false,
   }),
@@ -40,11 +42,10 @@ jest.mock("@/utils/supabase", () => ({
       updateUser: jest.fn(),
       refreshSession: jest.fn(),
     },
+    // storage.from returns a configurable mock — tests that exercise the upload
+    // flow call (supabase.storage.from as jest.Mock).mockReturnValue({ upload, getPublicUrl }).
     storage: {
-      from: jest.fn(() => ({
-        upload: jest.fn(),
-        getPublicUrl: jest.fn(() => ({ data: { publicUrl: "" } })),
-      })),
+      from: jest.fn(),
     },
   },
 }));
@@ -155,6 +156,51 @@ it("calls refreshSession after a successful display name save", async () => {
     // refreshSession must follow updateUser so the new name propagates into the
     // JWT claims before the next API request syncs them back to the DB.
     expect(supabase.auth.refreshSession).toHaveBeenCalled();
+  });
+});
+
+it("avatar upload saves to custom_avatar_url, not avatar_url", async () => {
+  // Configure storage mock for this test: upload succeeds, publicUrl is returned.
+  (supabase.storage.from as jest.Mock).mockReturnValue({
+    upload: jest.fn().mockResolvedValue({ error: null }),
+    getPublicUrl: jest.fn().mockReturnValue({
+      data: { publicUrl: "https://example.com/custom-avatar.jpg" },
+    }),
+  });
+
+  // Simulate ImagePicker returning a selected image.
+  const ImagePicker = require("expo-image-picker");
+  ImagePicker.requestMediaLibraryPermissionsAsync.mockResolvedValue({ status: "granted" });
+  ImagePicker.launchImageLibraryAsync.mockResolvedValue({
+    canceled: false,
+    assets: [{ uri: "file:///tmp/photo.jpg", mimeType: "image/jpeg" }],
+  });
+
+  // Mock fetch so arrayBuffer() resolves — handlePickImage reads the file URI as ArrayBuffer.
+  global.fetch = jest.fn().mockResolvedValue({
+    arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+  }) as jest.Mock;
+
+  (supabase.auth.updateUser as jest.Mock).mockResolvedValue({ error: null });
+
+  const rendered = render(<ProfileScreen />);
+  const { UNSAFE_getAllByType } = rendered;
+  const { TouchableOpacity } = require("react-native");
+
+  // Tap the avatar (index 0) to trigger handlePickImage.
+  await act(async () => {
+    fireEvent.press(UNSAFE_getAllByType(TouchableOpacity)[0]);
+  });
+
+  await waitFor(() => {
+    // Must save to custom_avatar_url — avatar_url is overwritten by Google OAuth on re-login
+    // and synced back to the DB by auth middleware, which would revert the upload.
+    expect(supabase.auth.updateUser).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ custom_avatar_url: expect.any(String) }) })
+    );
+    expect(supabase.auth.updateUser).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ avatar_url: expect.any(String) }) })
+    );
   });
 });
 

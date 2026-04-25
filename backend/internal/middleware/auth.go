@@ -94,10 +94,16 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 		}
 
 		email := claims.Email
-		// full_name and avatar_url are set by Google OAuth and updated by the mobile app.
-		// Sync them to our DB so all member/player lists reflect the latest values.
+		// full_name and avatar_url are set by Google OAuth; custom_avatar_url is set
+		// only by the mobile app's profile upload flow.
+		// On Google re-login, Supabase overwrites avatar_url with the Google profile
+		// picture, which would stomp user-uploaded photos. custom_avatar_url is never
+		// touched by OAuth, so we prefer it when syncing to our DB.
 		fullName, _ := claims.UserMetadata["full_name"].(string)
 		avatarURL, _ := claims.UserMetadata["avatar_url"].(string)
+		if custom, _ := claims.UserMetadata["custom_avatar_url"].(string); custom != "" {
+			avatarURL = custom
+		}
 
 		var user models.User
 		result := db.Where("auth_id = ?", authID).First(&user)

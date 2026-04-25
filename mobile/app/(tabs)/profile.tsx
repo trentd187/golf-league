@@ -89,7 +89,13 @@ export default function ProfileScreen() {
   // full_name is set by OAuth providers (Google) and by manual edits below.
   const fullName = (user?.user_metadata?.full_name as string | undefined) ?? "";
   const email = user?.email ?? "";
-  const avatarUrl = (user?.user_metadata?.avatar_url as string | undefined) ?? undefined;
+  // custom_avatar_url is set when the user uploads a photo — it is never overwritten
+  // by Google OAuth re-logins (which only touch avatar_url). Prefer it over avatar_url
+  // so a user-uploaded photo survives logout/re-login cycles.
+  const avatarUrl =
+    (user?.user_metadata?.custom_avatar_url as string | undefined) ??
+    (user?.user_metadata?.avatar_url as string | undefined) ??
+    undefined;
 
   const displayName =
     fullName ||
@@ -150,9 +156,11 @@ export default function ProfileScreen() {
         .from("avatars")
         .getPublicUrl(fileName);
 
-      // Persist the public URL in user_metadata so it's available after re-login.
+      // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
+      // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
+      // is user-writable only and is never touched by the OAuth flow.
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { avatar_url: publicUrl },
+        data: { custom_avatar_url: publicUrl },
       });
 
       if (updateError) throw updateError;

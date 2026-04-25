@@ -128,6 +128,7 @@ type EventMember = {
   user_id: string;
   display_name: string;
   email: string;
+  avatar_url: string | null;
   role: "organizer" | "player";
   status: string;
   joined_at: string;
@@ -230,7 +231,7 @@ export default function RoundDetailScreen() {
   // Returns undefined while loading — UserSearchList shows a spinner for undefined.
   const availableMembers: UserSummary[] | undefined = eventMembers
     ?.filter((m) => !assignedUserIds.has(m.user_id))
-    .map((m) => ({ id: m.user_id, display_name: m.display_name, email: m.email }));
+    .map((m) => ({ id: m.user_id, display_name: m.display_name, email: m.email, avatar_url: m.avatar_url }));
 
   // --- Mutations ---
 

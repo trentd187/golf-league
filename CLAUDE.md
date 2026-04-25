@@ -676,9 +676,11 @@ The baseline is stored in `.go-coverage-baseline` (repo root, committed). The ho
 
 **When adding new handler code:** any new uncovered statements lower the percentage. Before committing, always run:
 ```bash
-go test ./internal/handlers/ ./internal/middleware/ -coverprofile=coverage.out && go tool cover -func=coverage.out | grep "^total:"
+go test -count=1 -coverpkg=github.com/trentd187/golf-league/internal/handlers,github.com/trentd187/golf-league/internal/middleware -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | grep "^total:"
 ```
 Compare the result against `.go-coverage-baseline`. If it drops, add Tier 1 tests to compensate **in the same commit** — do not rely on the auto-update to paper over the regression.
+
+**`-count=1` is required — do not omit it.** Go's test cache replays the coverage profile from the last run. If any instrumented file changed since the cached run, the merged `coverage.out` miscounts total statements and produces a wrong percentage (observed: 19.4% reported instead of actual 24.9%). `-count=1` disables the cache and forces a fresh measurement every time.
 
 **Common Tier 1 test patterns (no DB needed):**
 - `uuid.Parse(c.Locals("userID"))` fails when no auth middleware is in the test → returns **401**. Handlers: `GetRound`, `UpdateRound`, `DeleteRound`, `AddGroupMember`, `RemoveGroupMember`, and any new handler that reads `c.Locals("userID")` first.

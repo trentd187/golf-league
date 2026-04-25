@@ -89,11 +89,16 @@ COVERPKG=$(IFS=,; echo "${PACKAGES[*]}")
 #                   precise than the default "set" mode which just marks hit/miss)
 # -coverpkg: instrument only the listed packages so the ratchet baseline
 #            is stable regardless of which other packages gain or lose tests
+# -count=1:  disable the test cache — a cached coverage profile was recorded
+#            against an older binary and replays stale statement counts, causing
+#            the merged coverage.out to miscount total statements when any
+#            instrumented file has changed since the cached run
 # -timeout 60s: fail fast if any test hangs for more than 60 seconds
 if ! go test \
     -coverprofile="$COVERAGE_FILE" \
     -covermode=count \
     -coverpkg="$COVERPKG" \
+    -count=1 \
     -timeout 60s \
     ./...; then
   echo ""

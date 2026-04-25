@@ -133,16 +133,16 @@ export default function ProfileScreen() {
       const mimeType = asset.mimeType ?? "image/jpeg";
       const fileName = `${user!.id}/avatar.jpg`;
 
-      // Read the file:// URI as a blob via fetch — React Native's native fetch layer
-      // streams file:// URIs directly at the OS level, bypassing BlobManager limitations.
+      // Read the file as an ArrayBuffer rather than a Blob. On Android, React Native's
+      // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
+      // ("Network request failed"). ArrayBuffer bypasses the Blob bridge entirely and
+      // is handled natively by both platforms.
       const fileResponse = await fetch(asset.uri);
-      const blob = await fileResponse.blob();
+      const arrayBuffer = await fileResponse.arrayBuffer();
 
-      // Upload to Supabase Storage. contentType is set explicitly because the blob's
-      // .type property may be empty after reading from a file:// URI.
       const { error: uploadError } = await supabase.storage
         .from("avatars")
-        .upload(fileName, blob, { upsert: true, contentType: mimeType });
+        .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
 
       if (uploadError) throw uploadError;
 
@@ -185,6 +185,10 @@ export default function ProfileScreen() {
         data: { full_name: displayNameInput.trim() },
       });
       if (error) throw error;
+      // Force a session refresh so the updated full_name propagates into the JWT claims.
+      // Without this, auth middleware reads the stale token and re-syncs the old name
+      // back to the DB on the next API request, making the change appear to not persist.
+      await supabase.auth.refreshSession();
       setEditing(false);
     } catch (err) {
       Alert.alert(

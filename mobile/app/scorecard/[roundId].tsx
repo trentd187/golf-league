@@ -369,9 +369,7 @@ export default function ScorecardScreen() {
               }
             );
             if (!res.ok) {
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
               const body = await res.json().catch(() => ({}));
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
               throw new Error(body?.error ?? "Save failed");
             }
           }, [500, 1000, 2000]);
@@ -788,7 +786,6 @@ export default function ScorecardScreen() {
                         );
                       })()}
                       {status === "saving" && (
-                        // eslint-disable-next-line react-native/no-inline-styles
                         <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />
                       )}
                       {status === "saved"  && <Ionicons name="checkmark-circle" size={10} color="#16a34a" />}

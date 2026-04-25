@@ -34,10 +34,10 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { findMyPlayer, buildRoundStats, buildMyStats, toPar, scoreTextColor } from "@/utils/stats";
+import { findMyPlayer, buildRoundStats, buildMyStats, scoreTextColor } from "@/utils/stats";
 import ModalHeader from "@/components/ModalHeader";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
-import type { Scorecard, ScorecardHole, ScorecardPlayer } from "@/types/scorecard";
+import type { Scorecard, ScorecardHole } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,34 +62,6 @@ type FilterValue = string;
 type InnerTab = "stats" | "scores";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-
-// StatCard renders a labeled group of stat rows.
-// Each row has a label on the left and a value on the right.
-// dim=true greys out the value when no data is available.
-function StatCard({
-  label,
-  rows,
-}: Readonly<{
-  label: string;
-  rows: { label: string; value: string; dim?: boolean }[];
-}>) {
-  const t = useTheme();
-  return (
-    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
-      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-1`}>
-        {label}
-      </Text>
-      {rows.map((row) => (
-        <View key={row.label} className={`flex-row items-center justify-between py-2.5 border-b ${t.divider}`}>
-          <Text className={`text-base ${t.textSecondary}`}>{row.label}</Text>
-          <Text className={`text-base font-semibold ${row.dim ? t.textTertiary : t.textPrimary}`}>
-            {row.value}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-}
 
 // formatRunningDiff formats a cumulative to-par differential for display.
 // Returns "—" when no holes are scored yet, "E" for even, "+N" or "-N" otherwise.

@@ -436,7 +436,6 @@ export default function CoursePickerModal({
                       disabled={busy}
                     >
                       <Ionicons name="globe-outline" size={18} color={t.colors.tabBarActive} />
-                      {/* eslint-disable-next-line react-native/no-inline-styles */}
                       <Text className="font-semibold text-sm" style={{ color: t.colors.tabBarActive }}>
                         Search Online
                       </Text>

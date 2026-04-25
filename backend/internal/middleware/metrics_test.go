@@ -67,3 +67,34 @@ func TestHTTPMetrics_DoesNotPanicWithNilInstruments(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestHTTPMetrics_500_LogsError verifies that a 5xx response triggers the http.error
+// log path without panicking (no error_detail set — exercises the false branch of the
+// detail check).
+func TestHTTPMetrics_500_LogsError(t *testing.T) {
+	app := makeMetricsApp(http.StatusInternalServerError)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	resp, err := app.Test(req, -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// TestHTTPMetrics_500_WithErrorDetail verifies that when c.Locals("error_detail") is
+// non-empty, the middleware appends it to the http.error log args without panicking.
+// This exercises the true branch of the detail check added to the 5xx log path.
+func TestHTTPMetrics_500_WithErrorDetail(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(middleware.HTTPMetrics(&observability.Metrics{}))
+	app.Get("/test", func(c *fiber.Ctx) error {
+		c.Locals("error_detail", "auth.db_error: connection refused")
+		return c.SendStatus(http.StatusInternalServerError)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	resp, err := app.Test(req, -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}

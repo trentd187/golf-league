@@ -406,7 +406,7 @@ export default function ProfileScreen() {
             ) : !following || following.length === 0 ? (
               <View className="py-5 px-4 items-center">
                 <Text className={`text-sm ${t.textTertiary}`}>
-                  You're not following anyone yet.
+                  You&apos;re not following anyone yet.
                 </Text>
               </View>
             ) : (

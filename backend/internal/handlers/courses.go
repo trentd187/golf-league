@@ -29,7 +29,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
-	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
 	"gorm.io/gorm"
 )
@@ -1066,19 +1065,13 @@ func RefreshCourse(db *gorm.DB, client *services.GolfCourseAPIClient) fiber.Hand
 			return insertExternalTees(tx, courseID, detail.Tees)
 		})
 		if txErr != nil {
-			observability.LogError(c.UserContext(), "course.refresh.tx_error", "Transaction failed while refreshing course tees",
-				"error", txErr.Error(),
-				"course_id", courseID.String(),
-			)
+			c.Locals("error_detail", "course.refresh.tx_error course_id="+courseID.String()+": "+txErr.Error())
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to refresh course"})
 		}
 
 		full, err := loadCourseWithTees(db, courseID)
 		if err != nil {
-			observability.LogError(c.UserContext(), "course.refresh.reload_error", "Failed to reload course after refresh",
-				"error", err.Error(),
-				"course_id", courseID.String(),
-			)
+			c.Locals("error_detail", "course.refresh.reload_error course_id="+courseID.String()+": "+err.Error())
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to reload course"})
 		}
 		return c.JSON(buildCourseDetail(full))

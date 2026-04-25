@@ -1398,8 +1398,6 @@ export default function EventDetailScreen() {
                       >
                         <Text
                           className={`text-sm ${groupTeeTimes[i] ? t.textPrimary : ""}`}
-                          // Inline style required for dynamic hex — can't use className on plain Text
-                          // eslint-disable-next-line react-native/no-inline-styles
                           style={!groupTeeTimes[i] ? { color: t.colors.tabBarInactive } : undefined}
                         >
                           {groupTeeTimes[i] ? formatTeeTime(groupTeeTimes[i]) : "Set tee time (optional)"}
@@ -1454,10 +1452,8 @@ export default function EventDetailScreen() {
                               : "Tee Time"}
                           </Text>
                           <TouchableOpacity onPress={() => setOpenTeeTimePicker(null)}>
-                            {/* "Done" uses theme hex — inline style required for Text color */}
                             <Text
                               className="font-semibold text-base"
-                              // eslint-disable-next-line react-native/no-inline-styles
                               style={{ color: t.colors.tabBarActive }}
                             >
                               Done

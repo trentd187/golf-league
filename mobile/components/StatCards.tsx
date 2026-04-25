@@ -131,7 +131,6 @@ export function ScoringCard({
       {/* Row 2: Avg Par 3 | Avg Par 4 | Avg Par 5 */}
       <View className={`flex-row border-b ${t.divider} pb-3 mb-3`}>
         {parItems.map((item, i) => (
-          // eslint-disable-next-line react/no-array-index-key
           <View key={i} className="flex-1 flex-row">
             {i > 0 && <View className={`w-px ${t.border} border-l`} />}
             <View className="flex-1 items-center">

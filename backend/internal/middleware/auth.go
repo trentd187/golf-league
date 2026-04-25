@@ -17,7 +17,6 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
-	"github.com/trentd187/golf-league/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -110,10 +109,7 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		if result.Error != nil {
 			if result.Error != gorm.ErrRecordNotFound {
-				observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on auth_id query",
-					"error", result.Error.Error(),
-					"auth_id", authID,
-				)
+				c.Locals("error_detail", "auth.db_error: "+result.Error.Error())
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "database error",
 				})
@@ -133,10 +129,7 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 						migrationUpdates["avatar_url"] = avatarURL
 					}
 					if err := db.Model(&existing).Updates(migrationUpdates).Error; err != nil {
-						observability.LogError(c.UserContext(), "auth.db_error", "Failed to migrate user auth_id",
-							"error", err.Error(),
-							"auth_id", authID,
-						)
+						c.Locals("error_detail", "auth.migrate_auth_id: "+err.Error())
 						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 							"error": "failed to migrate user auth_id",
 						})
@@ -149,10 +142,7 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 					// Skip the create block below.
 					goto userResolved
 				} else if emailResult.Error != gorm.ErrRecordNotFound {
-					observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on email query",
-						"error", emailResult.Error.Error(),
-						"email", email,
-					)
+					c.Locals("error_detail", "auth.email_lookup: "+emailResult.Error.Error())
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "database error",
 					})
@@ -182,10 +172,7 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 					Role:        models.UserRoleUser,
 				}
 				if err := db.Create(&user).Error; err != nil {
-					observability.LogError(c.UserContext(), "auth.db_error", "Failed to create new user record",
-						"error", err.Error(),
-						"auth_id", authID,
-					)
+					c.Locals("error_detail", "auth.create_user: "+err.Error())
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "failed to create user record",
 					})

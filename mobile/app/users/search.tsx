@@ -159,7 +159,7 @@ export default function UserSearchScreen() {
         <View className="flex-1 items-center justify-center gap-2 px-8">
           <Ionicons name="search-outline" size={40} color={t.colors.tabBarInactive} />
           <Text className={`text-base text-center ${t.textTertiary}`}>
-            No players found for "{debouncedQuery}".
+            No players found for &quot;{debouncedQuery}&quot;.
           </Text>
         </View>
       ) : (

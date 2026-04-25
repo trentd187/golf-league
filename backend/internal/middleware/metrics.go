@@ -33,12 +33,19 @@ func HTTPMetrics(m *observability.Metrics) fiber.Handler {
 		m.RecordHTTP(context.Background(), c.Method(), route, statusCode, duration)
 
 		// Log 5xx errors so they appear in Loki with full request context.
+		// Handlers that produce a 5xx store the underlying cause in c.Locals("error_detail")
+		// so it flows through here rather than being emitted as a separate log entry that
+		// can get lost in the batch queue before the process shuts down.
 		if statusCode >= 500 {
-			observability.LogError(c.UserContext(), "http.error", "HTTP 5xx response",
+			args := []any{
 				"method", c.Method(),
 				"route", route,
 				"status", statusCode,
-			)
+			}
+			if detail, ok := c.Locals("error_detail").(string); ok && detail != "" {
+				args = append(args, "error", detail)
+			}
+			observability.LogError(c.UserContext(), "http.error", "HTTP 5xx response", args...)
 		}
 
 		return err

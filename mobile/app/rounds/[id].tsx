@@ -952,7 +952,6 @@ export default function RoundDetailScreen() {
                 >
                   <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
                   <Text
-                    // eslint-disable-next-line react-native/no-inline-styles
                     style={{ color: t.colors.tabBarActive }}
                     className="text-sm font-semibold"
                   >
@@ -974,7 +973,6 @@ export default function RoundDetailScreen() {
                 >
                   <Ionicons name="list-outline" size={16} color={t.colors.tabBarActive} />
                   <Text
-                    // eslint-disable-next-line react-native/no-inline-styles
                     style={{ color: t.colors.tabBarActive }}
                     className="text-sm font-semibold"
                   >
@@ -1175,7 +1173,6 @@ export default function RoundDetailScreen() {
                   activeOpacity={0.7}
                 >
                   <Ionicons name="search-outline" size={15} color={t.colors.tabBarActive} />
-                  {/* eslint-disable-next-line react-native/no-inline-styles */}
                   <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
                     {editNewCourse ? "Change Course" : "Change Course"}
                   </Text>
@@ -1446,7 +1443,6 @@ export default function RoundDetailScreen() {
                           <TouchableOpacity onPress={() => setTeeTimePickerOpen(false)}>
                             <Text
                               className="font-semibold text-base"
-                              // eslint-disable-next-line react-native/no-inline-styles
                               style={{ color: t.colors.tabBarActive }}
                             >
                               Done

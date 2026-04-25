@@ -224,7 +224,6 @@ export default function CourseDetailScreen() {
             onPress={() => router.back()}
           >
             <Ionicons name="chevron-back" size={18} color={t.colors.tabBarActive} />
-            {/* eslint-disable-next-line react-native/no-inline-styles */}
             <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
               Courses
             </Text>
@@ -247,7 +246,6 @@ export default function CourseDetailScreen() {
               onPress={openEditCourse}
             >
               <Ionicons name="create-outline" size={15} color={t.colors.tabBarActive} />
-              {/* eslint-disable-next-line react-native/no-inline-styles */}
               <Text className="text-sm font-medium" style={{ color: t.colors.tabBarActive }}>
                 Edit Course
               </Text>
@@ -281,7 +279,6 @@ export default function CourseDetailScreen() {
                 }}
               >
                 <Ionicons name="add-circle-outline" size={16} color={t.colors.tabBarActive} />
-                {/* eslint-disable-next-line react-native/no-inline-styles */}
                 <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
                   Add Tee
                 </Text>
@@ -374,7 +371,6 @@ export default function CourseDetailScreen() {
               ) : (
                 <Ionicons name="refresh-outline" size={16} color={t.colors.tabBarActive} />
               )}
-              {/* eslint-disable-next-line react-native/no-inline-styles */}
               <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
                 Refresh from API
               </Text>

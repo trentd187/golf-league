@@ -54,9 +54,10 @@ func GetMe(db *gorm.DB) fiber.Handler {
 
 // UserSummaryResponse is the trimmed-down user shape returned by GET /api/v1/users.
 type UserSummaryResponse struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
+	ID          string  `json:"id"`
+	DisplayName string  `json:"display_name"`
+	Email       string  `json:"email"`
+	AvatarURL   *string `json:"avatar_url,omitempty"`
 }
 
 // GetUsers returns a handler for GET /api/v1/users.
@@ -77,6 +78,7 @@ func GetUsers(db *gorm.DB) fiber.Handler {
 				ID:          u.ID.String(),
 				DisplayName: u.DisplayName,
 				Email:       u.Email,
+				AvatarURL:   u.AvatarURL,
 			})
 		}
 

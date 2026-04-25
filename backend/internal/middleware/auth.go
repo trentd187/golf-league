@@ -17,6 +17,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -49,7 +50,14 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	if err != nil {
 		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
 	}
+	return MakeAuthHandler(jwks.Keyfunc, db)
+}
 
+// MakeAuthHandler returns the auth handler closure using a jwt.Keyfunc and DB.
+// Exported so that tests can supply a custom keyfunc (or nil for paths that
+// return 401 before JWT parsing) and a nil DB for paths that return before any
+// DB access is attempted.
+func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, bearerPrefix) {
@@ -63,7 +71,7 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 		// jwt.ParseWithClaims verifies the cryptographic signature, the key ID (kid),
 		// and the expiry claim. An attacker cannot forge a valid signature without
 		// Supabase's private key.
-		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, jwks.Keyfunc)
+		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
 		if err != nil || !token.Valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "invalid token",
@@ -86,12 +94,26 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 		}
 
 		email := claims.Email
+		// full_name and avatar_url are set by Google OAuth; custom_avatar_url is set
+		// only by the mobile app's profile upload flow.
+		// On Google re-login, Supabase overwrites avatar_url with the Google profile
+		// picture, which would stomp user-uploaded photos. custom_avatar_url is never
+		// touched by OAuth, so we prefer it when syncing to our DB.
+		fullName, _ := claims.UserMetadata["full_name"].(string)
+		avatarURL, _ := claims.UserMetadata["avatar_url"].(string)
+		if custom, _ := claims.UserMetadata["custom_avatar_url"].(string); custom != "" {
+			avatarURL = custom
+		}
 
 		var user models.User
 		result := db.Where("auth_id = ?", authID).First(&user)
 
 		if result.Error != nil {
 			if result.Error != gorm.ErrRecordNotFound {
+				observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on auth_id query",
+					"error", result.Error.Error(),
+					"auth_id", authID,
+				)
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "database error",
 				})
@@ -106,16 +128,31 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 				emailResult := db.Where("email = ?", email).First(&existing)
 				if emailResult.Error == nil {
 					// Existing row found — migrate it to the new Supabase auth_id.
-					if err := db.Model(&existing).Update("auth_id", authID).Error; err != nil {
+					migrationUpdates := map[string]interface{}{"auth_id": authID}
+					if avatarURL != "" {
+						migrationUpdates["avatar_url"] = avatarURL
+					}
+					if err := db.Model(&existing).Updates(migrationUpdates).Error; err != nil {
+						observability.LogError(c.UserContext(), "auth.db_error", "Failed to migrate user auth_id",
+							"error", err.Error(),
+							"auth_id", authID,
+						)
 						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 							"error": "failed to migrate user auth_id",
 						})
 					}
 					existing.AuthID = &authID
+					if avatarURL != "" {
+						existing.AvatarURL = &avatarURL
+					}
 					user = existing
 					// Skip the create block below.
 					goto userResolved
 				} else if emailResult.Error != gorm.ErrRecordNotFound {
+					observability.LogError(c.UserContext(), "auth.db_error", "DB lookup failed on email query",
+						"error", emailResult.Error.Error(),
+						"email", email,
+					)
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "database error",
 					})
@@ -133,23 +170,44 @@ func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 						displayName = email[:idx]
 					}
 				}
+				var avatarURLPtr *string
+				if avatarURL != "" {
+					avatarURLPtr = &avatarURL
+				}
 				user = models.User{
 					AuthID:      &authID,
 					DisplayName: displayName,
 					Email:       email,
+					AvatarURL:   avatarURLPtr,
 					Role:        models.UserRoleUser,
 				}
 				if err := db.Create(&user).Error; err != nil {
+					observability.LogError(c.UserContext(), "auth.db_error", "Failed to create new user record",
+						"error", err.Error(),
+						"auth_id", authID,
+					)
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "failed to create user record",
 					})
 				}
 			}
 		} else {
-			// User found by auth_id — sync email if it changed.
+			// User found by auth_id — sync fields that may have changed.
+			updates := map[string]interface{}{}
 			if email != "" && user.Email != email {
-				db.Model(&user).Update("email", email)
+				updates["email"] = email
 				user.Email = email
+			}
+			if fullName != "" && user.DisplayName != fullName {
+				updates["display_name"] = fullName
+				user.DisplayName = fullName
+			}
+			if avatarURL != "" && (user.AvatarURL == nil || *user.AvatarURL != avatarURL) {
+				updates["avatar_url"] = avatarURL
+				user.AvatarURL = &avatarURL
+			}
+			if len(updates) > 0 {
+				db.Model(&user).Updates(updates)
 			}
 		}
 

@@ -48,6 +48,21 @@ pre-commit:
       run: bash ../scripts/check-go-coverage.sh
 
     # -------------------------------------------------------------------------
+    # Backend: Docker build check
+    # -------------------------------------------------------------------------
+    # Verifies the Railway Dockerfile (repo root) builds successfully.
+    # Catches Go version mismatches, missing files, and broken build steps
+    # before they fail in Railway's CI. Uses --no-cache to avoid stale layers
+    # masking a real failure.
+    # -------------------------------------------------------------------------
+    backend-docker-build:
+      # files: explicitly diffs against origin/main so lefthook knows which files changed.
+      # glob: filters that list — hook is skipped entirely if no backend or Dockerfile files changed.
+      files: git diff --name-only origin/main HEAD
+      glob: "{backend/**,Dockerfile}"
+      run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
+
+    # -------------------------------------------------------------------------
     # Mobile: TypeScript type-checking
     # -------------------------------------------------------------------------
     # tsc --noEmit checks all TypeScript types without emitting any files.
@@ -91,45 +106,10 @@ pre-commit:
         export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
         && npx expo-doctor
 
-# ---------------------------------------------------------------------------
-# Pre-push: runs before `git push` sends commits to the remote.
-# Good place for slower checks (full test suites, coverage) that would be
-# too slow on every commit.
-# ---------------------------------------------------------------------------
-pre-push:
-  parallel: true
-
-  commands:
-    # -------------------------------------------------------------------------
-    # Backend: full test suite on push
-    # -------------------------------------------------------------------------
-    # Run all backend tests (not just coverage) before pushing. This catches
-    # test failures that might have slipped through (e.g., LEFTHOOK=0 commits).
-    # -------------------------------------------------------------------------
-    backend-tests:
-      glob: "backend/**/*.go"
-      root: "backend"
-      run: go test ./... -timeout 60s
-
-    # -------------------------------------------------------------------------
-    # Backend: Docker build check
-    # -------------------------------------------------------------------------
-    # Verifies the Railway Dockerfile (repo root) builds successfully.
-    # Catches Go version mismatches, missing files, and broken build steps
-    # before they fail in Railway's CI. Uses --no-cache to avoid stale layers
-    # masking a real failure.
-    # -------------------------------------------------------------------------
-    backend-docker-build:
-      # files: explicitly diffs against origin/main so lefthook knows which files changed.
-      # glob: filters that list — hook is skipped entirely if no backend or Dockerfile files changed.
-      files: git diff --name-only origin/main HEAD
-      glob: "{backend/**,Dockerfile}"
-      run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
-
     # -------------------------------------------------------------------------
     # Mobile: Jest coverage ratchet
     # -------------------------------------------------------------------------
-    # Runs Jest with coverage and blocks pushes that lower statement coverage
+    # Runs Jest with coverage and blocks commits that lower statement coverage
     # below the stored baseline in .mobile-coverage-baseline.
     # The baseline auto-updates when coverage improves — it can never decrease.
     # See scripts/check-mobile-coverage.sh for details.

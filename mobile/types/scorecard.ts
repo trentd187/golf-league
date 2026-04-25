@@ -33,6 +33,7 @@ export interface ScorecardPlayer {
   round_player_id: string;
   user_id: string;
   display_name: string;
+  avatar_url: string | null;
   course_handicap: number | null;
   scores: ScorecardScore[];
   hole_stats: ScorecardHoleStat[];

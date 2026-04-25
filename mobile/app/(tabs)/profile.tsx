@@ -36,6 +36,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
+import { getTelemetryClient } from "@/utils/telemetry";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -88,7 +89,13 @@ export default function ProfileScreen() {
   // full_name is set by OAuth providers (Google) and by manual edits below.
   const fullName = (user?.user_metadata?.full_name as string | undefined) ?? "";
   const email = user?.email ?? "";
-  const avatarUrl = (user?.user_metadata?.avatar_url as string | undefined) ?? undefined;
+  // custom_avatar_url is set when the user uploads a photo — it is never overwritten
+  // by Google OAuth re-logins (which only touch avatar_url). Prefer it over avatar_url
+  // so a user-uploaded photo survives logout/re-login cycles.
+  const avatarUrl =
+    (user?.user_metadata?.custom_avatar_url as string | undefined) ??
+    (user?.user_metadata?.avatar_url as string | undefined) ??
+    undefined;
 
   const displayName =
     fullName ||
@@ -132,16 +139,16 @@ export default function ProfileScreen() {
       const mimeType = asset.mimeType ?? "image/jpeg";
       const fileName = `${user!.id}/avatar.jpg`;
 
-      // Read the file:// URI as a blob via fetch — React Native's native fetch layer
-      // streams file:// URIs directly at the OS level, bypassing BlobManager limitations.
+      // Read the file as an ArrayBuffer rather than a Blob. On Android, React Native's
+      // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
+      // ("Network request failed"). ArrayBuffer bypasses the Blob bridge entirely and
+      // is handled natively by both platforms.
       const fileResponse = await fetch(asset.uri);
-      const blob = await fileResponse.blob();
+      const arrayBuffer = await fileResponse.arrayBuffer();
 
-      // Upload to Supabase Storage. contentType is set explicitly because the blob's
-      // .type property may be empty after reading from a file:// URI.
       const { error: uploadError } = await supabase.storage
         .from("avatars")
-        .upload(fileName, blob, { upsert: true, contentType: mimeType });
+        .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
 
       if (uploadError) throw uploadError;
 
@@ -149,15 +156,21 @@ export default function ProfileScreen() {
         .from("avatars")
         .getPublicUrl(fileName);
 
-      // Persist the public URL in user_metadata so it's available after re-login.
+      // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
+      // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
+      // is user-writable only and is never touched by the OAuth flow.
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { avatar_url: publicUrl },
+        data: { custom_avatar_url: publicUrl },
       });
 
       if (updateError) throw updateError;
+
+      getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
     } catch (err) {
       setLocalPhotoUri(null);
-      console.error("[Profile] profile image upload failed:", err);
+      getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
+        message: (err as Error)?.message,
+      });
       Alert.alert(
         "Upload failed",
         (err as Error)?.message ?? "Could not upload profile photo. Please try again.",
@@ -180,6 +193,10 @@ export default function ProfileScreen() {
         data: { full_name: displayNameInput.trim() },
       });
       if (error) throw error;
+      // Force a session refresh so the updated full_name propagates into the JWT claims.
+      // Without this, auth middleware reads the stale token and re-syncs the old name
+      // back to the DB on the next API request, making the change appear to not persist.
+      await supabase.auth.refreshSession();
       setEditing(false);
     } catch (err) {
       Alert.alert(

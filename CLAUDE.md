@@ -460,6 +460,18 @@ import { tokenCache } from "../../utils/cache"; // avoid relative paths
 
 These rules prevent recurring issues that make files large and hard to maintain.
 
+### Use `globalThis` not `global` in test files
+
+`global` is a Node.js-specific identifier. TypeScript's `lib: ["DOM", "ESNext"]` (set by `expo/tsconfig.base`) does not include it, so `tsc --noEmit` will error with *Cannot find name 'global'*. Use `globalThis` with a cast instead — it is the ES2020 standard name for the same object and IS in the ESNext lib:
+
+```ts
+// Wrong — TS2304: Cannot find name 'global'
+global.fetch = jest.fn().mockResolvedValue({ ... });
+
+// Correct
+(globalThis as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({ ... });
+```
+
 ### Only destructure what you use from hooks
 
 Unused destructured variables cause TypeScript warnings and mislead future readers.
@@ -676,9 +688,11 @@ The baseline is stored in `.go-coverage-baseline` (repo root, committed). The ho
 
 **When adding new handler code:** any new uncovered statements lower the percentage. Before committing, always run:
 ```bash
-go test ./internal/handlers/ ./internal/middleware/ -coverprofile=coverage.out && go tool cover -func=coverage.out | grep "^total:"
+go test -count=1 -coverpkg=github.com/trentd187/golf-league/internal/handlers,github.com/trentd187/golf-league/internal/middleware -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | grep "^total:"
 ```
 Compare the result against `.go-coverage-baseline`. If it drops, add Tier 1 tests to compensate **in the same commit** — do not rely on the auto-update to paper over the regression.
+
+**`-count=1` is required — do not omit it.** Go's test cache replays the coverage profile from the last run. If any instrumented file changed since the cached run, the merged `coverage.out` miscounts total statements and produces a wrong percentage (observed: 19.4% reported instead of actual 24.9%). `-count=1` disables the cache and forces a fresh measurement every time.
 
 **Common Tier 1 test patterns (no DB needed):**
 - `uuid.Parse(c.Locals("userID"))` fails when no auth middleware is in the test → returns **401**. Handlers: `GetRound`, `UpdateRound`, `DeleteRound`, `AddGroupMember`, `RemoveGroupMember`, and any new handler that reads `c.Locals("userID")` first.
@@ -720,16 +734,14 @@ Hooks are installed automatically when you run `pnpm install` inside `mobile/` (
 | Hook | Trigger | What it does |
 |---|---|---|
 | `backend-lint` | `backend/**/*.go` staged | Runs golangci-lint; blocks on errors. Config: `backend/.golangci.yml` |
-| `backend-coverage` | `backend/**/*.go` staged | Runs Go tests; blocks if coverage dropped below `.go-coverage-baseline` |
+| `backend-coverage` | `backend/**/*.go` staged | Runs `go test ./...` (all packages) with coverage measured for handlers/middleware; blocks if coverage dropped below `.go-coverage-baseline` |
+| `backend-docker-build` | `backend/**` or `Dockerfile` changed vs origin/main | Builds the Railway Dockerfile; skipped if Docker is not running |
 | `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
 | `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
 | `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | Runs `expo-doctor`; blocks if any of the 17 SDK/dependency checks fail |
+| `mobile-coverage` | `mobile/**/*.{ts,tsx}` staged | Runs Jest with coverage; blocks if coverage dropped below `.mobile-coverage-baseline` |
 
-**`pre-push` — runs on every `git push`:**
-
-| Hook | Trigger | What it does |
-|---|---|---|
-| `backend-tests` | `backend/**/*.go` staged | Runs full `go test ./...` suite to catch any failures before push |
+There is no `pre-push` hook — all checks run at commit time.
 
 **Coverage ratchet rule:**
 - Baseline stored in `.go-coverage-baseline` at repo root (committed to git)
@@ -754,7 +766,7 @@ LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
 
 ### Mobile coverage ratchet
 
-`mobile-coverage` runs on `pre-push` (same trigger as `backend-tests`). It runs Jest with `--coverage`, parses the Statements percentage, and blocks pushes that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
+`mobile-coverage` runs on `pre-commit`. It runs Jest with `--coverage`, parses the Statements percentage, and blocks commits that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
 
 ---
 

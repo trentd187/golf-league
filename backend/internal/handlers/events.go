@@ -291,12 +291,13 @@ type EventDetailResponse struct {
 
 // MemberResponse describes a single event_player row with the user's display info.
 type MemberResponse struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-	Role        string `json:"role"`   // "organizer" or "player"
-	Status      string `json:"status"` // "invited", "registered", "withdrawn", "completed"
-	JoinedAt    string `json:"joined_at"`
+	UserID      string  `json:"user_id"`
+	DisplayName string  `json:"display_name"`
+	Email       string  `json:"email"`
+	AvatarURL   *string `json:"avatar_url"`
+	Role        string  `json:"role"`   // "organizer" or "player"
+	Status      string  `json:"status"` // "invited", "registered", "withdrawn", "completed"
+	JoinedAt    string  `json:"joined_at"`
 }
 
 // UpdateEventRequest is the JSON body for PATCH /api/v1/events/:id.
@@ -399,6 +400,7 @@ func GetEvent(db *gorm.DB) fiber.Handler {
 				UserID:      p.UserID.String(),
 				DisplayName: p.User.DisplayName,
 				Email:       p.User.Email,
+				AvatarURL:   p.User.AvatarURL,
 				Role:        string(p.Role),
 				Status:      string(p.Status),
 				JoinedAt:    p.CreatedAt.UTC().Format(time.RFC3339),
@@ -537,6 +539,7 @@ func GetEventMembers(db *gorm.DB) fiber.Handler {
 				UserID:      p.UserID.String(),
 				DisplayName: p.User.DisplayName,
 				Email:       p.User.Email,
+				AvatarURL:   p.User.AvatarURL,
 				Role:        string(p.Role),
 				Status:      string(p.Status),
 				JoinedAt:    p.CreatedAt.UTC().Format(time.RFC3339),
@@ -602,6 +605,7 @@ func AddEventMember(db *gorm.DB) fiber.Handler {
 			UserID:      targetUser.ID.String(),
 			DisplayName: targetUser.DisplayName,
 			Email:       targetUser.Email,
+			AvatarURL:   targetUser.AvatarURL,
 			Role:        string(player.Role),
 			Status:      string(player.Status),
 			JoinedAt:    player.CreatedAt.UTC().Format(time.RFC3339),

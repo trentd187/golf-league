@@ -30,6 +30,7 @@ import * as WebBrowser from "expo-web-browser";
 import * as AuthSession from "expo-auth-session";
 import { supabase } from "@/utils/supabase";
 import { useTheme } from "@/hooks/useTheme";
+import { getTelemetryClient } from "@/utils/telemetry";
 
 // Required for OAuth redirects to complete correctly in Expo — safe to call unconditionally.
 WebBrowser.maybeCompleteAuthSession();
@@ -72,6 +73,9 @@ export default function SignIn() {
       });
 
       if (error || !data.url) {
+        getTelemetryClient().warn("auth.google.error", "Google OAuth sign-in failed", {
+          message: error?.message,
+        });
         showErrorAlert(error?.message ?? "Could not start Google sign-in.");
         return;
       }
@@ -93,6 +97,7 @@ export default function SignIn() {
         if (sessionError) {
           showErrorAlert(sessionError.message);
         } else {
+          getTelemetryClient().info("auth.google.success", "Google OAuth sign-in succeeded");
           router.replace("/(tabs)");
         }
       }
@@ -119,6 +124,7 @@ export default function SignIn() {
     if (error) {
       showErrorAlert(error.message);
     } else {
+      getTelemetryClient().info("auth.otp.sent", "OTP email sent");
       setPendingVerification(true);
     }
   };
@@ -138,8 +144,12 @@ export default function SignIn() {
 
     if (error) {
       // Wrong code — show inline so the user can retry without dismissing a dialog.
+      getTelemetryClient().warn("auth.otp.error", "OTP verification failed", {
+        message: error.message,
+      });
       setInlineError(error.message);
     } else {
+      getTelemetryClient().info("auth.otp.verified", "OTP verification succeeded");
       router.replace("/(tabs)");
     }
   };

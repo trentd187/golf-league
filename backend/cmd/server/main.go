@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/contrib/otelfiber"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/database"
@@ -63,11 +64,25 @@ func main() {
 		AppName: "Golf League API",
 	})
 
+	// fiberrecover catches any panics in middleware or handlers and returns 500 instead
+	// of crashing the server process. Must be registered first so it wraps everything.
+	app.Use(fiberrecover.New())
+
 	app.Use(cors.New())
 
 	// otelfiber auto-instruments every request as an OTel span.
 	// Must be registered first so all subsequent middleware and handlers have span context.
-	app.Use(otelfiber.Middleware())
+	// WithSpanNameFormatter uses the fully matched route pattern (e.g. /api/v1/me) instead
+	// of the default group prefix (/api/v1), which made all grouped-route spans
+	// indistinguishable in Grafana Tempo.
+	app.Use(otelfiber.Middleware(
+		otelfiber.WithSpanNameFormatter(func(c *fiber.Ctx) string {
+			if c.Route().Path == "" {
+				return "unknown" // unmatched routes; avoids blank span names in Tempo
+			}
+			return c.Route().Path
+		}),
+	))
 
 	// Correlation middleware reads X-Correlation-ID from the request (or generates one),
 	// attaches it to the active span, and writes X-Trace-ID to the response.

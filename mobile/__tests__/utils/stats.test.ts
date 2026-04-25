@@ -18,6 +18,7 @@ function makePlayer(overrides: Partial<ScorecardPlayer> = {}): ScorecardPlayer {
     round_player_id: "rp-1",
     user_id: "user-1",
     display_name: "Alice",
+    avatar_url: null,
     course_handicap: null,
     scores: [],
     hole_stats: [],

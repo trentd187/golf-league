@@ -914,8 +914,12 @@ export default function RoundDetailScreen() {
                           />
                         </TouchableOpacity>
                       ) : (
-                        // Non-organizer: player row is read-only
-                        <View className="flex-1 flex-row items-center gap-3">
+                        // Non-organizer: player row navigates to the player's public profile
+                        <TouchableOpacity
+                          className="flex-1 flex-row items-center gap-3"
+                          activeOpacity={0.7}
+                          onPress={() => router.push(`/users/${player.user_id}`)}
+                        >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
                             <Text
@@ -928,7 +932,7 @@ export default function RoundDetailScreen() {
                               {player.email}
                             </Text>
                           </View>
-                        </View>
+                        </TouchableOpacity>
                       )
                     ) : (
                       <Text className={`text-sm italic ${t.textTertiary}`}>

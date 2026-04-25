@@ -752,11 +752,13 @@ export default function EventDetailScreen() {
             // overflow-hidden clips the border-radius on the first and last rows
             <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
               {event.members.map((member, idx) => (
-                <View
+                <TouchableOpacity
                   key={member.user_id}
                   className={`px-4 py-3 flex-row items-center gap-3 ${
                     idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
+                  activeOpacity={0.7}
+                  onPress={() => router.push(`/users/${member.user_id}`)}
                 >
                   <UserAvatar avatarUrl={member.avatar_url} displayName={member.display_name} size={36} />
 
@@ -772,7 +774,7 @@ export default function EventDetailScreen() {
 
                   {/* RoleBadge renders null for "player" — safe to always include */}
                   <RoleBadge role={member.role} />
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           )}

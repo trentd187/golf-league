@@ -156,9 +156,15 @@ func main() {
 	api.Post("/courses/import-external", middleware.RequireRole("admin", "manager"), handlers.ImportExternalCourse(db, golfAPI))
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin", "manager"), handlers.RefreshCourse(db, golfAPI))
 
-	// User routes
+	// User routes — static paths must be registered before parameterised ones so Fiber
+	// doesn't treat "following" as a userId value.
 	api.Get("/me", handlers.GetMe(db))
-	api.Get("/users", handlers.GetUsers(db))
+	api.Get("/users/following", handlers.GetFollowing(db))
+	api.Get("/users/:userId", handlers.GetUserProfile(db))
+	api.Get("/users/:userId/stats", handlers.GetUserStats(db))
+	api.Post("/users/:userId/follow", handlers.FollowUser(db))
+	api.Delete("/users/:userId/follow", handlers.UnfollowUser(db))
+	api.Get("/users", handlers.SearchUsers(db))
 
 	// Start the server in a goroutine so we can listen for OS signals below.
 	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;

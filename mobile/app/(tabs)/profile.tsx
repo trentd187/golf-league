@@ -371,6 +371,19 @@ export default function ProfileScreen() {
             )}
           </View>
 
+          {/* ── Find Players ─────────────────────────────────────────────────── */}
+          <TouchableOpacity
+            className={`flex-row items-center justify-between ${t.surface} rounded-2xl p-4 mb-4 border ${t.border}`}
+            onPress={() => router.push("/users/search")}
+            activeOpacity={0.7}
+          >
+            <View className="flex-row items-center gap-3">
+              <Ionicons name="people-outline" size={20} color={t.colors.tabBarActive} />
+              <Text className={`font-semibold ${t.textPrimary}`}>Find Players</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
+          </TouchableOpacity>
+
           {/* ── Theme picker ──────────────────────────────────────────────────── */}
           <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
             Theme

@@ -25,6 +25,7 @@ interface ThemeState {
   themeName: ThemeName; // persisted to SecureStore
   theme: Theme;         // derived at runtime — NOT persisted
   setTheme: (name: ThemeName) => void;
+  _hasHydrated: boolean; // true once SecureStore read completes; false during the brief startup window
 }
 
 // ─── SecureStore adapter ──────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ export const useThemeStore = create<ThemeState>()(
       // onRehydrateStorage below re-derives the correct theme after hydration.
       themeName: "light" as ThemeName,
       theme:     THEMES["light"],
+      _hasHydrated: false,
 
       setTheme: (name: ThemeName) =>
         set({ themeName: name, theme: THEMES[name] }),
@@ -57,19 +59,21 @@ export const useThemeStore = create<ThemeState>()(
       name: "theme-storage",
       storage: secureStoreAdapter,
 
-      // Only write themeName to storage — not the full theme object or setTheme function.
+      // Only write themeName to storage — not the full theme object, setTheme, or _hasHydrated.
       partialize: (state) => ({ themeName: state.themeName }),
 
-      // After the persisted themeName is loaded back, re-derive the full Theme object.
-      // At hydration time, state.theme is still the constructor default ("light").
+      // After the persisted themeName is loaded back, re-derive the full Theme object
+      // and mark hydration complete.
+      //
+      // Why useThemeStore.setState() instead of direct state mutation?
+      // Zustand's persist middleware calls set(rehydratedState) BEFORE this callback fires,
+      // so `state` here is a reference to the already-committed store value. Mutating it
+      // directly does NOT trigger React re-renders — the dispatch already happened.
+      // Calling setState() issues a new dispatch so subscribers (e.g. the tab bar in
+      // _layout.tsx) re-render with the restored theme instead of staying on the "light" default.
       onRehydrateStorage: () => (state) => {
-        if (state) {
-          // Guard against a stored name that's no longer valid (e.g. theme removed in update).
-          if (!THEMES[state.themeName]) {
-            state.themeName = "light";
-          }
-          state.theme = THEMES[state.themeName];
-        }
+        const name = state && THEMES[state.themeName] ? state.themeName : "light";
+        useThemeStore.setState({ themeName: name, theme: THEMES[name], _hasHydrated: true });
       },
     }
   )

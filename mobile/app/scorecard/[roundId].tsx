@@ -276,9 +276,13 @@ export default function ScorecardScreen() {
     refetch,
     isRefetching,
   } = useQuery<Scorecard>({
-    queryKey: ["scorecard", roundId],
-    queryFn:  fetchScorecard,
-    enabled:  !!roundId,
+    queryKey:       ["scorecard", roundId],
+    queryFn:        fetchScorecard,
+    enabled:        !!roundId,
+    // Poll every minute so other players' scores stay in sync without requiring a manual refresh.
+    // Average hole duration is ~13 min, so 60 s is frequent enough to catch updates mid-hole
+    // without hammering the API.
+    refetchInterval: 60_000,
   });
 
   const group: ScorecardGroup | undefined = scorecard?.groups.find(
@@ -329,6 +333,12 @@ export default function ScorecardScreen() {
     const x         = pillIndex * PILL_STEP - (screenW / 2) + 18;
     pillScrollRef.current?.scrollTo({ x: Math.max(0, x), animated: true });
   }, [currentHole, scorecard?.nine_hole_selection]);
+
+  // Refetch when the player moves to a new hole so other players' freshly-saved
+  // scores appear immediately rather than waiting for the next 60-second poll.
+  useEffect(() => {
+    refetch();
+  }, [currentHole, refetch]);
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
   // avoiding re-runs when Clerk refreshes user data mid-session.

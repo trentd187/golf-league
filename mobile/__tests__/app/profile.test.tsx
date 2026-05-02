@@ -235,6 +235,12 @@ it("avatar upload saves to custom_avatar_url, not avatar_url", async () => {
     expect(supabase.auth.updateUser).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ avatar_url: expect.any(String) }) })
     );
+
+    // URL must include a ?t= cache-busting timestamp so the CDN and React Native's
+    // image cache treat each re-upload as a new resource instead of serving the stale
+    // cached version of avatar.jpg from the same storage path.
+    const call = (supabase.auth.updateUser as jest.Mock).mock.calls[0][0];
+    expect(call.data.custom_avatar_url).toMatch(/\?t=\d+$/);
   });
 });
 

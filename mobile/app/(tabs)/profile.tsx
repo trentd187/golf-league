@@ -178,11 +178,16 @@ export default function ProfileScreen() {
         .from("avatars")
         .getPublicUrl(fileName);
 
+      // Append a cache-busting timestamp so the CDN and React Native's image cache
+      // treat each upload as a new resource. The storage path stays the same (no
+      // orphaned files), but the URL changes on every upload, bypassing stale caches.
+      const cacheBustedUrl = `${publicUrl}?t=${Date.now()}`;
+
       // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
       // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
       // is user-writable only and is never touched by the OAuth flow.
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { custom_avatar_url: publicUrl },
+        data: { custom_avatar_url: cacheBustedUrl },
       });
 
       if (updateError) throw updateError;

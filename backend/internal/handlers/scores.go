@@ -95,8 +95,8 @@ type ScorecardResponse struct {
 	RequiresHandicap bool   `json:"requires_handicap"`
 	ScoringFormat    string `json:"scoring_format"`
 	// CallerUserID is the database UUID of the requesting user. The mobile client
-	// uses this to find its own player entry in the groups list — Clerk's user.id
-	// is different from the database UUID, so the server must supply it.
+	// uses this to find its own player entry in the groups list — the Supabase auth UUID
+	// differs from the database UUID, so the server must supply it.
 	CallerUserID string `json:"caller_user_id"`
 	// IsOrganizer lets the mobile client show/hide the "End Round" button without a separate query.
 	IsOrganizer bool `json:"is_organizer"`

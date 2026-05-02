@@ -1,7 +1,6 @@
 // hooks/useAuth.ts
-// Drop-in replacement for Clerk's useAuth hook.
-// All screens that previously called `const { getToken } = useAuth()` from @clerk/clerk-expo
-// now import from here instead — the call site is identical, no other changes needed.
+// Supabase Auth hook — exposes getToken and signOut for use across all screens.
+// Screens call `const { getToken } = useAuth()` to obtain a Bearer token for API requests.
 
 import { supabase } from '@/utils/supabase';
 

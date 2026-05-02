@@ -1,6 +1,6 @@
 // Package middleware contains HTTP middleware functions for the Golf League API.
 // This file handles role-based access control (RBAC).
-// The three roles are: admin, manager, user.
+// The two global roles are: admin, user.
 package middleware
 
 // roles.go — Role-based access control middleware.
@@ -12,7 +12,7 @@ import "github.com/gofiber/fiber/v2"
 //
 // Accepts a variadic list of roles so you can allow multiple on one route:
 //
-//	app.Post("/leagues", middleware.RequireRole("admin", "manager"), handlers.CreateLeague)
+//	app.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse)
 //
 // Must be used AFTER the Auth middleware, which populates "userRole" in c.Locals.
 func RequireRole(roles ...string) fiber.Handler {

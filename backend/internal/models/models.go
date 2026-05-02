@@ -20,12 +20,14 @@ import (
 // without sacrificing human-readable values in the database.
 
 // UserRole represents a user's global permission level across the entire platform.
+// There are two global roles: admin (full platform access, course editing) and user
+// (any authenticated user — can create and manage their own events via the event-level
+// organizer role). The manager role was removed in migration 000014.
 type UserRole string
 
 const (
-	UserRoleAdmin   UserRole = "admin"   // Full access: manage users, events, everything
-	UserRoleManager UserRole = "manager" // Can create and manage events
-	UserRoleUser    UserRole = "user"    // Regular player: can join events and record scores
+	UserRoleAdmin UserRole = "admin" // Full access: manage users, courses, all events
+	UserRoleUser  UserRole = "user"  // Any authenticated user — can create events, becomes organizer
 )
 
 // EventType describes what kind of golf competition is being organized.

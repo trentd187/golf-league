@@ -101,12 +101,12 @@ func main() {
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
 
 	// Telemetry — mobile clients POST structured logs here; backend proxies to Loki.
-	// Requires a valid Clerk JWT (auth middleware above), so Loki credentials stay server-side.
+	// Requires a valid Supabase JWT (auth middleware above), so Loki credentials stay server-side.
 	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
-	// Event routes
+	// Event routes — any authenticated user can create events (they become the organizer)
 	api.Get("/events", handlers.GetEvents(db))
-	api.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent(db))
+	api.Post("/events", handlers.CreateEvent(db))
 
 	api.Get("/events/:id", handlers.GetEvent(db))
 	api.Patch("/events/:id", handlers.UpdateEvent(db))
@@ -138,23 +138,23 @@ func main() {
 	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(db))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(db))
 
-	// Course routes — GET open to any authenticated user; mutations require admin or manager
+	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(db))
-	api.Post("/courses", middleware.RequireRole("admin", "manager"), handlers.CreateCourse(db))
+	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(db))
 	api.Get("/courses/:courseId", handlers.GetCourse(db))
-	api.Patch("/courses/:courseId", middleware.RequireRole("admin", "manager"), handlers.UpdateCourse(db))
+	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(db))
 
-	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin", "manager"), handlers.CreateTee(db))
-	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin", "manager"), handlers.UpdateTee(db))
-	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin", "manager"), handlers.DeleteTee(db))
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(db))
+	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(db))
+	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(db))
 
-	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin", "manager"), handlers.UpsertHoles(db))
-	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin", "manager"), handlers.UpdateHole(db))
+	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(db))
+	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(db))
 
 	// External course import — search returns results without writing; import/refresh write to DB
-	api.Post("/courses/search-external", middleware.RequireRole("admin", "manager"), handlers.SearchExternalCourse(golfAPI))
-	api.Post("/courses/import-external", middleware.RequireRole("admin", "manager"), handlers.ImportExternalCourse(db, golfAPI))
-	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin", "manager"), handlers.RefreshCourse(db, golfAPI))
+	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(golfAPI))
+	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(db, golfAPI))
+	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(db, golfAPI))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
 	// doesn't treat "following" as a userId value.

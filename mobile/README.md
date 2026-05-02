@@ -7,14 +7,13 @@ The React Native + Expo mobile app for the Golf Stuff In Here platform.
 | Tool | Purpose |
 |---|---|
 | [React Native](https://reactnative.dev) | Cross-platform mobile framework |
-| [Expo SDK 55](https://expo.dev) | Toolchain, native modules, and build service |
+| [Expo SDK 54](https://expo.dev) | Toolchain, native modules, and build service |
 | [Expo Router](https://expo.github.io/router) | File-based navigation (like Next.js, but for mobile) |
 | [TypeScript](https://www.typescriptlang.org) | Type-safe JavaScript |
 | [NativeWind v4](https://www.nativewind.dev) | Tailwind CSS utility classes for React Native |
-| [Clerk](https://clerk.com) | Authentication (Google OAuth + Email OTP) |
+| [Supabase Auth](https://supabase.com/docs/guides/auth) | Authentication (Google OAuth + Email OTP) |
 | [TanStack Query](https://tanstack.com/query) | API data fetching, caching, and synchronization |
 | [Zustand](https://zustand-demo.pmnd.rs) | Lightweight client-side state management |
-| [Expo SQLite](https://docs.expo.dev/versions/latest/sdk/sqlite/) | Local offline database for score entry without signal |
 | [pnpm](https://pnpm.io) | Package manager (faster and more efficient than npm) |
 
 ## Directory Structure
@@ -22,12 +21,12 @@ The React Native + Expo mobile app for the Golf Stuff In Here platform.
 ```
 mobile/
 ├── app/                          # Expo Router file-based routes — each file = one screen
-│   ├── _layout.tsx               # Root layout: Clerk + React Query providers wrap the whole app
+│   ├── _layout.tsx               # Root layout: auth + React Query providers wrap the whole app
 │   ├── index.tsx                 # Auth gate: redirects signed-in users to tabs, others to sign-in
 │   ├── sign-in.tsx               # Sign-in screen: Google OAuth and email OTP
 │   └── (tabs)/                   # Route group: the main tab navigator after sign-in
 │       ├── _layout.tsx           # Tab bar configuration
-│       └── index.tsx             # Home screen (leagues and events will go here)
+│       └── index.tsx             # Home screen
 ├── components/                   # Reusable UI components shared across screens
 ├── constants/
 │   └── api.ts                    # API_URL — base URL for all backend requests
@@ -35,8 +34,8 @@ mobile/
 ├── stores/                       # Zustand state stores (client-side state)
 ├── types/                        # Shared TypeScript type definitions
 ├── utils/
-│   └── cache.ts                  # Clerk token cache using Expo SecureStore
-├── app.json                      # Expo app configuration (name, scheme, icons, plugins)
+│   └── supabase.ts               # Supabase client — auth + storage
+├── app.config.js                 # Dynamic Expo app config (name, scheme, icons, plugins)
 ├── babel.config.js               # Babel compiler config — enables NativeWind className support
 ├── metro.config.js               # Metro bundler config — wraps with NativeWind
 ├── tailwind.config.js            # Tailwind v3 configuration (content paths, NativeWind preset)
@@ -54,7 +53,7 @@ mobile/
 - Node.js 20 or newer
 - pnpm (`npm install -g pnpm`)
 - [Expo Go](https://expo.dev/go) app on your physical device, or Android/iOS emulator
-- A [Clerk](https://clerk.com) account with Google OAuth enabled
+- A [Supabase](https://supabase.com) project with Google OAuth enabled
 
 ### Environment Variables
 
@@ -66,8 +65,9 @@ cp .env.example .env
 
 | Variable | Description | Where to find it |
 |---|---|---|
-| `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key (safe to expose) | Clerk Dashboard → API Keys |
 | `EXPO_PUBLIC_API_URL` | Backend API base URL | `http://localhost:8080` for local dev |
+| `EXPO_PUBLIC_SUPABASE_URL` | Supabase project URL | Supabase Dashboard → Project Settings → API |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public key | Supabase Dashboard → Project Settings → API |
 
 > **Note:** Variables prefixed with `EXPO_PUBLIC_` are embedded in the app bundle and visible to users. Never put secrets, private keys, or passwords in them.
 
@@ -124,20 +124,21 @@ Tailwind v3 is used (not v4) — NativeWind v4 requires Tailwind v3.
 
 ## Authentication
 
-Auth is handled by **Clerk**. The flow works as follows:
+Auth is handled by **Supabase Auth**. The flow works as follows:
 
-1. App loads → `app/index.tsx` checks `useAuth().isSignedIn`
+1. App loads → `app/index.tsx` checks the Supabase session
 2. Not signed in → redirect to `app/sign-in.tsx`
-3. User signs in (Google or OTP) → Clerk creates a session
-4. Session token stored in device secure storage via `utils/cache.ts`
-5. On next launch, Clerk restores the session automatically → user goes straight to tabs
+3. User signs in (Google OAuth or email OTP) → Supabase creates a session
+4. Session token stored in device secure storage via `@react-native-async-storage/async-storage`
+5. On next launch, Supabase restores the session automatically → user goes straight to tabs
 
-To add auth to a new screen, use Clerk's hooks:
+To add auth to a new screen, use the custom hooks:
 ```tsx
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth } from "@/hooks/useAuth";
+import { useUser } from "@/hooks/useUser";
 
-const { isSignedIn, signOut } = useAuth();
-const { user } = useUser();
+const { getToken, signOut } = useAuth();
+const { user, loading } = useUser();
 ```
 
 ## Making API Calls
@@ -149,9 +150,9 @@ import { useQuery } from "@tanstack/react-query";
 import { API_URL } from "@/constants/api";
 
 const { data, isLoading } = useQuery({
-  queryKey: ["leagues"],
+  queryKey: ["events"],
   queryFn: async () => {
-    const res = await fetch(`${API_URL}/api/v1/leagues`);
+    const res = await fetch(`${API_URL}/api/v1/events`);
     return res.json();
   },
 });

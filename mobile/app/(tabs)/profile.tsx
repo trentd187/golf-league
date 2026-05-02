@@ -49,9 +49,8 @@ import { getTelemetryClient } from "@/utils/telemetry";
 // Role colors are categorical — hardcoded and NOT affected by the theme.
 function SystemRoleBadge({ role }: { role?: string }) {
   const styles: Record<string, { bg: string; text: string; label: string }> = {
-    admin:   { bg: "bg-green-100",  text: "text-green-700", label: "Admin" },
-    manager: { bg: "bg-blue-100",   text: "text-blue-700",  label: "Manager" },
-    user:    { bg: "bg-gray-100",   text: "text-gray-600",  label: "User" },
+    admin: { bg: "bg-green-100", text: "text-green-700", label: "Admin" },
+    user:  { bg: "bg-gray-100",  text: "text-gray-600",  label: "User" },
   };
   const style = styles[role ?? ""] ?? styles.user;
   const label = styles[role ?? ""]?.label ?? "User";

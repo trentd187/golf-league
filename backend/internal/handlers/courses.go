@@ -15,11 +15,11 @@
 //
 // Permission model:
 //   - GET routes: any authenticated user
-//   - All mutation routes: "admin" or "manager" role (enforced by RequireRole middleware)
+//   - All mutation routes: "admin" role only (enforced by RequireRole middleware)
 //
 // Active-round guard: any mutation that touches a course used by an active round is blocked
 // with 409 Conflict. Course data changes mid-round would invalidate in-progress scores.
-// Refresh is an explicit admin/manager action, never automatic.
+// Refresh is an explicit admin action, never automatic.
 package handlers
 
 import (
@@ -479,7 +479,7 @@ func GetCourse(db *gorm.DB) fiber.Handler {
 }
 
 // CreateCourse returns a handler for POST /api/v1/courses.
-// Requires "admin" or "manager" role (enforced by RequireRole middleware).
+// Requires "admin" role (enforced by RequireRole middleware).
 func CreateCourse(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req CreateCourseRequest
@@ -513,7 +513,7 @@ func CreateCourse(db *gorm.DB) fiber.Handler {
 }
 
 // UpdateCourse returns a handler for PATCH /api/v1/courses/:courseId.
-// Requires "admin" or "manager" role. Blocked if an active round uses this course.
+// Requires "admin" role. Blocked if an active round uses this course.
 func UpdateCourse(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		courseID, ok := parseCourseID(c)
@@ -568,7 +568,7 @@ func UpdateCourse(db *gorm.DB) fiber.Handler {
 }
 
 // CreateTee returns a handler for POST /api/v1/courses/:courseId/tees.
-// Requires "admin" or "manager" role. Blocked if an active round uses this course.
+// Requires "admin" role. Blocked if an active round uses this course.
 func CreateTee(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		courseID, ok := parseCourseID(c)
@@ -633,7 +633,7 @@ func CreateTee(db *gorm.DB) fiber.Handler {
 }
 
 // UpdateTee returns a handler for PATCH /api/v1/courses/:courseId/tees/:teeId.
-// Requires "admin" or "manager" role. Blocked if an active round uses this course.
+// Requires "admin" role. Blocked if an active round uses this course.
 func UpdateTee(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		courseID, ok := parseCourseID(c)
@@ -891,7 +891,7 @@ type ExternalCourseSummaryResponse struct {
 
 // SearchExternalCourse returns a handler for POST /api/v1/courses/search-external.
 // Queries GolfCourseAPI and returns matching courses — never writes to the DB.
-// Requires "admin" or "manager" role (enforced by RequireRole middleware on the route).
+// Requires "admin" role (enforced by RequireRole middleware on the route).
 func SearchExternalCourse(client *services.GolfCourseAPIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if !client.IsConfigured() {

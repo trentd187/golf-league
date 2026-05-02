@@ -122,7 +122,7 @@ export function scoreTextColor(gross: number, par: number): string {
 }
 
 // findMyPlayer locates the caller's ScorecardPlayer entry using the DB UUID the
-// server returns in caller_user_id — Clerk's user.id is a different format.
+// server returns in caller_user_id — the Supabase auth UUID differs from the DB UUID.
 export function findMyPlayer(sc: Scorecard): ScorecardPlayer | undefined {
   for (const group of sc.groups) {
     const p = group.players.find((pl) => pl.user_id === sc.caller_user_id);

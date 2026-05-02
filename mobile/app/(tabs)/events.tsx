@@ -180,7 +180,7 @@ export default function EventsScreen() {
     }
   };
 
-  const canCreate = me?.role === "admin" || me?.role === "manager";
+  const canCreate = !!me; // any authenticated user can create events
 
   const { data: events, isLoading, isError, refetch } = useQuery<EventResponse[]>({
     queryKey: ["events"],

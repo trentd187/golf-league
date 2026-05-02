@@ -23,7 +23,7 @@
 //  1. Route-level (middleware.RequireRole): who can call the route at all.
 //  2. Resource-level (isEventOrganizer): who can modify a specific event.
 //     - "admin" global role → can manage ANY event.
-//     - "manager" / "user" → only events where they hold the "organizer" event_player role.
+//     - "user" → only events where they hold the "organizer" event_player role.
 package handlers
 
 import (
@@ -152,7 +152,7 @@ func GetEvents(db *gorm.DB) fiber.Handler {
 }
 
 // CreateEvent returns a handler for POST /api/v1/events.
-// Requires "admin" or "manager" role (enforced by RequireRole middleware on the route).
+// Any authenticated user may create an event; they are auto-assigned the organizer role.
 // Creates the event and automatically adds the creator as an organizer in one transaction.
 func CreateEvent(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {

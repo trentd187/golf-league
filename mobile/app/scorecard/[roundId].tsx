@@ -341,7 +341,7 @@ export default function ScorecardScreen() {
   }, [currentHole, refetch]);
 
   // userIdRef lets the init effect read user.id without listing it as a dep,
-  // avoiding re-runs when Clerk refreshes user data mid-session.
+  // avoiding re-runs when the auth state refreshes mid-session.
   const userIdRef  = useRef(user?.id);
   useEffect(() => { userIdRef.current = user?.id; }, [user?.id]);
 
@@ -480,7 +480,7 @@ export default function ScorecardScreen() {
       // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
       setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
       // Default individual view to the current user's player, then first player.
-      // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
+      // user.id is the Supabase auth UUID; matches ScorecardPlayer.user_id.
       const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
       setSelectedPlayerId(
         myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""

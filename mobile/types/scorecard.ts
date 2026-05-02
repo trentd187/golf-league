@@ -69,8 +69,8 @@ export interface Scorecard {
   hole_count: number;
   requires_handicap: boolean;
   scoring_format: string;
-  // caller_user_id is the database UUID of the requesting user. Clerk's user.id
-  // is a different format, so the server returns the DB UUID here to allow the
+  // caller_user_id is the database UUID of the requesting user. The Supabase auth UUID
+  // differs from the DB UUID, so the server returns the DB UUID here to allow the
   // client to reliably identify its own player entry in the groups list.
   caller_user_id: string;
   // is_organizer is true when the requesting user is an organizer of this round's event.

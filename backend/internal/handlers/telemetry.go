@@ -1,7 +1,7 @@
 // telemetry.go provides the PostMobileLogs handler that acts as an authenticated
 // proxy between the React Native mobile app and Grafana Cloud Loki. Mobile clients
 // cannot safely embed Loki credentials (they would be extractable from the APK),
-// so they POST structured log entries to this endpoint using their Clerk JWT.
+// so they POST structured log entries to this endpoint using their Supabase JWT.
 // The handler forwards each entry to Loki via the LokiPusher interface.
 package handlers
 
@@ -38,7 +38,7 @@ type MobileLogsRequest struct {
 
 // PostMobileLogs returns a Fiber handler that validates and forwards mobile log
 // entries to Loki. Requests without a valid auth context still reach this handler
-// (the Auth middleware runs before it), so the Clerk JWT provides the auth boundary.
+// (the Auth middleware runs before it), so the Supabase JWT provides the auth boundary.
 //
 // Validation:
 //   - Missing or unparseable body → 400

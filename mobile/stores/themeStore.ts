@@ -5,7 +5,7 @@
 // Why Zustand persist + SecureStore?
 //   - `persist` middleware adds automatic save/load around the store state.
 //   - expo-secure-store is an encrypted key-value store that survives app restarts.
-//     It's the same adapter already used for Clerk tokens, so no new native module needed.
+//     It's the same adapter already used for Supabase session tokens, so no new native module needed.
 //   - Only `themeName` (a short string like "dark") is persisted — the full Theme object
 //     is re-derived at runtime from THEMES[themeName], keeping stored data compact.
 //

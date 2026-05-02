@@ -29,8 +29,8 @@ import type { CourseSummary } from "@/types/courses";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function isAdminOrManager(role: unknown): boolean {
-  return role === "admin" || role === "manager";
+function isAdmin(role: unknown): boolean {
+  return role === "admin";
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ export default function CoursesScreen() {
   const [searchQuery,    setSearchQuery]    = useState("");
   const [createVisible,  setCreateVisible]  = useState(false);
 
-  const canEdit = isAdminOrManager(me?.role);
+  const canEdit = isAdmin(me?.role);
 
   // ── Fetch courses (re-fetches when searchQuery changes) ───────────────────
   const fetchCourses = useCallback(async (): Promise<CourseSummary[]> => {

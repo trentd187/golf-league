@@ -90,6 +90,8 @@ func TestGetEvents_MissingAuth_Unauthorized(t *testing.T) {
 }
 
 // ─── CreateEvent ──────────────────────────────────────────────────────────────
+// CreateEvent is open to any authenticated user (no RequireRole gate).
+// Role-gate enforcement is handled by RequireRole middleware (tested in roles_test.go).
 
 func TestCreateEvent_MissingAuth_Unauthorized(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPost, "/events", handlers.CreateEvent(nil))

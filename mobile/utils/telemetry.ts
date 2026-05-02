@@ -3,7 +3,7 @@
 //
 // Mobile clients cannot safely embed Loki credentials (they would be extractable
 // from the APK/IPA). Instead, this module queues structured log entries and POSTs
-// them to /api/v1/telemetry/logs using the user's Clerk JWT — the backend proxies
+// them to /api/v1/telemetry/logs using the user's Supabase JWT — the backend proxies
 // them to Loki with server-side credentials.
 //
 // Correlation with backend traces works via two fields automatically included in
@@ -53,8 +53,8 @@ class TelemetryClient {
     this.sessionId = ExpoCrypto.randomUUID();
   }
 
-  // setTokenGetter is called from _layout.tsx after ClerkLoaded so the client
-  // can attach the Clerk JWT to flush requests. Triggers an immediate flush if
+  // setTokenGetter is called from _layout.tsx after auth loads so the client
+  // can attach the Supabase JWT to flush requests. Triggers an immediate flush if
   // entries are already queued.
   setTokenGetter(fn: TokenGetter): void {
     this.getToken = fn;

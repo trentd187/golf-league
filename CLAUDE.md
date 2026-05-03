@@ -761,12 +761,18 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 ### Bypass (escape hatch)
 
 ```bash
-LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
+LEFTHOOK=0 git commit -m "layout/style change — logic already in utils with tests"
 ```
+
+**The escape hatch is only for layout, styling, or wiring changes where all non-trivial logic has already been extracted to `utils/` and tested.** It is NOT for deferring tests to a later commit — if logic was added without tests, write the tests first.
 
 ### Mobile coverage ratchet
 
 `mobile-coverage` runs on `pre-commit`. It runs Jest with `--coverage`, parses the Statements percentage, and blocks commits that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
+
+**What is measured:** `utils/**/*.ts`, `app/sign-in.tsx`, `app/index.tsx`, `app/(tabs)/profile.tsx`, `app/users/**/*.tsx`. Large screen files that can only be integration-tested (scorecard, events, rounds, courses) are excluded — they belong to a future E2E suite, not unit coverage.
+
+**Extract-first rule — mandatory:** Any non-trivial logic added to a screen component MUST be extracted to `utils/` before the component calls it. Write the `utils/` function and its test first (TDD), then write the component code that calls it. This prevents coverage from dropping on every feature addition. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
 
 ---
 

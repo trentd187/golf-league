@@ -1,8 +1,8 @@
 // __tests__/utils/stats.test.ts
-// Unit tests for buildStats(), buildRoundStats(), buildMyStats(), and findMyPlayer()
-// in utils/stats.ts. All functions are pure — no mocking needed.
+// Unit tests for buildStats(), buildRoundStats(), buildMyStats(), findMyPlayer(),
+// and handicapConsistencyLabel() in utils/stats.ts. All functions are pure — no mocking needed.
 
-import { buildStats, buildRoundStats, buildMyStats, findMyPlayer } from "@/utils/stats";
+import { buildStats, buildRoundStats, buildMyStats, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
 import type { Scorecard, ScorecardPlayer, ScorecardHole } from "@/types/scorecard";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -393,5 +393,24 @@ describe("buildMyStats", () => {
     expect(result.parsCount).toBe(1);
     expect(result.bogeysCount).toBe(1);
     expect(result.doublesPlus).toBe(1);
+  });
+});
+
+// ─── handicapConsistencyLabel ─────────────────────────────────────────────────
+
+describe("handicapConsistencyLabel", () => {
+  it("returns Consistent when spread is less than 5", () => {
+    expect(handicapConsistencyLabel(10, 13)).toBe("Consistent");   // spread 3
+    expect(handicapConsistencyLabel(5, 9.9)).toBe("Consistent");   // spread 4.9
+  });
+
+  it("returns Moderate when spread is between 5 and 9", () => {
+    expect(handicapConsistencyLabel(10, 15)).toBe("Moderate");     // spread 5
+    expect(handicapConsistencyLabel(10, 19.9)).toBe("Moderate");   // spread 9.9
+  });
+
+  it("returns Variable when spread is 10 or greater", () => {
+    expect(handicapConsistencyLabel(10, 20)).toBe("Variable");     // spread 10
+    expect(handicapConsistencyLabel(5, 20)).toBe("Variable");      // spread 15
   });
 });

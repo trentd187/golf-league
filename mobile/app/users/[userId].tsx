@@ -29,8 +29,9 @@ import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
+import HandicapSection from "@/components/HandicapSection";
 import { buildMyStats } from "@/utils/stats";
-import type { Scorecard } from "@/types/scorecard";
+import type { Scorecard, UserHandicapStats } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,20 @@ export default function UserProfileScreen() {
   });
 
   // Fetch the user's last 20 completed round IDs so we can load their scorecards.
+  // Handicap index and anti-handicap — always last 20 rounds, computed server-side.
+  const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
+    queryKey: ["userStats", userId],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!userId,
+  });
+
   const { data: roundRefs, isLoading: roundsLoading } = useQuery<UserRoundRef[]>({
     queryKey: ["user", userId, "rounds"],
     queryFn: async () => {
@@ -236,6 +251,11 @@ export default function UserProfileScreen() {
               Stats · Last {stats.rounds} round{stats.rounds === 1 ? "" : "s"}
             </Text>
 
+            <HandicapSection
+              handicapIndex={hcStats?.handicap_index}
+              antiHandicap={hcStats?.anti_handicap}
+              loading={hcLoading}
+            />
             <ScoringCard
               avgGrossScore={stats.avgGrossScore}
               lowScore={stats.lowScore}

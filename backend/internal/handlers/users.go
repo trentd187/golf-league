@@ -14,6 +14,7 @@ package handlers
 
 import (
 	"math"
+	"sort"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -105,6 +106,41 @@ type UserStatsResponse struct {
 	AvgPutts         *float64 `json:"avg_putts_per_round"`
 	RoundsCounted    int      `json:"rounds_counted"`
 	Filter           string   `json:"filter"`
+	// HandicapIndex and AntiHandicap are always computed from the last 20 rounds
+	// regardless of the filter param. Nil when fewer than 3 rounds have tee data.
+	HandicapIndex *float64 `json:"handicap_index"`
+	AntiHandicap  *float64 `json:"anti_handicap"`
+}
+
+// computeHandicapPair returns (handicapIndex, antiHandicap) from a slice of score
+// differentials. Requires at least 3; returns (nil, nil) with fewer. Uses min(n, 8)
+// differentials from each end of the sorted slice:
+//
+//	handicapIndex = avg of 8 lowest × 0.96 (WHS formula, rounded to 1 decimal)
+//	antiHandicap  = avg of 8 highest       (rounded to 1 decimal)
+func computeHandicapPair(diffs []float64) (handicapIndex, antiHandicap *float64) {
+	n := len(diffs)
+	if n < 3 {
+		return nil, nil
+	}
+	sorted := make([]float64, n)
+	copy(sorted, diffs)
+	sort.Float64s(sorted)
+
+	use := n
+	if use > 8 {
+		use = 8
+	}
+
+	var bestSum, worstSum float64
+	for i := 0; i < use; i++ {
+		bestSum += sorted[i]      // lowest differentials = best rounds
+		worstSum += sorted[n-1-i] // highest differentials = worst rounds
+	}
+
+	hi := math.Round(bestSum/float64(use)*0.96*10) / 10
+	ah := math.Round(worstSum/float64(use)*10) / 10
+	return &hi, &ah
 }
 
 // FollowingUserResponse is one entry returned by GET /api/v1/users/following.
@@ -513,6 +549,67 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 			avgPutts = &v
 		}
 
+		// Step 7: Compute handicap index and anti-handicap from the last 20 completed
+		// rounds, always independent of the filter param. Each differential requires
+		// course_rating and slope_rating from the tee used in that round.
+		type hcRound struct {
+			RoundPlayerID uuid.UUID
+			CourseRating  *float64
+			SlopeRating   *int
+		}
+		var hcRows []hcRound
+		db.Raw(`
+			SELECT rp.id AS round_player_id, t.course_rating, t.slope_rating
+			FROM round_players rp
+			JOIN event_players ep ON ep.id = rp.event_player_id
+			JOIN rounds r         ON r.id  = rp.round_id
+			LEFT JOIN tees t      ON t.id  = r.default_tee_id
+			WHERE ep.user_id = ? AND r.status = ?
+			ORDER BY rp.created_at DESC
+			LIMIT 20
+		`, targetID, models.RoundStatusCompleted).Scan(&hcRows)
+
+		// Collect gross totals for these round_players. Reuse scoreRow type defined above.
+		hcRPIDs := make([]uuid.UUID, 0, len(hcRows))
+		hcTeeByRP := make(map[uuid.UUID]struct {
+			Rating float64
+			Slope  int
+		})
+		for _, r := range hcRows {
+			if r.CourseRating != nil && r.SlopeRating != nil && *r.SlopeRating > 0 {
+				hcRPIDs = append(hcRPIDs, r.RoundPlayerID)
+				hcTeeByRP[r.RoundPlayerID] = struct {
+					Rating float64
+					Slope  int
+				}{
+					Rating: *r.CourseRating,
+					Slope:  *r.SlopeRating,
+				}
+			}
+		}
+
+		var hcDiffs []float64
+		if len(hcRPIDs) > 0 {
+			var hcScores []scoreRow
+			db.Model(&models.Score{}).
+				Select("round_player_id, hole_number, gross_score").
+				Where("round_player_id IN ?", hcRPIDs).
+				Scan(&hcScores)
+
+			hcTotals := make(map[uuid.UUID]int)
+			for _, s := range hcScores {
+				hcTotals[s.RoundPlayerID] += s.GrossScore
+			}
+			for rpID, gross := range hcTotals {
+				if tee, ok := hcTeeByRP[rpID]; ok {
+					diff := (float64(gross) - tee.Rating) * 113 / float64(tee.Slope)
+					hcDiffs = append(hcDiffs, diff)
+				}
+			}
+		}
+
+		hcIndex, antiHC := computeHandicapPair(hcDiffs)
+
 		return c.JSON(UserStatsResponse{
 			AvgGrossPerRound: avgGross,
 			LowRound:         lowRound,
@@ -527,6 +624,8 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 			AvgPutts:         avgPutts,
 			RoundsCounted:    roundCount,
 			Filter:           filter,
+			HandicapIndex:    hcIndex,
+			AntiHandicap:     antiHC,
 		})
 	}
 }

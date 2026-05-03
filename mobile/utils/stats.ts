@@ -427,3 +427,13 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
     avgPar5: par5Count > 0 ? par5Total / par5Count : null,
   };
 }
+
+// handicapConsistencyLabel categorises the spread between anti-handicap and
+// handicap index into a human-readable tier. A small spread means the player
+// scores consistently; a large spread means boom-or-bust tendencies.
+export function handicapConsistencyLabel(handicapIndex: number, antiHandicap: number): string {
+  const spread = antiHandicap - handicapIndex;
+  if (spread < 5)  return "Consistent";
+  if (spread < 10) return "Moderate";
+  return "Variable";
+}

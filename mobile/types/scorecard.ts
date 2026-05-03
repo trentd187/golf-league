@@ -83,3 +83,10 @@ export interface Scorecard {
   holes: ScorecardHole[];
   groups: ScorecardGroup[];
 }
+
+// UserHandicapStats is the slice of GET /api/v1/users/:userId/stats that the
+// mobile app consumes. Both fields are null when fewer than 3 rounds have tee data.
+export interface UserHandicapStats {
+  handicap_index: number | null;
+  anti_handicap:  number | null;
+}

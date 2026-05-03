@@ -37,7 +37,8 @@ import { apiFetch } from "@/utils/api";
 import { findMyPlayer, buildRoundStats, buildMyStats, scoreTextColor } from "@/utils/stats";
 import ModalHeader from "@/components/ModalHeader";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
-import type { Scorecard, ScorecardHole } from "@/types/scorecard";
+import HandicapSection from "@/components/HandicapSection";
+import type { Scorecard, ScorecardHole, UserHandicapStats } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -501,6 +502,35 @@ export default function StatsScreen() {
   const [selectedRound, setSelectedRound] = useState<RoundSummary | null>(null);
   const [openModal, setOpenModal] = useState<"stats" | "scorecard" | null>(null);
 
+  // GET /api/v1/me is shared with the Profile tab — React Query serves it from cache.
+  // We need the DB UUID (me.id) to call the stats endpoint for handicap data.
+  const { data: me } = useQuery<{ id: string }>({
+    queryKey: ["me"],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch me: ${res.status}`);
+      return res.json();
+    },
+  });
+
+  // Handicap index and anti-handicap always computed from the last 20 rounds
+  // server-side, independent of the active filter.
+  const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
+    queryKey: ["userStats", me?.id],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!me?.id,
+  });
+
   // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
   const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
     queryKey: ["rounds"],
@@ -727,6 +757,11 @@ export default function StatsScreen() {
                 {stats.rounds} round{stats.rounds === 1 ? "" : "s"}{periodLabel}
               </Text>
 
+              <HandicapSection
+                handicapIndex={hcStats?.handicap_index}
+                antiHandicap={hcStats?.anti_handicap}
+                loading={hcLoading}
+              />
               <ScoringCard
                 avgGrossScore={stats.avgGrossScore}
                 lowScore={stats.lowScore}

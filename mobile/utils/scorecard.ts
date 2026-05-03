@@ -19,6 +19,27 @@ export function girPuttsHint(par: number, gross: number): string | null {
   return null;
 }
 
+// holeRangeTotal sums par and gross scores for holes within [fromHole, toHole].
+// Used to compute OUT (front 9) and IN (back 9) subtotals in the group scorecard.
+// Returns null for score when no holes in the range have a valid gross entered.
+export function holeRangeTotal(
+  holeRows: { hole_number: number; par: number }[],
+  playerScores: Record<number, string>,
+  fromHole: number,
+  toHole: number,
+): { par: number; score: number | null } {
+  let parSum = 0;
+  let scoreSum = 0;
+  let scoredCount = 0;
+  for (const hole of holeRows) {
+    if (hole.hole_number < fromHole || hole.hole_number > toHole) continue;
+    parSum += hole.par;
+    const g = parseInt(playerScores[hole.hole_number] ?? "", 10);
+    if (!isNaN(g) && g >= 1) { scoreSum += g; scoredCount++; }
+  }
+  return { par: parSum, score: scoredCount > 0 ? scoreSum : null };
+}
+
 // puttDistanceMirror returns the extra stat field to update when putts = 1.
 // When a player holes a 1-putt, first_putt_distance and putt_distance_made
 // are the same value — whichever field the user edits should be mirrored to the other.

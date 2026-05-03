@@ -1,7 +1,7 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal } from "@/utils/scorecard";
 
 // ─── girScoreFromPutts ────────────────────────────────────────────────────────
 
@@ -67,5 +67,44 @@ describe("puttDistanceMirror", () => {
   it("returns empty object for unrelated fields even when putts = 1", () => {
     expect(puttDistanceMirror("putts", "1", "1")).toEqual({});
     expect(puttDistanceMirror("approach_yds", "1", "100")).toEqual({});
+  });
+});
+
+// ─── holeRangeTotal ───────────────────────────────────────────────────────────
+
+describe("holeRangeTotal", () => {
+  const frontNine = Array.from({ length: 9 }, (_, i) => ({ hole_number: i + 1, par: 4 }));
+  const allEighteen = Array.from({ length: 18 }, (_, i) => ({ hole_number: i + 1, par: 4 }));
+
+  it("sums par for holes 1–9", () => {
+    expect(holeRangeTotal(frontNine, {}, 1, 9).par).toBe(36);
+  });
+
+  it("sums entered scores for all holes in range", () => {
+    const scores: Record<number, string> = Object.fromEntries(
+      Array.from({ length: 9 }, (_, i) => [i + 1, "4"]),
+    );
+    expect(holeRangeTotal(frontNine, scores, 1, 9).score).toBe(36);
+  });
+
+  it("returns null score when no holes have a score", () => {
+    expect(holeRangeTotal(frontNine, {}, 1, 9).score).toBeNull();
+  });
+
+  it("returns partial sum when only some holes are scored", () => {
+    expect(holeRangeTotal(frontNine, { 1: "5", 2: "3" }, 1, 9).score).toBe(8);
+  });
+
+  it("ignores holes outside the requested range", () => {
+    const backNineScores: Record<number, string> = Object.fromEntries(
+      Array.from({ length: 9 }, (_, i) => [i + 10, "4"]),
+    );
+    const result = holeRangeTotal(allEighteen, backNineScores, 1, 9);
+    expect(result.score).toBeNull();
+    expect(result.par).toBe(36);
+  });
+
+  it("sums par for back nine (10–18)", () => {
+    expect(holeRangeTotal(allEighteen, {}, 10, 18).par).toBe(36);
   });
 });

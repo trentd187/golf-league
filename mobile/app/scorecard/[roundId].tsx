@@ -39,7 +39,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardPlayer } from "@/types/scorecard";
 import type { ComponentProps } from "react";
 
@@ -807,10 +807,10 @@ export default function ScorecardScreen() {
                 })}
               </View>
 
-              {/* Score rows */}
-              {holeRows.map((hole, idx) => {
+              {/* Score rows — for 18-hole rounds an OUT subtotal row is inserted after hole 9 */}
+              {holeRows.flatMap((hole, idx) => {
                 const isOdd = idx % 2 === 0;
-                return (
+                const holeRow = (
                   <View
                     key={hole.hole_number}
                     className={`flex-row items-center px-2 py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
@@ -864,7 +864,47 @@ export default function ScorecardScreen() {
                     })}
                   </View>
                 );
+
+                if (hole.hole_number !== 9 || holeCount !== 18) return [holeRow];
+
+                const outRow = (
+                  <View key="out" className={`flex-row items-center px-2 py-1.5 border-b-2 ${t.border} ${t.surfaceSunken}`}>
+                    <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>OUT</Text>
+                    <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
+                      {holeRangeTotal(holeRows, {}, 1, 9).par || "—"}
+                    </Text>
+                    <View style={{ width: siColW }} />
+                    {group.players.map((player) => {
+                      const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 1, 9);
+                      return (
+                        <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
+                          {score != null ? score : "—"}
+                        </Text>
+                      );
+                    })}
+                  </View>
+                );
+                return [holeRow, outRow];
               })}
+
+              {/* IN subtotal row for 18-hole rounds (back nine) */}
+              {holeCount === 18 && (
+                <View className={`flex-row items-center px-2 py-1.5 border-b ${t.divider} ${t.surfaceSunken}`}>
+                  <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>IN</Text>
+                  <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
+                    {holeRangeTotal(holeRows, {}, 10, 18).par || "—"}
+                  </Text>
+                  <View style={{ width: siColW }} />
+                  {group.players.map((player) => {
+                    const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 10, 18);
+                    return (
+                      <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
+                        {score != null ? score : "—"}
+                      </Text>
+                    );
+                  })}
+                </View>
+              )}
 
               {/* Totals row */}
               <View className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-t-2 ${t.border}`}>

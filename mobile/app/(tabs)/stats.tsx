@@ -37,8 +37,8 @@ import { apiFetch } from "@/utils/api";
 import { findMyPlayer, buildRoundStats, buildMyStats, scoreTextColor } from "@/utils/stats";
 import ModalHeader from "@/components/ModalHeader";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
-import HandicapSection from "@/components/HandicapSection";
-import type { Scorecard, ScorecardHole, UserHandicapStats } from "@/types/scorecard";
+// import HandicapSection from "@/components/HandicapSection"; // hidden pending GHIN review
+import type { Scorecard, ScorecardHole } from "@/types/scorecard"; // UserHandicapStats unused until GHIN integrated
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -516,20 +516,20 @@ export default function StatsScreen() {
     },
   });
 
-  // Handicap index and anti-handicap always computed from the last 20 rounds
-  // server-side, independent of the active filter.
-  const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
-    queryKey: ["userStats", me?.id],
-    queryFn: async () => {
-      const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/stats`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
-      return res.json();
-    },
-    enabled: !!me?.id,
-  });
+  // Handicap index and anti-handicap are hidden pending GHIN integration review.
+  // Re-enable by restoring the useQuery call and <HandicapSection /> render below.
+  // const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
+  //   queryKey: ["userStats", me?.id],
+  //   queryFn: async () => {
+  //     const token = await getToken();
+  //     const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/stats`, {
+  //       headers: { Authorization: `Bearer ${token}` },
+  //     });
+  //     if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+  //     return res.json();
+  //   },
+  //   enabled: !!me?.id,
+  // });
 
   // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
   const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
@@ -757,11 +757,12 @@ export default function StatsScreen() {
                 {stats.rounds} round{stats.rounds === 1 ? "" : "s"}{periodLabel}
               </Text>
 
-              <HandicapSection
+              {/* HandicapSection hidden pending GHIN integration review */}
+              {/* <HandicapSection
                 handicapIndex={hcStats?.handicap_index}
                 antiHandicap={hcStats?.anti_handicap}
                 loading={hcLoading}
-              />
+              /> */}
               <ScoringCard
                 avgGrossScore={stats.avgGrossScore}
                 lowScore={stats.lowScore}

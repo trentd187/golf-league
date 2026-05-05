@@ -290,6 +290,10 @@ type ScorecardSettings struct {
 	UpdatedAt                time.Time `gorm:"autoUpdateTime"`
 }
 
+// TableName overrides GORM's default pluralisation ("scorecard_settings") to match
+// the actual table name created by migration 000015.
+func (ScorecardSettings) TableName() string { return "user_scorecard_settings" }
+
 // Group represents a tee-time group — players who tee off together.
 type Group struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`

@@ -797,6 +797,9 @@ func UpsertScorecardSettings(db *gorm.DB) fiber.Handler {
 
 		// Save upserts via PK — inserts if missing, replaces if present.
 		if err := db.Save(&row).Error; err != nil {
+			// Store the DB error in error_detail so the HTTPMetrics middleware
+			// includes it in the Loki http.error log for Grafana visibility.
+			c.Locals("error_detail", "scorecard_settings.save: "+err.Error())
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save settings"})
 		}
 

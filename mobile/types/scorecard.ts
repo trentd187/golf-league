@@ -1,7 +1,7 @@
 // types/scorecard.ts
-// TypeScript interfaces for the GET /api/v1/rounds/:roundId/scorecard response
-// and the PUT /hole-stats request body.
-// These mirror the Go ScorecardResponse and UpsertHoleStatsRequest structs in handlers/scores.go.
+// TypeScript interfaces for the GET /api/v1/rounds/:roundId/scorecard response,
+// the PUT /hole-stats request body, and the GET/PATCH scorecard-settings endpoints.
+// These mirror the Go structs in handlers/scores.go and handlers/users.go.
 
 export interface ScorecardHole {
   hole_number: number;
@@ -16,6 +16,10 @@ export interface ScorecardScore {
   net_score: number;
 }
 
+// TeeShotClub is the allowed set for the tee_shot_club enum field.
+export type TeeShotClub = "DR" | "3W" | "5W" | "7W" | "DI" | "3H";
+export const TEE_SHOT_CLUBS: TeeShotClub[] = ["DR", "3W", "5W", "7W", "DI", "3H"];
+
 // ScorecardHoleStat holds the advanced per-hole stats returned for each player on the scorecard.
 export interface ScorecardHoleStat {
   hole_number: number;
@@ -27,7 +31,43 @@ export interface ScorecardHoleStat {
   first_putt_distance: number | null; // feet
   putt_distance_made: number | null;  // feet
   approach_yds: number | null;        // yards; optional — most users will not track this
+  tee_shot_club: TeeShotClub | null;
+  tee_shot_distance: number | null;   // yards
 }
+
+// ScorecardSettings stores per-user toggles for which supplemental stats appear
+// on the active scorecard, their display order, and where the score entry appears.
+// Mirrors GET/PATCH /api/v1/users/me/scorecard-settings.
+// Existing stats default true (preserving current behaviour); new stats default false.
+export interface ScorecardSettings {
+  fir_enabled:                 boolean;
+  gir_enabled:                 boolean;
+  putts_enabled:               boolean;
+  first_putt_distance_enabled: boolean;
+  putt_distance_made_enabled:  boolean;
+  approach_yds_enabled:        boolean;
+  tee_shot_club_enabled:       boolean;
+  tee_shot_distance_enabled:   boolean;
+  // stat_order controls the sequence stats appear on the scorecard.
+  stat_order:                  string[];
+  // score_position controls whether gross score entry appears before or after stats.
+  score_position:              "first" | "last";
+}
+
+// DEFAULT_SCORECARD_SETTINGS matches the server-side column defaults so the UI
+// is stable before the settings query resolves.
+export const DEFAULT_SCORECARD_SETTINGS: ScorecardSettings = {
+  fir_enabled:                 true,
+  gir_enabled:                 true,
+  putts_enabled:               true,
+  first_putt_distance_enabled: true,
+  putt_distance_made_enabled:  true,
+  approach_yds_enabled:        true,
+  tee_shot_club_enabled:       false,
+  tee_shot_distance_enabled:   false,
+  stat_order:                  ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+  score_position:              "last",
+};
 
 export interface ScorecardPlayer {
   round_player_id: string;

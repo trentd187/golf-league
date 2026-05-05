@@ -1,7 +1,7 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown } from "@/utils/scorecard";
 
 // ─── girScoreFromPutts ────────────────────────────────────────────────────────
 
@@ -106,5 +106,55 @@ describe("holeRangeTotal", () => {
 
   it("sums par for back nine (10–18)", () => {
     expect(holeRangeTotal(allEighteen, {}, 10, 18).par).toBe(36);
+  });
+});
+
+// ─── moveStatUp ───────────────────────────────────────────────────────────────
+
+describe("moveStatUp", () => {
+  it("moves a stat one position earlier", () => {
+    expect(moveStatUp(["fir", "gir", "putts"], "gir")).toEqual(["gir", "fir", "putts"]);
+  });
+
+  it("returns the original reference when the key is already first", () => {
+    const order = ["fir", "gir", "putts"];
+    expect(moveStatUp(order, "fir")).toBe(order);
+  });
+
+  it("returns the original reference when the key is not found", () => {
+    const order = ["fir", "gir"];
+    expect(moveStatUp(order, "unknown")).toBe(order);
+  });
+
+  it("does not mutate the original array", () => {
+    const order = ["fir", "gir", "putts"];
+    const result = moveStatUp(order, "gir");
+    expect(order).toEqual(["fir", "gir", "putts"]);
+    expect(result).toEqual(["gir", "fir", "putts"]);
+  });
+});
+
+// ─── moveStatDown ─────────────────────────────────────────────────────────────
+
+describe("moveStatDown", () => {
+  it("moves a stat one position later", () => {
+    expect(moveStatDown(["fir", "gir", "putts"], "gir")).toEqual(["fir", "putts", "gir"]);
+  });
+
+  it("returns the original reference when the key is already last", () => {
+    const order = ["fir", "gir", "putts"];
+    expect(moveStatDown(order, "putts")).toBe(order);
+  });
+
+  it("returns the original reference when the key is not found", () => {
+    const order = ["fir", "gir"];
+    expect(moveStatDown(order, "unknown")).toBe(order);
+  });
+
+  it("does not mutate the original array", () => {
+    const order = ["fir", "gir", "putts"];
+    const result = moveStatDown(order, "gir");
+    expect(order).toEqual(["fir", "gir", "putts"]);
+    expect(result).toEqual(["fir", "putts", "gir"]);
   });
 });

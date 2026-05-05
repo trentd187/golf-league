@@ -209,6 +209,68 @@ func TestGetUsers_AvatarURL_RequiresTier2(t *testing.T) {
 	t.Skip("SearchUsers (formerly GetUsers) hits the DB before returning results — full response shape requires Tier 2 (real DB)")
 }
 
+// ─── ScorecardSettings ───────────────────────────────────────────────────────
+
+// TestGetScorecardSettings_NoAuth verifies that a missing userID local returns 401.
+func TestGetScorecardSettings_NoAuth(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/me/scorecard-settings", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_NoAuth verifies that a missing userID local returns 401.
+func TestUpsertScorecardSettings_NoAuth(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodPatch, "/users/me/scorecard-settings", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_BadBody verifies that a non-JSON body returns 400.
+func TestUpsertScorecardSettings_BadBody(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("userID", validUUID)
+		return c.Next()
+	})
+	app.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodPatch, "/users/me/scorecard-settings", nil)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_InvalidScorePosition verifies that a score_position
+// value other than "first" or "last" returns 400 before any DB call.
+func TestUpsertScorecardSettings_InvalidScorePosition(t *testing.T) {
+	app := newUserAppWithAuth(http.MethodPatch,
+		"/users/me/scorecard-settings",
+		handlers.UpsertScorecardSettings(nil))
+
+	resp := doJSON(t, app, http.MethodPatch, "/users/me/scorecard-settings", map[string]any{
+		"score_position":              "invalid",
+		"stat_order":                  []string{"fir", "gir"},
+		"fir_enabled":                 true,
+		"gir_enabled":                 true,
+		"putts_enabled":               true,
+		"first_putt_distance_enabled": true,
+		"putt_distance_made_enabled":  true,
+		"approach_yds_enabled":        true,
+		"tee_shot_club_enabled":       false,
+		"tee_shot_distance_enabled":   false,
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── computeHandicapPair ──────────────────────────────────────────────────────
 // computeHandicapPair is a pure function — all paths are Tier 1 (no DB).
 

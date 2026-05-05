@@ -62,6 +62,8 @@ type ScorecardHoleStat struct {
 	FirstPuttDistance *int    `json:"first_putt_distance"` // feet
 	PuttDistanceMade  *int    `json:"putt_distance_made"`  // feet
 	ApproachYds       *int    `json:"approach_yds"`        // yards; optional
+	TeeShotClub       *string `json:"tee_shot_club"`       // DR | 3W | 5W | 7W | DI | 3H
+	TeeShotDistance   *int    `json:"tee_shot_distance"`   // yards
 }
 
 // ScorecardPlayer is a player in a group with their handicap, all hole scores, and hole stats.
@@ -125,6 +127,11 @@ type UpsertScoresRequest struct {
 	Scores []ScoreInput `json:"scores"`
 }
 
+// validTeeShotClubs is the allowed set for the tee_shot_club enum.
+var validTeeShotClubs = map[string]bool{
+	"DR": true, "3W": true, "5W": true, "7W": true, "DI": true, "3H": true,
+}
+
 // HoleStatInput is a single hole's advanced stats for one player.
 type HoleStatInput struct {
 	HoleNumber       int     `json:"hole_number"`
@@ -136,6 +143,8 @@ type HoleStatInput struct {
 	FirstPuttDist    *int    `json:"first_putt_distance"` // feet
 	PuttDistMade     *int    `json:"putt_distance_made"`  // feet
 	ApproachYds      *int    `json:"approach_yds"`        // yards; optional
+	TeeShotClub      *string `json:"tee_shot_club"`       // DR | 3W | 5W | 7W | DI | 3H
+	TeeShotDistance  *int    `json:"tee_shot_distance"`   // yards
 }
 
 // UpsertHoleStatsRequest is the JSON body for PUT /rounds/:roundId/players/:roundPlayerId/hole-stats.
@@ -340,6 +349,8 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 						FirstPuttDistance: s.FirstPuttDistance,
 						PuttDistanceMade:  s.PuttDistanceMade,
 						ApproachYds:       s.ApproachYds,
+						TeeShotClub:       s.TeeShotClub,
+						TeeShotDistance:   s.TeeShotDistance,
 					})
 				}
 
@@ -582,6 +593,11 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 					fiber.Map{"error": "fir_miss_direction must be one of: short, left, right, long"},
 				)
 			}
+			if s.TeeShotClub != nil && !validTeeShotClubs[*s.TeeShotClub] {
+				return c.Status(fiber.StatusBadRequest).JSON(
+					fiber.Map{"error": "tee_shot_club must be one of: DR, 3W, 5W, 7W, DI, 3H"},
+				)
+			}
 		}
 
 		userIDStr, _ := c.Locals("userID").(string)
@@ -614,6 +630,8 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 				FirstPuttDistance: s.FirstPuttDist,
 				PuttDistanceMade:  s.PuttDistMade,
 				ApproachYds:       s.ApproachYds,
+				TeeShotClub:       s.TeeShotClub,
+				TeeShotDistance:   s.TeeShotDistance,
 			})
 		}
 
@@ -625,6 +643,7 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 				"gir", "gir_miss_direction",
 				"fir", "fir_miss_direction",
 				"putts", "first_putt_distance", "putt_distance_made", "approach_yds",
+				"tee_shot_club", "tee_shot_distance",
 				"updated_at",
 			}),
 		}).Create(&records)

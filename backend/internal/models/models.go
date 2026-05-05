@@ -260,13 +260,34 @@ type HoleStat struct {
 	// FIR (Fairway in Regulation): true = hit the fairway, false = missed
 	FIR *bool `gorm:"column:fir;type:boolean"`
 	// FIRMissDirection: which side the drive missed
-	FIRMissDirection  *string   `gorm:"column:fir_miss_direction;type:text"`
-	Putts             *int      `gorm:"column:putts;type:int"`
-	FirstPuttDistance *int      `gorm:"column:first_putt_distance;type:int"` // feet
-	PuttDistanceMade  *int      `gorm:"column:putt_distance_made;type:int"`  // feet
-	ApproachYds       *int      `gorm:"column:approach_yds;type:int"`        // yards; optional
-	EnteredAt         time.Time `gorm:"autoCreateTime"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime"`
+	FIRMissDirection  *string `gorm:"column:fir_miss_direction;type:text"`
+	Putts             *int    `gorm:"column:putts;type:int"`
+	FirstPuttDistance *int    `gorm:"column:first_putt_distance;type:int"` // feet
+	PuttDistanceMade  *int    `gorm:"column:putt_distance_made;type:int"`  // feet
+	ApproachYds       *int    `gorm:"column:approach_yds;type:int"`        // yards; optional
+	// TeeShotClub: club used off the tee — constrained enum: DR, 3W, 5W, 7W, DI, 3H
+	TeeShotClub     *string   `gorm:"column:tee_shot_club;type:text"`
+	TeeShotDistance *int      `gorm:"column:tee_shot_distance;type:int"` // yards
+	EnteredAt       time.Time `gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `gorm:"autoUpdateTime"`
+}
+
+// ScorecardSettings stores per-user toggles controlling which supplemental stats are
+// displayed on the active scorecard. One row per user; missing row = server defaults.
+// Existing stats (FIR, GIR, putts, approach) default true to preserve current behaviour.
+type ScorecardSettings struct {
+	UserID                   uuid.UUID `gorm:"type:uuid;primaryKey"`
+	FIREnabled               bool      `gorm:"not null;default:true"`
+	GIREnabled               bool      `gorm:"not null;default:true"`
+	PuttsEnabled             bool      `gorm:"not null;default:true"`
+	FirstPuttDistanceEnabled bool      `gorm:"not null;default:true"`
+	PuttDistanceMadeEnabled  bool      `gorm:"not null;default:true"`
+	ApproachYdsEnabled       bool      `gorm:"not null;default:true"`
+	TeeShotClubEnabled       bool      `gorm:"not null;default:false"`
+	TeeShotDistanceEnabled   bool      `gorm:"not null;default:false"`
+	StatOrder                string    `gorm:"not null;default:'fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance'"`
+	ScorePosition            string    `gorm:"not null;default:'last'"`
+	UpdatedAt                time.Time `gorm:"autoUpdateTime"`
 }
 
 // Group represents a tee-time group — players who tee off together.

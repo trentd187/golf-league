@@ -40,6 +40,28 @@ export function holeRangeTotal(
   return { par: parSum, score: scoredCount > 0 ? scoreSum : null };
 }
 
+// moveStatUp moves `key` one position earlier in `order`. Returns a new array (does
+// not mutate the input). Returns the original reference unchanged if key is first or
+// not found — callers can safely call mutate even on boundary presses.
+export function moveStatUp(order: string[], key: string): string[] {
+  const idx = order.indexOf(key);
+  if (idx <= 0) return order;
+  const next = [...order];
+  [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+  return next;
+}
+
+// moveStatDown moves `key` one position later in `order`. Returns a new array (does
+// not mutate the input). Returns the original reference unchanged if key is last or
+// not found.
+export function moveStatDown(order: string[], key: string): string[] {
+  const idx = order.indexOf(key);
+  if (idx === -1 || idx === order.length - 1) return order;
+  const next = [...order];
+  [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+  return next;
+}
+
 // puttDistanceMirror returns the extra stat field to update when putts = 1.
 // When a player holes a 1-putt, first_putt_distance and putt_distance_made
 // are the same value — whichever field the user edits should be mirrored to the other.

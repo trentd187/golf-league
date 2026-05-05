@@ -228,6 +228,19 @@ func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestUpsertHoleStats_InvalidTeeShotClub verifies that an unrecognised club value returns 400.
+func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nil))
+
+	club := "PW"
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "tee_shot_club": club}}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // TestUpsertHoleStats_NoUserID verifies that a missing auth context returns 401.
 // UUID validation and body validation both pass; the handler then tries to parse
 // c.Locals("userID") which is absent, so uuid.Parse returns an error → 401.

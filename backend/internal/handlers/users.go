@@ -3,18 +3,21 @@
 //
 // Endpoints:
 //
-//	GET    /api/v1/me                    — return the caller's own profile (including role)
-//	GET    /api/v1/users?q=              — search users by name or email (includes is_following)
-//	GET    /api/v1/users/following       — list users the caller follows
-//	GET    /api/v1/users/:userId         — public profile for any user
-//	GET    /api/v1/users/:userId/stats   — computed career stats for any user
-//	POST   /api/v1/users/:userId/follow  — follow a user
-//	DELETE /api/v1/users/:userId/follow  — unfollow a user
+//	GET    /api/v1/me                                — return the caller's own profile (including role)
+//	GET    /api/v1/users?q=                          — search users by name or email (includes is_following)
+//	GET    /api/v1/users/following                   — list users the caller follows
+//	GET    /api/v1/users/me/scorecard-settings       — caller's stat visibility preferences
+//	PATCH  /api/v1/users/me/scorecard-settings       — update stat visibility preferences
+//	GET    /api/v1/users/:userId                     — public profile for any user
+//	GET    /api/v1/users/:userId/stats               — computed career stats for any user
+//	POST   /api/v1/users/:userId/follow              — follow a user
+//	DELETE /api/v1/users/:userId/follow              — unfollow a user
 package handlers
 
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -660,5 +663,143 @@ func GetUserRounds(db *gorm.DB) fiber.Handler {
 			results = []UserRoundRef{}
 		}
 		return c.JSON(results)
+	}
+}
+
+// ─── Scorecard settings ───────────────────────────────────────────────────────
+
+// defaultStatOrder is the canonical stat key sequence used when no row exists
+// or when the client sends an empty stat_order array.
+const defaultStatOrder = "fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance"
+
+// defaultScorecardSettings returns an all-true row for existing stats and all-false
+// for new stats, matching the database column defaults.
+func defaultScorecardSettings() models.ScorecardSettings {
+	return models.ScorecardSettings{
+		FIREnabled:               true,
+		GIREnabled:               true,
+		PuttsEnabled:             true,
+		FirstPuttDistanceEnabled: true,
+		PuttDistanceMadeEnabled:  true,
+		ApproachYdsEnabled:       true,
+		TeeShotClubEnabled:       false,
+		TeeShotDistanceEnabled:   false,
+		StatOrder:                defaultStatOrder,
+		ScorePosition:            "last",
+	}
+}
+
+// ScorecardSettingsResponse is the JSON shape for GET/PATCH scorecard-settings.
+// StatOrder is stored as a comma-separated string in the DB but exposed as a JSON array.
+type ScorecardSettingsResponse struct {
+	FIREnabled               bool     `json:"fir_enabled"`
+	GIREnabled               bool     `json:"gir_enabled"`
+	PuttsEnabled             bool     `json:"putts_enabled"`
+	FirstPuttDistanceEnabled bool     `json:"first_putt_distance_enabled"`
+	PuttDistanceMadeEnabled  bool     `json:"putt_distance_made_enabled"`
+	ApproachYdsEnabled       bool     `json:"approach_yds_enabled"`
+	TeeShotClubEnabled       bool     `json:"tee_shot_club_enabled"`
+	TeeShotDistanceEnabled   bool     `json:"tee_shot_distance_enabled"`
+	StatOrder                []string `json:"stat_order"`
+	ScorePosition            string   `json:"score_position"`
+}
+
+// toSettingsResponse converts a ScorecardSettings model row to the JSON response shape.
+// stat_order is stored as a comma-separated string in the DB; we split it for the client.
+func toSettingsResponse(row models.ScorecardSettings) ScorecardSettingsResponse {
+	order := strings.Split(row.StatOrder, ",")
+	// Guard against an empty or blank column value — fall back to canonical order.
+	if len(order) == 0 || (len(order) == 1 && order[0] == "") {
+		order = strings.Split(defaultStatOrder, ",")
+	}
+	return ScorecardSettingsResponse{
+		FIREnabled:               row.FIREnabled,
+		GIREnabled:               row.GIREnabled,
+		PuttsEnabled:             row.PuttsEnabled,
+		FirstPuttDistanceEnabled: row.FirstPuttDistanceEnabled,
+		PuttDistanceMadeEnabled:  row.PuttDistanceMadeEnabled,
+		ApproachYdsEnabled:       row.ApproachYdsEnabled,
+		TeeShotClubEnabled:       row.TeeShotClubEnabled,
+		TeeShotDistanceEnabled:   row.TeeShotDistanceEnabled,
+		StatOrder:                order,
+		ScorePosition:            row.ScorePosition,
+	}
+}
+
+// GetScorecardSettings returns a handler for GET /api/v1/users/me/scorecard-settings.
+// Returns the caller's stat visibility preferences. If no row exists, returns defaults
+// (existing stats enabled, new stats disabled) without creating a row.
+func GetScorecardSettings(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, ok := c.Locals("userID").(string)
+		if !ok || callerIDStr == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		callerID, err := uuid.Parse(callerIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		var row models.ScorecardSettings
+		if err := db.First(&row, "user_id = ?", callerID).Error; err != nil {
+			// No row yet — return defaults without persisting anything.
+			return c.JSON(toSettingsResponse(defaultScorecardSettings()))
+		}
+
+		return c.JSON(toSettingsResponse(row))
+	}
+}
+
+// UpsertScorecardSettings returns a handler for PATCH /api/v1/users/me/scorecard-settings.
+// Creates or replaces the caller's scorecard settings row.
+func UpsertScorecardSettings(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, ok := c.Locals("userID").(string)
+		if !ok || callerIDStr == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		callerID, err := uuid.Parse(callerIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		var body ScorecardSettingsResponse
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		// Treat omitted score_position as "last" for backward compatibility with
+		// older clients that don't send the field.
+		if body.ScorePosition == "" {
+			body.ScorePosition = "last"
+		}
+		if body.ScorePosition != "first" && body.ScorePosition != "last" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "score_position must be 'first' or 'last'"})
+		}
+		// Fall back to canonical order when the client omits or empties stat_order.
+		if len(body.StatOrder) == 0 {
+			body.StatOrder = strings.Split(defaultStatOrder, ",")
+		}
+
+		row := models.ScorecardSettings{
+			UserID:                   callerID,
+			FIREnabled:               body.FIREnabled,
+			GIREnabled:               body.GIREnabled,
+			PuttsEnabled:             body.PuttsEnabled,
+			FirstPuttDistanceEnabled: body.FirstPuttDistanceEnabled,
+			PuttDistanceMadeEnabled:  body.PuttDistanceMadeEnabled,
+			ApproachYdsEnabled:       body.ApproachYdsEnabled,
+			TeeShotClubEnabled:       body.TeeShotClubEnabled,
+			TeeShotDistanceEnabled:   body.TeeShotDistanceEnabled,
+			StatOrder:                strings.Join(body.StatOrder, ","),
+			ScorePosition:            body.ScorePosition,
+		}
+
+		// Save upserts via PK — inserts if missing, replaces if present.
+		if err := db.Save(&row).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save settings"})
+		}
+
+		return c.JSON(toSettingsResponse(row))
 	}
 }

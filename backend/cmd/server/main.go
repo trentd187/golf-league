@@ -157,9 +157,11 @@ func main() {
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(db, golfAPI))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
-	// doesn't treat "following" as a userId value.
+	// doesn't treat "following" or "me" as a userId value.
 	api.Get("/me", handlers.GetMe(db))
 	api.Get("/users/following", handlers.GetFollowing(db))
+	api.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(db))
+	api.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(db))
 	api.Get("/users/:userId", handlers.GetUserProfile(db))
 	api.Get("/users/:userId/stats", handlers.GetUserStats(db))
 	api.Get("/users/:userId/rounds", handlers.GetUserRounds(db))

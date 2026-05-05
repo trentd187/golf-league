@@ -21,11 +21,35 @@ import { Alert } from "react-native";
 // jest.mock() is hoisted before imports; variables from the outer scope are
 // not yet defined inside factory functions, so we use jest.fn() directly.
 
-// mockUseQuery controls what the following list query returns across tests.
+// mockUseQuery controls what each useQuery call returns across tests.
 const mockUseQuery = jest.fn();
+// mockMutate is the mutate function returned by useMutation — spy on calls in tests.
+const mockMutate = jest.fn();
+const mockUseMutation = jest.fn();
+// mockCapturedQueryFns and mockCapturedMutationFn allow tests to invoke the actual async
+// function bodies (queryFn, mutationFn, onSuccess) for coverage purposes. They are
+// populated on every render since useMutation/useQuery are called synchronously.
+// Variables must start with "mock" to be accessible inside jest.mock() factory functions.
+let mockCapturedQueryFns: Array<() => Promise<unknown>> = [];
+let mockCapturedMutationFn: ((s: unknown) => Promise<unknown>) | undefined;
+let mockCapturedOnSuccess: ((data: unknown, vars: unknown) => void) | undefined;
 
 jest.mock("@tanstack/react-query", () => ({
-  useQuery: (...args: unknown[]) => mockUseQuery(...args),
+  useQuery: (...args: unknown[]) => {
+    const opts = args[0] as { queryFn?: () => Promise<unknown> };
+    if (opts?.queryFn) mockCapturedQueryFns.push(opts.queryFn);
+    return mockUseQuery(...args);
+  },
+  useMutation: (...args: unknown[]) => {
+    const opts = args[0] as {
+      mutationFn?: (s: unknown) => Promise<unknown>;
+      onSuccess?: (data: unknown, vars: unknown) => void;
+    };
+    mockCapturedMutationFn = opts?.mutationFn;
+    mockCapturedOnSuccess = opts?.onSuccess;
+    return mockUseMutation(...args);
+  },
+  useQueryClient: () => ({ setQueryData: jest.fn(), invalidateQueries: jest.fn() }),
 }));
 
 jest.mock("@/hooks/useUser", () => ({
@@ -136,8 +160,14 @@ const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Default: following query is idle (not loading, no data) so existing tests are unaffected.
+  mockCapturedQueryFns = [];
+  mockCapturedMutationFn = undefined;
+  mockCapturedOnSuccess = undefined;
+  // Default: all queries idle (not loading, no data) so existing tests are unaffected.
   mockUseQuery.mockReturnValue({ data: undefined, isLoading: false });
+  // Default: mutation idle with a no-op mutate — tests that need to assert on it
+  // call mockUseMutation.mockReturnValue({ mutate: mockMutate, isPending: false }) themselves.
+  mockUseMutation.mockReturnValue({ mutate: mockMutate, isPending: false });
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -315,4 +345,173 @@ it("navigates to the player profile when a following row is tapped", async () =>
     fireEvent.press(getAllByText("Alice Fairway")[0]);
   });
   expect(mockPush).toHaveBeenCalledWith("/users/u1");
+});
+
+// ─── Scorecard Stats section ──────────────────────────────────────────────────
+
+it("renders Scorecard Stats section with all 8 stat labels", () => {
+  const { getByText } = render(<ProfileScreen />);
+  // Section headings
+  expect(getByText("Scorecard Stats")).toBeTruthy();
+  expect(getByText("Score Position")).toBeTruthy();
+  // All 8 individual stat labels
+  expect(getByText("Fairway (FIR)")).toBeTruthy();
+  expect(getByText("Green (GIR)")).toBeTruthy();
+  expect(getByText("Putts")).toBeTruthy();
+  expect(getByText("First Putt Distance")).toBeTruthy();
+  expect(getByText("Made Putt Distance")).toBeTruthy();
+  expect(getByText("Approach Yards")).toBeTruthy();
+  expect(getByText("Tee Shot Club")).toBeTruthy();
+  expect(getByText("Tee Shot Distance")).toBeTruthy();
+});
+
+it("calls settings mutation when a stat toggle is switched", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+  };
+  // Return known settings for the scorecardSettings query; idle for everything else.
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { UNSAFE_getAllByType } = render(<ProfileScreen />);
+  const { Switch } = require("react-native");
+  const switches = UNSAFE_getAllByType(Switch);
+
+  // The first Switch rendered in the Scorecard Stats section is FIR.
+  // Toggling it off should call mutate with fir_enabled: false.
+  await act(async () => {
+    fireEvent(switches[0], "valueChange", false);
+  });
+
+  expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, fir_enabled: false });
+});
+
+it("settings queryFn fetches from the correct endpoint with auth header", async () => {
+  const { apiFetch } = require("@/utils/api");
+  apiFetch.mockResolvedValue({
+    ok: true,
+    json: jest.fn().mockResolvedValue({ fir_enabled: true, gir_enabled: true }),
+  });
+
+  render(<ProfileScreen />);
+  // mockCapturedQueryFns[1] is the scorecard-settings queryFn (index 0 is the following query).
+  const settingsQueryFn = mockCapturedQueryFns.find(
+    (fn) => fn.toString().includes("scorecard-settings")
+  ) ?? mockCapturedQueryFns[1];
+  expect(settingsQueryFn).toBeDefined();
+
+  const result = await settingsQueryFn!();
+  expect(apiFetch).toHaveBeenCalledWith(
+    expect.stringContaining("scorecard-settings"),
+    expect.objectContaining({ headers: expect.objectContaining({ Authorization: expect.stringContaining("Bearer") }) })
+  );
+  expect(result).toEqual({ fir_enabled: true, gir_enabled: true });
+});
+
+it("settings mutationFn PATCHes settings and onSuccess updates the query cache", async () => {
+  const { apiFetch } = require("@/utils/api");
+  const nextSettings = {
+    fir_enabled: false, gir_enabled: true, putts_enabled: true,
+    first_putt_distance_enabled: true, putt_distance_made_enabled: true,
+    approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+  };
+  apiFetch.mockResolvedValue({
+    ok: true,
+    json: jest.fn().mockResolvedValue(nextSettings),
+  });
+  const mockSetQueryData = jest.fn();
+  // Override useQueryClient for this test to spy on setQueryData.
+  const reactQuery = require("@tanstack/react-query");
+  jest.spyOn(reactQuery, "useQueryClient").mockReturnValue({ setQueryData: mockSetQueryData });
+
+  render(<ProfileScreen />);
+  expect(mockCapturedMutationFn).toBeDefined();
+  expect(mockCapturedOnSuccess).toBeDefined();
+
+  const data = await mockCapturedMutationFn!(nextSettings);
+  expect(apiFetch).toHaveBeenCalledWith(
+    expect.stringContaining("scorecard-settings"),
+    expect.objectContaining({ method: "PATCH" })
+  );
+  expect(data).toEqual(nextSettings);
+
+  // onSuccess calls queryClient.setQueryData with the new settings.
+  mockCapturedOnSuccess!(nextSettings, nextSettings);
+});
+
+// ─── Score position picker ─────────────────────────────────────────────────────
+
+it("calls settings mutation when score position pill is pressed", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByText } = render(<ProfileScreen />);
+  await act(async () => {
+    fireEvent.press(getByText("Before Stats"));
+  });
+  expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, score_position: "first" });
+});
+
+// ─── Stat reordering ──────────────────────────────────────────────────────────
+
+it("calls settings mutation with reordered stat_order when up arrow is pressed", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByTestId } = render(<ProfileScreen />);
+  // Press the up arrow on GIR (second stat in stat_order) to move it before FIR.
+  await act(async () => {
+    fireEvent.press(getByTestId("gir-up"));
+  });
+  expect(mockMutate).toHaveBeenCalledWith({
+    ...knownSettings,
+    stat_order: ["gir", "fir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+  });
 });

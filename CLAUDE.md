@@ -54,6 +54,33 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 **`paddingBottom` for scrollable forms with inputs near the bottom:** use at least 320 so `scrollToEnd` has room to move the focused input above the keyboard on both platforms.
 
+**Chaining keyboard focus between TextInputs without a reload:** `blurOnSubmit` defaults to `true`, which dismisses the keyboard on Enter before `.focus()` on the next field re-opens it — visible as a jarring reload. Use this pattern instead:
+```tsx
+const focusingRef = useRef(false);
+
+// On each TextInput that chains to a next field:
+blurOnSubmit={nextTarget === null}   // false = keep keyboard up when there's a next field
+returnKeyType={nextTarget !== null ? "next" : "done"}
+onSubmitEditing={() => {
+  if (nextTarget !== null) {
+    focusingRef.current = true;      // suppress onBlur's scroll-to-top
+    nextInputRef.current?.focus();
+  }
+}}
+onFocus={() => {
+  // scroll-to-end for bottom inputs (150 ms delay)
+  setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
+}}
+onBlur={() => {
+  if (!focusingRef.current) {
+    // keyboard actually dismissed — reset scroll
+    setTimeout(() => scrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+  }
+  focusingRef.current = false;
+}}
+```
+See `scorecard/[roundId].tsx` numeric stat → score chaining for a full example.
+
 **Platform-split rendering** (e.g. Android dialog vs iOS modal sheet for date pickers) is intentional and correct — just ensure both branches are complete and tested.
 
 ---

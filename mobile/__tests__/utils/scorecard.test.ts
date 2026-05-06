@@ -1,7 +1,7 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
 
 // ─── girScoreFromPutts ────────────────────────────────────────────────────────
 
@@ -156,5 +156,63 @@ describe("moveStatDown", () => {
     const result = moveStatDown(order, "gir");
     expect(order).toEqual(["fir", "gir", "putts"]);
     expect(result).toEqual(["fir", "putts", "gir"]);
+  });
+});
+
+// ─── numericStatFocusNext ─────────────────────────────────────────────────────
+
+describe("numericStatFocusNext", () => {
+  it("returns next index when not the last stat (score position irrelevant)", () => {
+    expect(numericStatFocusNext(0, 3, "last")).toBe(1);
+    expect(numericStatFocusNext(1, 3, "last")).toBe(2);
+    expect(numericStatFocusNext(0, 3, "first")).toBe(1);
+  });
+
+  it("returns 'score' when last stat and score_position is 'last'", () => {
+    expect(numericStatFocusNext(2, 3, "last")).toBe("score");
+  });
+
+  it("returns 'score' when the only stat and score_position is 'last'", () => {
+    expect(numericStatFocusNext(0, 1, "last")).toBe("score");
+  });
+
+  it("returns null when last stat and score_position is 'first' (score already above)", () => {
+    expect(numericStatFocusNext(2, 3, "first")).toBeNull();
+  });
+
+  it("returns null when the only stat and score_position is 'first'", () => {
+    expect(numericStatFocusNext(0, 1, "first")).toBeNull();
+  });
+
+  it("handles two stats: first chains to second regardless of score position", () => {
+    expect(numericStatFocusNext(0, 2, "last")).toBe(1);
+    expect(numericStatFocusNext(0, 2, "first")).toBe(1);
+  });
+
+  it("handles two stats: second chains to score when score is last", () => {
+    expect(numericStatFocusNext(1, 2, "last")).toBe("score");
+  });
+
+  it("handles two stats: second dismisses when score is first", () => {
+    expect(numericStatFocusNext(1, 2, "first")).toBeNull();
+  });
+});
+
+// ─── scoreFocusNext ───────────────────────────────────────────────────────────
+
+describe("scoreFocusNext", () => {
+  it("returns 0 (first stat index) when score is first and there are numeric stats", () => {
+    expect(scoreFocusNext("first", 3)).toBe(0);
+    expect(scoreFocusNext("first", 1)).toBe(0);
+  });
+
+  it("returns null when score is first but there are no numeric stats", () => {
+    expect(scoreFocusNext("first", 0)).toBeNull();
+  });
+
+  it("returns null when score is last (score is the final input — keyboard dismisses)", () => {
+    expect(scoreFocusNext("last", 3)).toBeNull();
+    expect(scoreFocusNext("last", 1)).toBeNull();
+    expect(scoreFocusNext("last", 0)).toBeNull();
   });
 });

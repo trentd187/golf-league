@@ -62,6 +62,31 @@ export function moveStatDown(order: string[], key: string): string[] {
   return next;
 }
 
+// numericStatFocusNext returns what the return-key should focus when the user
+// presses Enter on a numeric stat TextInput at position numIdx.
+//   - Returns the next stat index when one exists.
+//   - Returns "score" when this is the last stat and score_position is "last"
+//     (score input comes after the stats).
+//   - Returns null to dismiss the keyboard (last stat, score comes first).
+export function numericStatFocusNext(
+  numIdx: number,
+  totalNumericStats: number,
+  scorePosition: "first" | "last",
+): number | "score" | null {
+  if (numIdx < totalNumericStats - 1) return numIdx + 1;
+  return scorePosition === "last" ? "score" : null;
+}
+
+// scoreFocusNext returns the index of the first stat input to focus when the user
+// presses Enter on the score TextInput, or null to dismiss the keyboard.
+// Focus only chains forward when score_position is "first" and numeric stats exist.
+export function scoreFocusNext(
+  scorePosition: "first" | "last",
+  totalNumericStats: number,
+): number | null {
+  return scorePosition === "first" && totalNumericStats > 0 ? 0 : null;
+}
+
 // puttDistanceMirror returns the extra stat field to update when putts = 1.
 // When a player holes a 1-putt, first_putt_distance and putt_distance_made
 // are the same value — whichever field the user edits should be mirrored to the other.

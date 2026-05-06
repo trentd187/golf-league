@@ -39,7 +39,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import type { ComponentProps } from "react";
@@ -346,6 +346,11 @@ export default function ScorecardScreen() {
   const inputRefs      = useRef<Map<string, TextInput | null>>(new Map());
   // statsInputRefs: individual view numeric stat fields, indexed by field position (0–3).
   const statsInputRefs = useRef<(TextInput | null)[]>([]);
+
+  // scoreInputRef: individual view gross score field — used to chain keyboard focus
+  // from the last numeric stat (score_position "last") or from the score field to the
+  // first stat (score_position "first").
+  const scoreInputRef = useRef<TextInput>(null);
 
   // outerScrollRef: used to programmatically scroll the main ScrollView when
   // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
@@ -1117,14 +1122,24 @@ export default function ScorecardScreen() {
               // renderScoreBlock renders the gross score input + net + HCP strokes row.
               // Defined as a closure so score_position can place it before or after stats
               // without prop drilling the many local variables it references.
-              const renderScoreBlock = () => (
+              const renderScoreBlock = () => {
+                // Determine whether pressing Enter on the score should chain to the first stat.
+                const scoreNextTarget = scoreFocusNext(settings.score_position, numericStatFields.length);
+                return (
                 <View className={`flex-row items-center justify-center gap-8 px-4 py-5 border-t ${t.divider}`}>
                   <View className="items-center gap-1">
                     <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Score</Text>
                     <TextInput
+                      ref={scoreInputRef}
                       className={`w-20 h-14 border-2 rounded-xl text-center text-3xl font-bold ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
                       keyboardType="number-pad"
                       maxLength={2}
+                      returnKeyType={scoreNextTarget !== null ? "next" : "done"}
+                      onSubmitEditing={() => {
+                        if (scoreNextTarget !== null) {
+                          statsInputRefs.current[scoreNextTarget]?.focus();
+                        }
+                      }}
                       value={val}
                       onChangeText={(v) => {
                         setScores((prev) => ({
@@ -1184,7 +1199,8 @@ export default function ScorecardScreen() {
                     </View>
                   )}
                 </View>
-              );
+                );
+              };
 
               return (
                 <View className={`rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
@@ -1323,7 +1339,11 @@ export default function ScorecardScreen() {
                                 maxLength={3}
                                 placeholder="—"
                                 placeholderTextColor={t.colors.tabBarInactive}
-                                returnKeyType={numIdx < numericStatFields.length - 1 ? "next" : "done"}
+                                returnKeyType={
+                                  numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position) !== null
+                                    ? "next"
+                                    : "done"
+                                }
                                 value={holeStat[field] as string}
                                 onChangeText={(v) => {
                                   setStats((prev) => {
@@ -1354,9 +1374,11 @@ export default function ScorecardScreen() {
                                   }
                                 }}
                                 onSubmitEditing={() => {
-                                  // Focus the next stat field in order; last field dismisses keyboard.
-                                  if (numIdx < numericStatFields.length - 1) {
-                                    statsInputRefs.current[numIdx + 1]?.focus();
+                                  const target = numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position);
+                                  if (typeof target === "number") {
+                                    statsInputRefs.current[target]?.focus();
+                                  } else if (target === "score") {
+                                    scoreInputRef.current?.focus();
                                   }
                                 }}
                                 onFocus={() => {

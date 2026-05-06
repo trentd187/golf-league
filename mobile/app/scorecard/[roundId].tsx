@@ -352,6 +352,11 @@ export default function ScorecardScreen() {
   // first stat (score_position "first").
   const scoreInputRef = useRef<TextInput>(null);
 
+  // focusingRef: set to true immediately before programmatically calling .focus()
+  // on the next TextInput in the chain so onBlur handlers on the departing field
+  // know not to scroll the view back to the top (the keyboard is staying up).
+  const focusingRef = useRef(false);
+
   // outerScrollRef: used to programmatically scroll the main ScrollView when
   // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
   // are not hidden behind the keyboard.
@@ -1134,9 +1139,22 @@ export default function ScorecardScreen() {
                       className={`w-20 h-14 border-2 rounded-xl text-center text-3xl font-bold ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
                       keyboardType="number-pad"
                       maxLength={2}
+                      // blurOnSubmit=false keeps the keyboard up when chaining to the
+                      // first stat (score_position "first"); true lets Enter dismiss
+                      // the keyboard when score is the last input.
+                      blurOnSubmit={scoreNextTarget === null}
                       returnKeyType={scoreNextTarget !== null ? "next" : "done"}
+                      onFocus={() => {
+                        // When score is at the bottom (after stats), scroll to show it.
+                        // focusingRef suppresses the departing stat's scroll-to-top so
+                        // this 150 ms call is the only scroll that runs.
+                        if (settings.score_position !== "first") {
+                          setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
+                        }
+                      }}
                       onSubmitEditing={() => {
                         if (scoreNextTarget !== null) {
+                          focusingRef.current = true;
                           statsInputRefs.current[scoreNextTarget]?.focus();
                         }
                       }}
@@ -1324,8 +1342,11 @@ export default function ScorecardScreen() {
                       case "tee_shot_distance": {
                         const field = statKey as NumericStatField;
                         if (!(settings[`${field}_enabled` as keyof ScorecardSettings] as boolean)) return null;
-                        const numIdx = numericStatFields.findIndex((f) => f.field === field);
+                        const numIdx   = numericStatFields.findIndex((f) => f.field === field);
                         const { label, unit } = NUMERIC_STAT_META[field];
+                        // focusNext drives blurOnSubmit, returnKeyType, and onSubmitEditing
+                        // so all three stay consistent from a single computation.
+                        const focusNext = numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position);
                         return (
                           <View key={field} className={`px-4 py-3 border-b ${t.divider}`}>
                             <View className="flex-row items-center justify-between">
@@ -1339,11 +1360,17 @@ export default function ScorecardScreen() {
                                 maxLength={3}
                                 placeholder="—"
                                 placeholderTextColor={t.colors.tabBarInactive}
-                                returnKeyType={
-                                  numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position) !== null
-                                    ? "next"
-                                    : "done"
-                                }
+                                blurOnSubmit={focusNext === null}
+                                returnKeyType={focusNext !== null ? "next" : "done"}
+                                onSubmitEditing={() => {
+                                  if (typeof focusNext === "number") {
+                                    focusingRef.current = true;
+                                    statsInputRefs.current[focusNext]?.focus();
+                                  } else if (focusNext === "score") {
+                                    focusingRef.current = true;
+                                    scoreInputRef.current?.focus();
+                                  }
+                                }}
                                 value={holeStat[field] as string}
                                 onChangeText={(v) => {
                                   setStats((prev) => {
@@ -1373,14 +1400,6 @@ export default function ScorecardScreen() {
                                     }
                                   }
                                 }}
-                                onSubmitEditing={() => {
-                                  const target = numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position);
-                                  if (typeof target === "number") {
-                                    statsInputRefs.current[target]?.focus();
-                                  } else if (target === "score") {
-                                    scoreInputRef.current?.focus();
-                                  }
-                                }}
                                 onFocus={() => {
                                   // Delay lets the keyboard animation start before we scroll,
                                   // ensuring the inset has been applied and there is room to move.
@@ -1388,9 +1407,13 @@ export default function ScorecardScreen() {
                                 }}
                                 onBlur={() => {
                                   autoSaveStats(rpId, currentHole, 400);
-                                  // Return the view to the top so the blank keyboard inset space
-                                  // doesn't linger after the keyboard dismisses.
-                                  setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+                                  // Only scroll back to the top when the keyboard is actually
+                                  // dismissing. When chaining to the next field, focusingRef is
+                                  // true and the keyboard stays up, so no scroll-to-top is needed.
+                                  if (!focusingRef.current) {
+                                    setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+                                  }
+                                  focusingRef.current = false;
                                 }}
                               />
                             </View>

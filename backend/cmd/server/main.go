@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -37,7 +38,7 @@ func main() {
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
 		log.Fatal("Failed to run migrations:", err)
 	}
-	log.Println("Migrations applied successfully")
+	fmt.Println("Migrations applied successfully")
 
 	// NewHub + go hub.Run() starts the WebSocket broadcast loop as a background goroutine
 	// so it doesn't block the rest of startup.

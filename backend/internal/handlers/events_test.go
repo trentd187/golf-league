@@ -90,6 +90,8 @@ func TestGetEvents_MissingAuth_Unauthorized(t *testing.T) {
 }
 
 // ─── CreateEvent ──────────────────────────────────────────────────────────────
+// CreateEvent is open to any authenticated user (no RequireRole gate).
+// Role-gate enforcement is handled by RequireRole middleware (tested in roles_test.go).
 
 func TestCreateEvent_MissingAuth_Unauthorized(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPost, "/events", handlers.CreateEvent(nil))
@@ -168,6 +170,37 @@ func TestUpdateEvent_InvalidEventID_BadRequest(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPatch, "/events/:id", handlers.UpdateEvent(nil))
 	resp, err := app.Test(httptest.NewRequest(http.MethodPatch, "/events/not-a-uuid", nil), -1)
 	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpdateEvent_HandicapAllowanceTooHigh verifies that a handicap_allowance > 100
+// is rejected before any DB call. Body is parsed before the DB load so this
+// is reachable with a nil DB.
+func TestUpdateEvent_HandicapAllowanceTooHigh_BadRequest(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id", handlers.UpdateEvent(nil))
+	resp := doJSON(t, app, http.MethodPatch, "/events/"+validUUID, map[string]any{
+		"handicap_allowance": 150.0,
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpdateEvent_HandicapAllowanceNegative verifies that a negative handicap_allowance
+// is rejected before any DB call.
+func TestUpdateEvent_HandicapAllowanceNegative_BadRequest(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id", handlers.UpdateEvent(nil))
+	resp := doJSON(t, app, http.MethodPatch, "/events/"+validUUID, map[string]any{
+		"handicap_allowance": -10.0,
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestCreateEvent_HandicapAllowanceTooHigh verifies that a handicap_allowance > 100
+// on event creation is rejected before any DB call.
+func TestCreateEvent_HandicapAllowanceTooHigh_BadRequest(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, "/events", handlers.CreateEvent(nil))
+	resp := doJSON(t, app, http.MethodPost, "/events", map[string]any{
+		"name": "Test League", "event_type": "league", "handicap_allowance": 110.0,
+	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 

@@ -33,8 +33,8 @@ import type { CourseDetail, TeeDetail } from "@/types/courses";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function isAdminOrManager(role: unknown): boolean {
-  return role === "admin" || role === "manager";
+function isAdmin(role: unknown): boolean {
+  return role === "admin";
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ export default function CourseDetailScreen() {
   const [editCity,  setEditCity]  = useState("");
   const [editState, setEditState] = useState("");
 
-  const canEdit = isAdminOrManager(me?.role);
+  const canEdit = isAdmin(me?.role);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {

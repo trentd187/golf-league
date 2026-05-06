@@ -29,8 +29,9 @@ import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
+import HandicapSection from "@/components/HandicapSection";
 import { buildMyStats } from "@/utils/stats";
-import type { Scorecard } from "@/types/scorecard";
+import type { Scorecard, UserHandicapStats } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,20 @@ export default function UserProfileScreen() {
   });
 
   // Fetch the user's last 20 completed round IDs so we can load their scorecards.
+  // Handicap index and anti-handicap — always last 20 rounds, computed server-side.
+  const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
+    queryKey: ["userStats", userId],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!userId,
+  });
+
   const { data: roundRefs, isLoading: roundsLoading } = useQuery<UserRoundRef[]>({
     queryKey: ["user", userId, "rounds"],
     queryFn: async () => {
@@ -130,7 +145,36 @@ export default function UserProfileScreen() {
       queryClient.setQueryData<UserProfile>(["user", userId], (prev) =>
         prev ? { ...prev, is_following: !following } : prev
       );
-      // Keep the profile tab's following list in sync.
+      // Optimistically update the profile tab's cached following list so the change
+      // is visible immediately. invalidateQueries alone only refetches if the query
+      // has an active observer at this moment, which is not guaranteed when navigating
+      // outside the tab group.
+      type FollowingUser = { id: string; display_name: string; avatar_url: string | null; rounds_played: number };
+      if (following) {
+        // Unfollowed — remove from list.
+        queryClient.setQueryData<FollowingUser[]>(["users", "following"], (prev) =>
+          prev ? prev.filter((u) => u.id !== userId) : prev
+        );
+      } else {
+        // Followed — append to list using cached profile data.
+        const profileData = queryClient.getQueryData<UserProfile>(["user", userId]);
+        if (profileData) {
+          queryClient.setQueryData<FollowingUser[]>(["users", "following"], (prev) => {
+            if (!prev) return prev;
+            if (prev.some((u) => u.id === userId)) return prev;
+            return [
+              ...prev,
+              {
+                id: userId,
+                display_name: profileData.display_name,
+                avatar_url: profileData.avatar_url,
+                rounds_played: profileData.rounds_played,
+              },
+            ];
+          });
+        }
+      }
+      // Invalidate so the list syncs with the server on next active fetch.
       queryClient.invalidateQueries({ queryKey: ["users", "following"] });
     },
   });
@@ -236,6 +280,11 @@ export default function UserProfileScreen() {
               Stats · Last {stats.rounds} round{stats.rounds === 1 ? "" : "s"}
             </Text>
 
+            <HandicapSection
+              handicapIndex={hcStats?.handicap_index}
+              antiHandicap={hcStats?.anti_handicap}
+              loading={hcLoading}
+            />
             <ScoringCard
               avgGrossScore={stats.avgGrossScore}
               lowScore={stats.lowScore}

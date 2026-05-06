@@ -210,7 +210,7 @@ export default function CoursePickerModal({
     };
     // getToken is intentionally excluded: it is called inside an async callback,
     // not synchronously in the effect body. Including it would cause an infinite
-    // loop because Clerk creates a new function reference on every render.
+    // loop because useAuth creates a new function reference on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, locationQuery]);
 

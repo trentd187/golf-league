@@ -1,5 +1,5 @@
 // hooks/useUser.ts
-// Replaces Clerk's useUser hook. Returns the current Supabase user object and a loading flag.
+// Returns the current Supabase user object and a loading flag.
 // The user object comes from supabase.auth and updates reactively via onAuthStateChange.
 
 import { useEffect, useState } from 'react';

@@ -3,17 +3,21 @@
 //
 // Endpoints:
 //
-//	GET    /api/v1/me                    — return the caller's own profile (including role)
-//	GET    /api/v1/users?q=              — search users by name or email (includes is_following)
-//	GET    /api/v1/users/following       — list users the caller follows
-//	GET    /api/v1/users/:userId         — public profile for any user
-//	GET    /api/v1/users/:userId/stats   — computed career stats for any user
-//	POST   /api/v1/users/:userId/follow  — follow a user
-//	DELETE /api/v1/users/:userId/follow  — unfollow a user
+//	GET    /api/v1/me                                — return the caller's own profile (including role)
+//	GET    /api/v1/users?q=                          — search users by name or email (includes is_following)
+//	GET    /api/v1/users/following                   — list users the caller follows
+//	GET    /api/v1/users/me/scorecard-settings       — caller's stat visibility preferences
+//	PATCH  /api/v1/users/me/scorecard-settings       — update stat visibility preferences
+//	GET    /api/v1/users/:userId                     — public profile for any user
+//	GET    /api/v1/users/:userId/stats               — computed career stats for any user
+//	POST   /api/v1/users/:userId/follow              — follow a user
+//	DELETE /api/v1/users/:userId/follow              — unfollow a user
 package handlers
 
 import (
 	"math"
+	"sort"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -105,6 +109,41 @@ type UserStatsResponse struct {
 	AvgPutts         *float64 `json:"avg_putts_per_round"`
 	RoundsCounted    int      `json:"rounds_counted"`
 	Filter           string   `json:"filter"`
+	// HandicapIndex and AntiHandicap are always computed from the last 20 rounds
+	// regardless of the filter param. Nil when fewer than 3 rounds have tee data.
+	HandicapIndex *float64 `json:"handicap_index"`
+	AntiHandicap  *float64 `json:"anti_handicap"`
+}
+
+// computeHandicapPair returns (handicapIndex, antiHandicap) from a slice of score
+// differentials. Requires at least 3; returns (nil, nil) with fewer. Uses min(n, 8)
+// differentials from each end of the sorted slice:
+//
+//	handicapIndex = avg of 8 lowest × 0.96 (WHS formula, rounded to 1 decimal)
+//	antiHandicap  = avg of 8 highest       (rounded to 1 decimal)
+func computeHandicapPair(diffs []float64) (handicapIndex, antiHandicap *float64) {
+	n := len(diffs)
+	if n < 3 {
+		return nil, nil
+	}
+	sorted := make([]float64, n)
+	copy(sorted, diffs)
+	sort.Float64s(sorted)
+
+	use := n
+	if use > 8 {
+		use = 8
+	}
+
+	var bestSum, worstSum float64
+	for i := 0; i < use; i++ {
+		bestSum += sorted[i]      // lowest differentials = best rounds
+		worstSum += sorted[n-1-i] // highest differentials = worst rounds
+	}
+
+	hi := math.Round(bestSum/float64(use)*0.96*10) / 10
+	ah := math.Round(worstSum/float64(use)*10) / 10
+	return &hi, &ah
 }
 
 // FollowingUserResponse is one entry returned by GET /api/v1/users/following.
@@ -513,6 +552,67 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 			avgPutts = &v
 		}
 
+		// Step 7: Compute handicap index and anti-handicap from the last 20 completed
+		// rounds, always independent of the filter param. Each differential requires
+		// course_rating and slope_rating from the tee used in that round.
+		type hcRound struct {
+			RoundPlayerID uuid.UUID
+			CourseRating  *float64
+			SlopeRating   *int
+		}
+		var hcRows []hcRound
+		db.Raw(`
+			SELECT rp.id AS round_player_id, t.course_rating, t.slope_rating
+			FROM round_players rp
+			JOIN event_players ep ON ep.id = rp.event_player_id
+			JOIN rounds r         ON r.id  = rp.round_id
+			LEFT JOIN tees t      ON t.id  = r.default_tee_id
+			WHERE ep.user_id = ? AND r.status = ?
+			ORDER BY rp.created_at DESC
+			LIMIT 20
+		`, targetID, models.RoundStatusCompleted).Scan(&hcRows)
+
+		// Collect gross totals for these round_players. Reuse scoreRow type defined above.
+		hcRPIDs := make([]uuid.UUID, 0, len(hcRows))
+		hcTeeByRP := make(map[uuid.UUID]struct {
+			Rating float64
+			Slope  int
+		})
+		for _, r := range hcRows {
+			if r.CourseRating != nil && r.SlopeRating != nil && *r.SlopeRating > 0 {
+				hcRPIDs = append(hcRPIDs, r.RoundPlayerID)
+				hcTeeByRP[r.RoundPlayerID] = struct {
+					Rating float64
+					Slope  int
+				}{
+					Rating: *r.CourseRating,
+					Slope:  *r.SlopeRating,
+				}
+			}
+		}
+
+		var hcDiffs []float64
+		if len(hcRPIDs) > 0 {
+			var hcScores []scoreRow
+			db.Model(&models.Score{}).
+				Select("round_player_id, hole_number, gross_score").
+				Where("round_player_id IN ?", hcRPIDs).
+				Scan(&hcScores)
+
+			hcTotals := make(map[uuid.UUID]int)
+			for _, s := range hcScores {
+				hcTotals[s.RoundPlayerID] += s.GrossScore
+			}
+			for rpID, gross := range hcTotals {
+				if tee, ok := hcTeeByRP[rpID]; ok {
+					diff := (float64(gross) - tee.Rating) * 113 / float64(tee.Slope)
+					hcDiffs = append(hcDiffs, diff)
+				}
+			}
+		}
+
+		hcIndex, antiHC := computeHandicapPair(hcDiffs)
+
 		return c.JSON(UserStatsResponse{
 			AvgGrossPerRound: avgGross,
 			LowRound:         lowRound,
@@ -527,6 +627,8 @@ func GetUserStats(db *gorm.DB) fiber.Handler {
 			AvgPutts:         avgPutts,
 			RoundsCounted:    roundCount,
 			Filter:           filter,
+			HandicapIndex:    hcIndex,
+			AntiHandicap:     antiHC,
 		})
 	}
 }
@@ -561,5 +663,146 @@ func GetUserRounds(db *gorm.DB) fiber.Handler {
 			results = []UserRoundRef{}
 		}
 		return c.JSON(results)
+	}
+}
+
+// ─── Scorecard settings ───────────────────────────────────────────────────────
+
+// defaultStatOrder is the canonical stat key sequence used when no row exists
+// or when the client sends an empty stat_order array.
+const defaultStatOrder = "fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance"
+
+// defaultScorecardSettings returns an all-true row for existing stats and all-false
+// for new stats, matching the database column defaults.
+func defaultScorecardSettings() models.ScorecardSettings {
+	return models.ScorecardSettings{
+		FIREnabled:               true,
+		GIREnabled:               true,
+		PuttsEnabled:             true,
+		FirstPuttDistanceEnabled: true,
+		PuttDistanceMadeEnabled:  true,
+		ApproachYdsEnabled:       true,
+		TeeShotClubEnabled:       false,
+		TeeShotDistanceEnabled:   false,
+		StatOrder:                defaultStatOrder,
+		ScorePosition:            "last",
+	}
+}
+
+// ScorecardSettingsResponse is the JSON shape for GET/PATCH scorecard-settings.
+// StatOrder is stored as a comma-separated string in the DB but exposed as a JSON array.
+type ScorecardSettingsResponse struct {
+	FIREnabled               bool     `json:"fir_enabled"`
+	GIREnabled               bool     `json:"gir_enabled"`
+	PuttsEnabled             bool     `json:"putts_enabled"`
+	FirstPuttDistanceEnabled bool     `json:"first_putt_distance_enabled"`
+	PuttDistanceMadeEnabled  bool     `json:"putt_distance_made_enabled"`
+	ApproachYdsEnabled       bool     `json:"approach_yds_enabled"`
+	TeeShotClubEnabled       bool     `json:"tee_shot_club_enabled"`
+	TeeShotDistanceEnabled   bool     `json:"tee_shot_distance_enabled"`
+	StatOrder                []string `json:"stat_order"`
+	ScorePosition            string   `json:"score_position"`
+}
+
+// toSettingsResponse converts a ScorecardSettings model row to the JSON response shape.
+// stat_order is stored as a comma-separated string in the DB; we split it for the client.
+func toSettingsResponse(row models.ScorecardSettings) ScorecardSettingsResponse {
+	order := strings.Split(row.StatOrder, ",")
+	// Guard against an empty or blank column value — fall back to canonical order.
+	if len(order) == 0 || (len(order) == 1 && order[0] == "") {
+		order = strings.Split(defaultStatOrder, ",")
+	}
+	return ScorecardSettingsResponse{
+		FIREnabled:               row.FIREnabled,
+		GIREnabled:               row.GIREnabled,
+		PuttsEnabled:             row.PuttsEnabled,
+		FirstPuttDistanceEnabled: row.FirstPuttDistanceEnabled,
+		PuttDistanceMadeEnabled:  row.PuttDistanceMadeEnabled,
+		ApproachYdsEnabled:       row.ApproachYdsEnabled,
+		TeeShotClubEnabled:       row.TeeShotClubEnabled,
+		TeeShotDistanceEnabled:   row.TeeShotDistanceEnabled,
+		StatOrder:                order,
+		ScorePosition:            row.ScorePosition,
+	}
+}
+
+// GetScorecardSettings returns a handler for GET /api/v1/users/me/scorecard-settings.
+// Returns the caller's stat visibility preferences. If no row exists, returns defaults
+// (existing stats enabled, new stats disabled) without creating a row.
+func GetScorecardSettings(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, ok := c.Locals("userID").(string)
+		if !ok || callerIDStr == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		callerID, err := uuid.Parse(callerIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		var row models.ScorecardSettings
+		if err := db.First(&row, "user_id = ?", callerID).Error; err != nil {
+			// No row yet — return defaults without persisting anything.
+			return c.JSON(toSettingsResponse(defaultScorecardSettings()))
+		}
+
+		return c.JSON(toSettingsResponse(row))
+	}
+}
+
+// UpsertScorecardSettings returns a handler for PATCH /api/v1/users/me/scorecard-settings.
+// Creates or replaces the caller's scorecard settings row.
+func UpsertScorecardSettings(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, ok := c.Locals("userID").(string)
+		if !ok || callerIDStr == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		callerID, err := uuid.Parse(callerIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		var body ScorecardSettingsResponse
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		// Treat omitted score_position as "last" for backward compatibility with
+		// older clients that don't send the field.
+		if body.ScorePosition == "" {
+			body.ScorePosition = "last"
+		}
+		if body.ScorePosition != "first" && body.ScorePosition != "last" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "score_position must be 'first' or 'last'"})
+		}
+		// Fall back to canonical order when the client omits or empties stat_order.
+		if len(body.StatOrder) == 0 {
+			body.StatOrder = strings.Split(defaultStatOrder, ",")
+		}
+
+		row := models.ScorecardSettings{
+			UserID:                   callerID,
+			FIREnabled:               body.FIREnabled,
+			GIREnabled:               body.GIREnabled,
+			PuttsEnabled:             body.PuttsEnabled,
+			FirstPuttDistanceEnabled: body.FirstPuttDistanceEnabled,
+			PuttDistanceMadeEnabled:  body.PuttDistanceMadeEnabled,
+			ApproachYdsEnabled:       body.ApproachYdsEnabled,
+			TeeShotClubEnabled:       body.TeeShotClubEnabled,
+			TeeShotDistanceEnabled:   body.TeeShotDistanceEnabled,
+			StatOrder:                strings.Join(body.StatOrder, ","),
+			ScorePosition:            body.ScorePosition,
+		}
+
+		// Save upserts via PK — inserts if missing, replaces if present.
+		if err := db.Save(&row).Error; err != nil {
+			// Store the DB error in error_detail so the HTTPMetrics middleware
+			// includes it in the Loki http.error log for Grafana visibility.
+			c.Locals("error_detail", "scorecard_settings.save: "+err.Error())
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save settings"})
+		}
+
+		return c.JSON(toSettingsResponse(row))
 	}
 }

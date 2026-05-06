@@ -208,3 +208,126 @@ func TestGetUserRounds_InvalidUserID(t *testing.T) {
 func TestGetUsers_AvatarURL_RequiresTier2(t *testing.T) {
 	t.Skip("SearchUsers (formerly GetUsers) hits the DB before returning results — full response shape requires Tier 2 (real DB)")
 }
+
+// ─── ScorecardSettings ───────────────────────────────────────────────────────
+
+// TestGetScorecardSettings_NoAuth verifies that a missing userID local returns 401.
+func TestGetScorecardSettings_NoAuth(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/me/scorecard-settings", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_NoAuth verifies that a missing userID local returns 401.
+func TestUpsertScorecardSettings_NoAuth(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodPatch, "/users/me/scorecard-settings", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_BadBody verifies that a non-JSON body returns 400.
+func TestUpsertScorecardSettings_BadBody(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("userID", validUUID)
+		return c.Next()
+	})
+	app.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(nil))
+
+	req := httptest.NewRequest(http.MethodPatch, "/users/me/scorecard-settings", nil)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertScorecardSettings_InvalidScorePosition verifies that a score_position
+// value other than "first" or "last" returns 400 before any DB call.
+func TestUpsertScorecardSettings_InvalidScorePosition(t *testing.T) {
+	app := newUserAppWithAuth(http.MethodPatch,
+		"/users/me/scorecard-settings",
+		handlers.UpsertScorecardSettings(nil))
+
+	resp := doJSON(t, app, http.MethodPatch, "/users/me/scorecard-settings", map[string]any{
+		"score_position":              "invalid",
+		"stat_order":                  []string{"fir", "gir"},
+		"fir_enabled":                 true,
+		"gir_enabled":                 true,
+		"putts_enabled":               true,
+		"first_putt_distance_enabled": true,
+		"putt_distance_made_enabled":  true,
+		"approach_yds_enabled":        true,
+		"tee_shot_club_enabled":       false,
+		"tee_shot_distance_enabled":   false,
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── computeHandicapPair ──────────────────────────────────────────────────────
+// computeHandicapPair is a pure function — all paths are Tier 1 (no DB).
+
+// TestComputeHandicapPair_NilSlice verifies that a nil input returns (nil, nil).
+func TestComputeHandicapPair_NilSlice(t *testing.T) {
+	hi, ah := handlers.ComputeHandicapPairExported(nil)
+	assert.Nil(t, hi)
+	assert.Nil(t, ah)
+}
+
+// TestComputeHandicapPair_TwoRounds verifies that fewer than 3 differentials
+// returns (nil, nil) — not enough data for a meaningful index.
+func TestComputeHandicapPair_TwoRounds(t *testing.T) {
+	hi, ah := handlers.ComputeHandicapPairExported([]float64{10.0, 12.0})
+	assert.Nil(t, hi)
+	assert.Nil(t, ah)
+}
+
+// TestComputeHandicapPair_ThreeRounds verifies that exactly 3 differentials
+// (the minimum) produces non-nil results and uses all 3 for both hi and ah.
+func TestComputeHandicapPair_ThreeRounds(t *testing.T) {
+	// diffs: [8.0, 12.0, 16.0] sorted → best=8, worst=16 (use=3, all three for both)
+	hi, ah := handlers.ComputeHandicapPairExported([]float64{16.0, 8.0, 12.0})
+	require.NotNil(t, hi)
+	require.NotNil(t, ah)
+	// avg of all 3 = (8+12+16)/3 = 12.0; hi = 12.0×0.96 = 11.52 → rounded to 11.5
+	assert.Equal(t, 11.5, *hi)
+	// ah = same avg 12.0 → 12.0
+	assert.Equal(t, 12.0, *ah)
+}
+
+// TestComputeHandicapPair_EightRounds verifies that exactly 8 differentials
+// uses all 8 for both ends (hi gets lowest 8, ah gets highest 8 — same set).
+func TestComputeHandicapPair_EightRounds(t *testing.T) {
+	diffs := []float64{10, 11, 12, 13, 14, 15, 16, 17}
+	hi, ah := handlers.ComputeHandicapPairExported(diffs)
+	require.NotNil(t, hi)
+	require.NotNil(t, ah)
+	// avg of all 8 = (10+11+…+17)/8 = 108/8 = 13.5; hi = 13.5×0.96 = 12.96 → 13.0
+	assert.Equal(t, 13.0, *hi)
+	// ah = same avg 13.5 → 13.5
+	assert.Equal(t, 13.5, *ah)
+}
+
+// TestComputeHandicapPair_TwentyRounds verifies that with 20 differentials
+// only the best (lowest) 8 are used for hi and worst (highest) 8 for ah.
+func TestComputeHandicapPair_TwentyRounds(t *testing.T) {
+	// 20 differentials: 1.0 through 20.0
+	diffs := make([]float64, 20)
+	for i := range diffs {
+		diffs[i] = float64(i + 1)
+	}
+	hi, ah := handlers.ComputeHandicapPairExported(diffs)
+	require.NotNil(t, hi)
+	require.NotNil(t, ah)
+	// best 8: avg(1+2+…+8)/8 = 36/8 = 4.5; hi = 4.5×0.96 = 4.32 → 4.3
+	assert.Equal(t, 4.3, *hi)
+	// worst 8: avg(13+14+…+20)/8 = 132/8 = 16.5; ah = 16.5
+	assert.Equal(t, 16.5, *ah)
+}

@@ -14,7 +14,7 @@
 //      Both views share the same `scores` state — switching never discards data.
 //   5. Allows any player in the group (or organizer/admin) to enter scores
 //   6. Scores are auto-saved on blur via PUT /rounds/:id/players/:rpId/scores
-//   7. Individual view: hole-by-hole card with score entry + GIR/FIR/putts per hole,
+//   7. Individual view: hole-by-hole card with score entry + FIR/GIR/putts per hole,
 //      navigated via hole selector pills or Prev/Next buttons.
 
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -39,7 +39,9 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import type { Scorecard, ScorecardGroup, ScorecardPlayer } from "@/types/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
+import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
+import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -62,7 +64,13 @@ type HoleStatEntry = {
   first_putt_distance: string; // feet
   putt_distance_made: string;  // feet
   approach_yds: string;        // yards; optional
+  tee_shot_club: TeeShotClub | null;
+  tee_shot_distance: string;   // yards
 };
+
+// NumericStatField is the subset of HoleStatEntry keys that are string fields
+// rendered as TextInput number-pads in the stats section.
+type NumericStatField = "putts" | "first_putt_distance" | "putt_distance_made" | "approach_yds" | "tee_shot_distance";
 
 // LocalStats maps round_player_id → hole_number → HoleStatEntry.
 type LocalStats = Record<string, Record<number, HoleStatEntry>>;
@@ -88,6 +96,16 @@ const FIR_OPTIONS: { key: string; label: string; icon: IoniconsName | null }[] =
   { key: "miss:right", label: "Right", icon: "arrow-forward" },
   { key: "miss:long",  label: "Long",  icon: "arrow-up"      },
 ];
+
+// NUMERIC_STAT_META maps each numeric stat key to its display label and unit.
+// Module-level so it isn't recreated on every render.
+const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string | null }> = {
+  putts:               { label: "Putts",       unit: null  },
+  first_putt_distance: { label: "First Putt",  unit: "ft"  },
+  putt_distance_made:  { label: "Made Putt",   unit: "ft"  },
+  approach_yds:        { label: "Approach",    unit: "yds" },
+  tee_shot_distance:   { label: "Drive Dist.", unit: "yds" },
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,6 +154,8 @@ function initStats(players: ScorecardPlayer[]): LocalStats {
         first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
         putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
         approach_yds:        s.approach_yds != null ? String(s.approach_yds) : "",
+        tee_shot_club:       s.tee_shot_club ?? null,
+        tee_shot_distance:   s.tee_shot_distance != null ? String(s.tee_shot_distance) : "",
       };
     }
   }
@@ -166,6 +186,7 @@ const emptyHoleStat: HoleStatEntry = {
   gir: null, gir_miss_direction: null,
   fir: null, fir_miss_direction: null,
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
+  tee_shot_club: null, tee_shot_distance: "",
 };
 
 // withRetry runs fn up to delays.length + 1 times, waiting between each attempt.
@@ -276,9 +297,28 @@ export default function ScorecardScreen() {
     refetch,
     isRefetching,
   } = useQuery<Scorecard>({
-    queryKey: ["scorecard", roundId],
-    queryFn:  fetchScorecard,
-    enabled:  !!roundId,
+    queryKey:       ["scorecard", roundId],
+    queryFn:        fetchScorecard,
+    enabled:        !!roundId,
+    // Poll every minute so other players' scores stay in sync without requiring a manual refresh.
+    // Average hole duration is ~13 min, so 60 s is frequent enough to catch updates mid-hole
+    // without hammering the API.
+    refetchInterval: 60_000,
+  });
+
+  // Fetch the user's stat visibility preferences. Shares the same cache key as the
+  // profile screen so toggling a setting there is reflected here immediately.
+  const { data: scorecardSettingsData } = useQuery<ScorecardSettings>({
+    queryKey: ["scorecardSettings"],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to load scorecard settings");
+      return res.json();
+    },
+    enabled: !!user,
   });
 
   const group: ScorecardGroup | undefined = scorecard?.groups.find(
@@ -307,6 +347,16 @@ export default function ScorecardScreen() {
   // statsInputRefs: individual view numeric stat fields, indexed by field position (0–3).
   const statsInputRefs = useRef<(TextInput | null)[]>([]);
 
+  // scoreInputRef: individual view gross score field — used to chain keyboard focus
+  // from the last numeric stat (score_position "last") or from the score field to the
+  // first stat (score_position "first").
+  const scoreInputRef = useRef<TextInput>(null);
+
+  // focusingRef: set to true immediately before programmatically calling .focus()
+  // on the next TextInput in the chain so onBlur handlers on the departing field
+  // know not to scroll the view back to the top (the keyboard is staying up).
+  const focusingRef = useRef(false);
+
   // outerScrollRef: used to programmatically scroll the main ScrollView when
   // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
   // are not hidden behind the keyboard.
@@ -330,8 +380,14 @@ export default function ScorecardScreen() {
     pillScrollRef.current?.scrollTo({ x: Math.max(0, x), animated: true });
   }, [currentHole, scorecard?.nine_hole_selection]);
 
+  // Refetch when the player moves to a new hole so other players' freshly-saved
+  // scores appear immediately rather than waiting for the next 60-second poll.
+  useEffect(() => {
+    refetch();
+  }, [currentHole, refetch]);
+
   // userIdRef lets the init effect read user.id without listing it as a dep,
-  // avoiding re-runs when Clerk refreshes user data mid-session.
+  // avoiding re-runs when the auth state refreshes mid-session.
   const userIdRef  = useRef(user?.id);
   useEffect(() => { userIdRef.current = user?.id; }, [user?.id]);
 
@@ -419,6 +475,8 @@ export default function ScorecardScreen() {
           first_putt_distance:  toInt(entry.first_putt_distance),
           putt_distance_made:   toInt(entry.putt_distance_made),
           approach_yds:         toInt(entry.approach_yds),
+          tee_shot_club:        entry.tee_shot_club ?? null,
+          tee_shot_distance:    toInt(entry.tee_shot_distance),
         };
 
         setStatsSaveError(false);
@@ -470,7 +528,7 @@ export default function ScorecardScreen() {
       // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
       setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
       // Default individual view to the current user's player, then first player.
-      // user.id matches ScorecardPlayer.user_id (both Clerk user IDs).
+      // user.id is the Supabase auth UUID; matches ScorecardPlayer.user_id.
       const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
       setSelectedPlayerId(
         myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""
@@ -543,6 +601,9 @@ export default function ScorecardScreen() {
 
   // ── Derived state ───────────────────────────────────────────────────────────
 
+  // Resolve stat visibility settings; fall back to defaults before the query resolves.
+  const settings = scorecardSettingsData ?? DEFAULT_SCORECARD_SETTINGS;
+
   // Scramble: all players play from the same ball — individual scorecards don't apply.
   const isScramble = scorecard.scoring_format === "scramble";
   // Single-player groups are always shown in individual view so the net column is available.
@@ -597,8 +658,8 @@ export default function ScorecardScreen() {
       if (!isNaN(g) && g >= 1) {
         indivGrossTotal += g;
         indivGrossCount++;
-        if (showNetCol && selectedPlayer.course_handicap != null && hole.stroke_index) {
-          indivNetTotal += g - handicapStrokes(selectedPlayer.course_handicap, hole.stroke_index);
+        if (showNetCol && selectedPlayer.effective_course_handicap != null && hole.stroke_index) {
+          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, hole.stroke_index);
           indivNetCount++;
         }
       }
@@ -796,10 +857,10 @@ export default function ScorecardScreen() {
                 })}
               </View>
 
-              {/* Score rows */}
-              {holeRows.map((hole, idx) => {
+              {/* Score rows — for 18-hole rounds an OUT subtotal row is inserted after hole 9 */}
+              {holeRows.flatMap((hole, idx) => {
                 const isOdd = idx % 2 === 0;
-                return (
+                const holeRow = (
                   <View
                     key={hole.hole_number}
                     className={`flex-row items-center px-2 py-1 border-b ${t.divider} ${isOdd ? t.surface : t.surfaceSunken}`}
@@ -853,7 +914,47 @@ export default function ScorecardScreen() {
                     })}
                   </View>
                 );
+
+                if (hole.hole_number !== 9 || holeCount !== 18) return [holeRow];
+
+                const outRow = (
+                  <View key="out" className={`flex-row items-center px-2 py-1.5 border-b-2 ${t.border} ${t.surfaceSunken}`}>
+                    <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>OUT</Text>
+                    <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
+                      {holeRangeTotal(holeRows, {}, 1, 9).par || "—"}
+                    </Text>
+                    <View style={{ width: siColW }} />
+                    {group.players.map((player) => {
+                      const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 1, 9);
+                      return (
+                        <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
+                          {score != null ? score : "—"}
+                        </Text>
+                      );
+                    })}
+                  </View>
+                );
+                return [holeRow, outRow];
               })}
+
+              {/* IN subtotal row for 18-hole rounds (back nine) */}
+              {holeCount === 18 && (
+                <View className={`flex-row items-center px-2 py-1.5 border-b ${t.divider} ${t.surfaceSunken}`}>
+                  <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>IN</Text>
+                  <Text style={{ width: parColW }} className={`text-xs font-semibold text-center ${t.textSecondary}`}>
+                    {holeRangeTotal(holeRows, {}, 10, 18).par || "—"}
+                  </Text>
+                  <View style={{ width: siColW }} />
+                  {group.players.map((player) => {
+                    const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 10, 18);
+                    return (
+                      <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
+                        {score != null ? score : "—"}
+                      </Text>
+                    );
+                  })}
+                </View>
+              )}
 
               {/* Totals row */}
               <View className={`flex-row items-center px-2 py-2 ${t.surfaceSunken} border-t-2 ${t.border}`}>
@@ -921,7 +1022,9 @@ export default function ScorecardScreen() {
               const holeData   = holeRows.find((h) => h.hole_number === currentHole) ?? holeRows[0];
               const val        = scores[rpId]?.[holeData.hole_number] ?? "";
               const gross      = parseInt(val, 10);
-              const hcp        = selectedPlayer.course_handicap ?? null;
+              // Use effective_course_handicap for net preview so the live display
+              // matches what the server will store (allowance already applied).
+              const hcp        = selectedPlayer.effective_course_handicap ?? null;
               const strokes    = (holeData.stroke_index && hcp != null)
                 ? handicapStrokes(hcp, holeData.stroke_index)
                 : 0;
@@ -937,8 +1040,10 @@ export default function ScorecardScreen() {
               const currentFir = firKey(holeStat);
 
               // handleGIRTap toggles GIR. Tapping the active option clears it.
-              // When GIR becomes "hit": auto-set putts to 2 for par, 1 for birdie
-              // (only when putts is blank — don't overwrite a value the user entered).
+              // Auto-fill logic when GIR becomes "hit":
+              //   - If putts is already set and score is blank: score = par - 2 + putts
+              //     (GIR means reaching the green in par - 2 shots; add putts for final score)
+              //   - If putts is blank but score is known: seed putts (birdie → 1, par → 2)
               const handleGIRTap = (key: string) => {
                 const isActive = currentGir === key;
                 let gir: string | null = null;
@@ -948,12 +1053,22 @@ export default function ScorecardScreen() {
                   else if (key === "na")            { gir = "na"; }
                   else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
                 }
-                const isBirdie  = !isNaN(gross) && holeData.par != null && gross === holeData.par - 1;
-                const isParScore = !isNaN(gross) && holeData.par != null && gross === holeData.par;
-                const autoPutts =
-                  gir === "hit" && holeStat.putts === ""
-                    ? isBirdie ? { putts: "1" } : isParScore ? { putts: "2" } : {}
-                    : {};
+                if (gir === "hit" && holeData.par) {
+                  const puttsNum = parseInt(holeStat.putts, 10);
+                  if (!isNaN(puttsNum) && puttsNum >= 0 && val === "") {
+                    // Putts already set, score blank → derive score from GIR regulation formula.
+                    const autoScore = String(girScoreFromPutts(holeData.par, puttsNum));
+                    setScores((prev) => ({
+                      ...prev,
+                      [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: autoScore },
+                    }));
+                    autoSavePlayer(rpId);
+                  }
+                }
+                const hintPutts = gir === "hit" && holeStat.putts === "" && holeData.par != null && !isNaN(gross)
+                  ? girPuttsHint(holeData.par, gross)
+                  : null;
+                const autoPutts = hintPutts != null ? { putts: hintPutts } : {};
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
@@ -983,6 +1098,128 @@ export default function ScorecardScreen() {
                 autoSaveStats(rpId, currentHole, 0);
               };
 
+              // handleTeeShotClubTap toggles the selected tee shot club.
+              // Tapping the already-selected club deselects it (sets to null).
+              const handleTeeShotClubTap = (club: TeeShotClub) => {
+                const isActive = holeStat.tee_shot_club === club;
+                setStats((prev) => ({
+                  ...prev,
+                  [rpId]: {
+                    ...(prev[rpId] ?? {}),
+                    [currentHole]: {
+                      ...(prev[rpId]?.[currentHole] ?? emptyHoleStat),
+                      tee_shot_club: isActive ? null : club,
+                    },
+                  },
+                }));
+                autoSaveStats(rpId, currentHole, 0);
+              };
+
+              // Build ordered list of enabled numeric stats for keyboard focus chaining.
+              // Derived from stat_order so focus-next follows the user's preferred order.
+              const numericStatFields = settings.stat_order
+                .filter((k): k is NumericStatField =>
+                  k in NUMERIC_STAT_META &&
+                  (settings[`${k}_enabled` as keyof ScorecardSettings] as boolean)
+                )
+                .map((k) => ({ field: k, ...NUMERIC_STAT_META[k] }));
+
+              // renderScoreBlock renders the gross score input + net + HCP strokes row.
+              // Defined as a closure so score_position can place it before or after stats
+              // without prop drilling the many local variables it references.
+              const renderScoreBlock = () => {
+                // Determine whether pressing Enter on the score should chain to the first stat.
+                const scoreNextTarget = scoreFocusNext(settings.score_position, numericStatFields.length);
+                return (
+                <View className={`flex-row items-center justify-center gap-8 px-4 py-5 border-t ${t.divider}`}>
+                  <View className="items-center gap-1">
+                    <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Score</Text>
+                    <TextInput
+                      ref={scoreInputRef}
+                      className={`w-20 h-14 border-2 rounded-xl text-center text-3xl font-bold ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      // blurOnSubmit=false keeps the keyboard up when chaining to the
+                      // first stat (score_position "first"); true lets Enter dismiss
+                      // the keyboard when score is the last input.
+                      blurOnSubmit={scoreNextTarget === null}
+                      returnKeyType={scoreNextTarget !== null ? "next" : "done"}
+                      onFocus={() => {
+                        // When score is at the bottom (after stats), scroll to show it.
+                        // focusingRef suppresses the departing stat's scroll-to-top so
+                        // this 150 ms call is the only scroll that runs.
+                        if (settings.score_position !== "first") {
+                          setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
+                        }
+                      }}
+                      onSubmitEditing={() => {
+                        if (scoreNextTarget !== null) {
+                          focusingRef.current = true;
+                          statsInputRefs.current[scoreNextTarget]?.focus();
+                        }
+                      }}
+                      value={val}
+                      onChangeText={(v) => {
+                        setScores((prev) => ({
+                          ...prev,
+                          [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: v },
+                        }));
+                        // Auto-set putts when GIR is already "hit" and putts is blank:
+                        // birdie → 1 putt, par → 2 putts.
+                        const newGross = parseInt(v, 10);
+                        if (
+                          !isNaN(newGross) &&
+                          holeData.par != null &&
+                          currentGir === "hit" &&
+                          holeStat.putts === ""
+                        ) {
+                          const autoP =
+                            newGross === holeData.par - 1 ? "1"
+                            : newGross === holeData.par   ? "2"
+                            : null;
+                          if (autoP !== null) {
+                            setStats((prev) => ({
+                              ...prev,
+                              [rpId]: {
+                                ...(prev[rpId] ?? {}),
+                                [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: autoP },
+                              },
+                            }));
+                          }
+                        }
+                      }}
+                      onBlur={() => autoSavePlayer(rpId)}
+                      editable={!savingHandicaps && !needsHandicap}
+                      placeholder="—"
+                      placeholderTextColor={t.colors.tabBarInactive}
+                    />
+                  </View>
+                  {showNetCol && (
+                    <View className="items-center gap-1">
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Net</Text>
+                      <View className={`w-20 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
+                        <Text className={`text-3xl font-bold ${netClr}`}>{net != null ? net : "—"}</Text>
+                      </View>
+                    </View>
+                  )}
+                  {hcp != null && strokes > 0 && (
+                    <View className="items-center gap-1">
+                      {/* Show gross/effective handicaps when an allowance is active */}
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                        {scorecard.handicap_allowance != null &&
+                         selectedPlayer.course_handicap !== hcp
+                          ? `HCP ${selectedPlayer.course_handicap}→${hcp}`
+                          : "HCP"}
+                      </Text>
+                      <View className={`w-16 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
+                        <Text className={`text-2xl font-bold ${t.textTertiary}`}>+{strokes}</Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+                );
+              };
+
               return (
                 <View className={`rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
 
@@ -1008,71 +1245,200 @@ export default function ScorecardScreen() {
                     )}
                   </View>
 
-                  {/* Score entry row */}
-                  <View className={`flex-row items-center justify-center gap-8 px-4 py-5 border-b ${t.divider}`}>
-                    <View className="items-center gap-1">
-                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Score</Text>
-                      <TextInput
-                        className={`w-20 h-14 border-2 rounded-xl text-center text-3xl font-bold ${t.borderInput} ${t.surfaceSunken} ${grossClr}`}
-                        keyboardType="number-pad"
-                        maxLength={2}
-                        value={val}
-                        onChangeText={(v) => {
-                          setScores((prev) => ({
-                            ...prev,
-                            [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: v },
-                          }));
-                          // Auto-set putts when GIR is already "hit" and putts is blank:
-                          // birdie → 1 putt, par → 2 putts.
-                          const newGross = parseInt(v, 10);
-                          if (
-                            !isNaN(newGross) &&
-                            holeData.par != null &&
-                            currentGir === "hit" &&
-                            holeStat.putts === ""
-                          ) {
-                            const autoP =
-                              newGross === holeData.par - 1 ? "1"
-                              : newGross === holeData.par   ? "2"
-                              : null;
-                            if (autoP !== null) {
-                              setStats((prev) => ({
-                                ...prev,
-                                [rpId]: {
-                                  ...(prev[rpId] ?? {}),
-                                  [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: autoP },
-                                },
-                              }));
-                            }
-                          }
-                        }}
-                        onBlur={() => autoSavePlayer(rpId)}
-                        editable={!savingHandicaps && !needsHandicap}
-                        placeholder="—"
-                        placeholderTextColor={t.colors.tabBarInactive}
-                      />
+                  {/* Score entry — before stats when score_position is "first" */}
+                  {settings.score_position === "first" && renderScoreBlock()}
+
+                  {/* Stats rendered in user-defined order via stat_order */}
+                  {settings.stat_order.map((statKey) => {
+                    switch (statKey) {
+                      case "fir":
+                        return settings.fir_enabled ? (
+                          <View key="fir" className={`px-4 py-3 gap-2 border-b ${t.divider} ${holeData.par === 3 ? "opacity-40" : ""}`}>
+                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                              Fairway in Regulation{holeData.par === 3 ? " (N/A — par 3)" : ""}
+                            </Text>
+                            <View className="flex-row flex-wrap gap-2">
+                              {FIR_OPTIONS.map(({ key, label, icon }) => {
+                                const active = currentFir === key;
+                                return (
+                                  <TouchableOpacity
+                                    key={key}
+                                    onPress={() => { if (holeData.par !== 3) handleFIRTap(key); }}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                                    }`}
+                                    activeOpacity={holeData.par === 3 ? 1 : 0.7}
+                                  >
+                                    {icon && (
+                                      <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
+                                    )}
+                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{label}</Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        ) : null;
+
+                      case "gir":
+                        return settings.gir_enabled ? (
+                          <View key="gir" className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
+                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                              Green in Regulation
+                            </Text>
+                            <View className="flex-row flex-wrap gap-2">
+                              {GIR_OPTIONS.map(({ key, label, icon }) => {
+                                const active = currentGir === key;
+                                return (
+                                  <TouchableOpacity
+                                    key={key}
+                                    onPress={() => handleGIRTap(key)}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                                    }`}
+                                    activeOpacity={0.7}
+                                  >
+                                    {icon && (
+                                      <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
+                                    )}
+                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{label}</Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        ) : null;
+
+                      case "tee_shot_club":
+                        return settings.tee_shot_club_enabled ? (
+                          <View key="tee_shot_club" className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
+                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                              Tee Shot Club
+                            </Text>
+                            <View className="flex-row flex-wrap gap-2">
+                              {TEE_SHOT_CLUBS.map((club) => {
+                                const active = holeStat.tee_shot_club === club;
+                                return (
+                                  <TouchableOpacity
+                                    key={club}
+                                    onPress={() => handleTeeShotClubTap(club)}
+                                    className={`px-3 py-1.5 rounded-full border ${
+                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                                    }`}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{club}</Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        ) : null;
+
+                      case "putts":
+                      case "first_putt_distance":
+                      case "putt_distance_made":
+                      case "approach_yds":
+                      case "tee_shot_distance": {
+                        const field = statKey as NumericStatField;
+                        if (!(settings[`${field}_enabled` as keyof ScorecardSettings] as boolean)) return null;
+                        const numIdx   = numericStatFields.findIndex((f) => f.field === field);
+                        const { label, unit } = NUMERIC_STAT_META[field];
+                        // focusNext drives blurOnSubmit, returnKeyType, and onSubmitEditing
+                        // so all three stay consistent from a single computation.
+                        const focusNext = numericStatFocusNext(numIdx, numericStatFields.length, settings.score_position);
+                        return (
+                          <View key={field} className={`px-4 py-3 border-b ${t.divider}`}>
+                            <View className="flex-row items-center justify-between">
+                              <Text className={`text-sm ${t.textSecondary}`}>
+                                {label}{unit ? ` (${unit})` : ""}
+                              </Text>
+                              <TextInput
+                                ref={(el) => { statsInputRefs.current[numIdx] = el; }}
+                                className={`w-20 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                                keyboardType="number-pad"
+                                maxLength={3}
+                                placeholder="—"
+                                placeholderTextColor={t.colors.tabBarInactive}
+                                blurOnSubmit={focusNext === null}
+                                returnKeyType={focusNext !== null ? "next" : "done"}
+                                onSubmitEditing={() => {
+                                  if (typeof focusNext === "number") {
+                                    focusingRef.current = true;
+                                    statsInputRefs.current[focusNext]?.focus();
+                                  } else if (focusNext === "score") {
+                                    focusingRef.current = true;
+                                    scoreInputRef.current?.focus();
+                                  }
+                                }}
+                                value={holeStat[field] as string}
+                                onChangeText={(v) => {
+                                  setStats((prev) => {
+                                    const current = prev[rpId]?.[currentHole] ?? emptyHoleStat;
+                                    // When putts = 1, first putt and made putt distances are identical —
+                                    // mirror whichever field the user types into the other.
+                                    const extra = puttDistanceMirror(field, current.putts, v) as Partial<HoleStatEntry>;
+                                    return {
+                                      ...prev,
+                                      [rpId]: {
+                                        ...(prev[rpId] ?? {}),
+                                        [currentHole]: { ...current, [field]: v, ...extra },
+                                      },
+                                    };
+                                  });
+                                  // When putts changes with GIR hit and par known, auto-fill score
+                                  // if it's blank. Formula: score = par - 2 + putts (GIR regulation).
+                                  if (field === "putts" && holeStat.gir === "hit" && holeData.par && val === "") {
+                                    const puttsNum = parseInt(v, 10);
+                                    if (!isNaN(puttsNum) && puttsNum >= 0) {
+                                      const autoScore = String(girScoreFromPutts(holeData.par, puttsNum));
+                                      setScores((prev) => ({
+                                        ...prev,
+                                        [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: autoScore },
+                                      }));
+                                      autoSavePlayer(rpId);
+                                    }
+                                  }
+                                }}
+                                onFocus={() => {
+                                  // Delay lets the keyboard animation start before we scroll,
+                                  // ensuring the inset has been applied and there is room to move.
+                                  setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
+                                }}
+                                onBlur={() => {
+                                  autoSaveStats(rpId, currentHole, 400);
+                                  // Only scroll back to the top when the keyboard is actually
+                                  // dismissing. When chaining to the next field, focusingRef is
+                                  // true and the keyboard stays up, so no scroll-to-top is needed.
+                                  if (!focusingRef.current) {
+                                    setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+                                  }
+                                  focusingRef.current = false;
+                                }}
+                              />
+                            </View>
+                          </View>
+                        );
+                      }
+
+                      default:
+                        return null;
+                    }
+                  })}
+
+                  {/* Stats save error — outside the stat loop so it's always visible */}
+                  {statsSaveError && (
+                    <View className={`px-4 py-2 border-b ${t.divider}`}>
+                      <Text className="text-red-500 text-xs">Stats failed to save</Text>
                     </View>
-                    {showNetCol && (
-                      <View className="items-center gap-1">
-                        <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Net</Text>
-                        <View className={`w-20 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
-                          <Text className={`text-3xl font-bold ${netClr}`}>{net != null ? net : "—"}</Text>
-                        </View>
-                      </View>
-                    )}
-                    {hcp != null && strokes > 0 && (
-                      <View className="items-center gap-1">
-                        <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>HCP</Text>
-                        <View className={`w-16 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
-                          <Text className={`text-2xl font-bold ${t.textTertiary}`}>+{strokes}</Text>
-                        </View>
-                      </View>
-                    )}
-                  </View>
+                  )}
+
+                  {/* Score entry — after stats when score_position is "last" (default) */}
+                  {settings.score_position !== "first" && renderScoreBlock()}
 
                   {/* Save status — inline, shown only while active */}
                   {saveStatus[rpId] !== undefined && saveStatus[rpId] !== "idle" && (
-                    <View className={`flex-row items-center justify-center gap-2 py-2 border-b ${t.divider}`}>
+                    <View className={`flex-row items-center justify-center gap-2 py-2 border-t ${t.divider}`}>
                       {saveStatus[rpId] === "saving" && (
                         <>
                           <ActivityIndicator size="small" color={t.colors.tabBarActive} />
@@ -1093,139 +1459,6 @@ export default function ScorecardScreen() {
                       )}
                     </View>
                   )}
-
-                  {/* GIR */}
-                  <View className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
-                    <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                      Green in Regulation
-                    </Text>
-                    <View className="flex-row flex-wrap gap-2">
-                      {GIR_OPTIONS.map(({ key, label, icon }) => {
-                        const active = currentGir === key;
-                        return (
-                          <TouchableOpacity
-                            key={key}
-                            onPress={() => handleGIRTap(key)}
-                            className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                              active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                            }`}
-                            activeOpacity={0.7}
-                          >
-                            {icon && (
-                              <Ionicons
-                                name={icon}
-                                size={12}
-                                color={active ? "white" : t.colors.tabBarActive}
-                              />
-                            )}
-                            <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
-                              {label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </View>
-
-                  {/* FIR — disabled on par 3s (no fairway to hit on a tee shot to the green) */}
-                  <View className={`px-4 py-3 gap-2 border-b ${t.divider} ${holeData.par === 3 ? "opacity-40" : ""}`}>
-                    <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                      Fairway in Regulation{holeData.par === 3 ? " (N/A — par 3)" : ""}
-                    </Text>
-                    <View className="flex-row flex-wrap gap-2">
-                      {FIR_OPTIONS.map(({ key, label, icon }) => {
-                        const active = currentFir === key;
-                        return (
-                          <TouchableOpacity
-                            key={key}
-                            onPress={() => { if (holeData.par !== 3) handleFIRTap(key); }}
-                            className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                              active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                            }`}
-                            activeOpacity={holeData.par === 3 ? 1 : 0.7}
-                          >
-                            {icon && (
-                              <Ionicons
-                                name={icon}
-                                size={12}
-                                color={active ? "white" : t.colors.tabBarActive}
-                              />
-                            )}
-                            <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
-                              {label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </View>
-
-                  {/* Numeric stats */}
-                  <View className="px-4 py-3 gap-3">
-                    {(
-                      [
-                        { field: "putts" as const,               label: "Putts",      unit: null  },
-                        { field: "putt_distance_made" as const,  label: "Made Putt",  unit: "ft"  },
-                        { field: "first_putt_distance" as const, label: "First Putt", unit: "ft"  },
-                        { field: "approach_yds" as const,        label: "Approach",   unit: "yds" },
-                      ] as const
-                    ).map(({ field, label, unit }, index, arr) => (
-                      <View key={field} className="flex-row items-center justify-between">
-                        <Text className={`text-sm ${t.textSecondary}`}>
-                          {label}{unit ? ` (${unit})` : ""}
-                        </Text>
-                        <TextInput
-                          ref={(el) => { statsInputRefs.current[index] = el; }}
-                          className={`w-20 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                          keyboardType="number-pad"
-                          maxLength={3}
-                          placeholder="—"
-                          placeholderTextColor={t.colors.tabBarInactive}
-                          returnKeyType={index < arr.length - 1 ? "next" : "done"}
-                          value={holeStat[field]}
-                          onChangeText={(v) => {
-                            setStats((prev) => {
-                              const current = prev[rpId]?.[currentHole] ?? emptyHoleStat;
-                              // When putts = 1 and the user types into Made Putt, mirror
-                              // the value into First Putt — if you only putted once, the
-                              // first putt distance is the same as the made putt distance.
-                              const extra =
-                                field === "putt_distance_made" && current.putts === "1"
-                                  ? { first_putt_distance: v }
-                                  : {};
-                              return {
-                                ...prev,
-                                [rpId]: {
-                                  ...(prev[rpId] ?? {}),
-                                  [currentHole]: { ...current, [field]: v, ...extra },
-                                },
-                              };
-                            });
-                          }}
-                          onSubmitEditing={() => {
-                            // Focus the next stat field; last field dismisses keyboard via returnKeyType="done".
-                            if (index < arr.length - 1) {
-                              statsInputRefs.current[index + 1]?.focus();
-                            }
-                          }}
-                          onFocus={() => {
-                            // Delay lets the keyboard animation start before we scroll,
-                            // ensuring the inset has been applied and there is room to move.
-                            setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
-                          }}
-                          onBlur={() => {
-                            autoSaveStats(rpId, currentHole, 400);
-                            // Return the view to the top so the blank keyboard inset space
-                            // doesn't linger after the keyboard dismisses.
-                            setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
-                          }}
-                        />
-                      </View>
-                    ))}
-                    {statsSaveError && (
-                      <Text className="text-red-500 text-xs mt-1">Stats failed to save</Text>
-                    )}
-                  </View>
 
                 </View>
               );

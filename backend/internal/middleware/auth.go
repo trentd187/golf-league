@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	// keyfunc fetches Supabase's public JWKS keys, caches them, and handles key rotation.
-	// Supabase uses RS256 (asymmetric) by default — same JWKS-based flow as Clerk.
+	// Supabase uses RS256 (asymmetric); keyfunc handles the JWKS endpoint automatically.
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
@@ -116,9 +116,12 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 			}
 
 			// auth_id not found — check if a row already exists for this email.
-			// This handles Clerk→Supabase migration: the same user has a new provider UUID
-			// but the same email. Rather than inserting a duplicate (which would violate the
-			// UNIQUE constraint on email), we adopt the existing row by writing the new auth_id.
+			// This fallback handles the Clerk→Supabase auth migration: the same user has a new
+			// Supabase UUID but the same email. Rather than inserting a duplicate row (which would
+			// violate the UNIQUE constraint on email), we adopt the existing row by writing the
+			// new auth_id.
+			// TODO: remove this fallback once all production users have re-authenticated via
+			// Supabase and no Clerk UUIDs remain in the auth_id column.
 			if email != "" {
 				var existing models.User
 				emailResult := db.Where("email = ?", email).First(&existing)

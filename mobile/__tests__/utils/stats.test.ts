@@ -1,8 +1,8 @@
 // __tests__/utils/stats.test.ts
-// Unit tests for buildStats(), buildRoundStats(), buildMyStats(), and findMyPlayer()
-// in utils/stats.ts. All functions are pure — no mocking needed.
+// Unit tests for buildStats(), buildRoundStats(), buildMyStats(), findMyPlayer(),
+// and handicapConsistencyLabel() in utils/stats.ts. All functions are pure — no mocking needed.
 
-import { buildStats, buildRoundStats, buildMyStats, findMyPlayer } from "@/utils/stats";
+import { buildStats, buildRoundStats, buildMyStats, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
 import type { Scorecard, ScorecardPlayer, ScorecardHole } from "@/types/scorecard";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -20,6 +20,7 @@ function makePlayer(overrides: Partial<ScorecardPlayer> = {}): ScorecardPlayer {
     display_name: "Alice",
     avatar_url: null,
     course_handicap: null,
+    effective_course_handicap: null,
     scores: [],
     hole_stats: [],
     total_gross: null,
@@ -40,6 +41,7 @@ function makeScorecard(overrides: Partial<Scorecard> & { player?: ScorecardPlaye
     scoring_format: "stroke",
     caller_user_id: "user-1",
     is_organizer: false,
+    handicap_allowance: null,
     nine_hole_selection: null,
     holes: Array.from({ length: 18 }, (_, i) => makeHole(i + 1, i % 3 === 0 ? 3 : i % 3 === 1 ? 4 : 5)),
     groups: [{ group_id: "g-1", group_number: 1, players: [player ?? makePlayer()] }],
@@ -64,7 +66,8 @@ describe("buildStats", () => {
       ],
       hole_stats: [
         { hole_number: 1, gir: "hit", gir_miss_direction: null, fir: true, fir_miss_direction: null,
-          putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
       ],
     });
     const sc = makeScorecard({ player });
@@ -118,7 +121,8 @@ describe("buildStats", () => {
   it("treats null putts as no data until at least one round has real data", () => {
     const p1 = makePlayer({ user_id: "u1", display_name: "Alice",
       hole_stats: [{ hole_number: 1, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
-        putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null }] });
+        putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+        tee_shot_club: null, tee_shot_distance: null }] });
     const sc = makeScorecard({ player: p1 });
     const putts = buildStats([sc]).find((r) => r.category === "Putts")!;
     // Player with only null putts should not appear on the leaderboard.
@@ -210,12 +214,15 @@ describe("buildRoundStats", () => {
     const player = makePlayer({
       hole_stats: [
         { hole_number: 1, gir: "hit",  gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 2, gir: "miss", gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         // "na" hole: should be excluded from hit% denominator
         { hole_number: 3, gir: "na",   gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -230,11 +237,14 @@ describe("buildRoundStats", () => {
     const player = makePlayer({
       hole_stats: [
         { hole_number: 5, gir: null, gir_miss_direction: null, fir: true,  fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 6, gir: null, gir_miss_direction: null, fir: false, fir_miss_direction: "left",
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 7, gir: null, gir_miss_direction: null, fir: false, fir_miss_direction: "right",
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -249,13 +259,17 @@ describe("buildRoundStats", () => {
     const player = makePlayer({
       hole_stats: [
         { hole_number: 1, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: 1, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: 1, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 2, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 3, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: 3, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: 3, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 4, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: 4, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: 4, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -349,6 +363,7 @@ describe("buildMyStats", () => {
           hole_number: i + 1, gir: null as null, gir_miss_direction: null as null,
           fir: null as null, fir_miss_direction: null as null,
           putts: 2, first_putt_distance: null as null, putt_distance_made: null as null, approach_yds: null as null,
+          tee_shot_club: null as null, tee_shot_distance: null as null,
         })),
       }),
     });
@@ -362,11 +377,14 @@ describe("buildMyStats", () => {
     const player = makePlayer({
       hole_stats: [
         { hole_number: 1, gir: "hit",  gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 2, gir: "miss", gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
         { hole_number: 3, gir: "na",   gir_miss_direction: null, fir: null, fir_miss_direction: null,
-          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null },
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null },
       ],
     });
     const sc = makeScorecard({ player });
@@ -393,5 +411,24 @@ describe("buildMyStats", () => {
     expect(result.parsCount).toBe(1);
     expect(result.bogeysCount).toBe(1);
     expect(result.doublesPlus).toBe(1);
+  });
+});
+
+// ─── handicapConsistencyLabel ─────────────────────────────────────────────────
+
+describe("handicapConsistencyLabel", () => {
+  it("returns Consistent when spread is less than 5", () => {
+    expect(handicapConsistencyLabel(10, 13)).toBe("Consistent");   // spread 3
+    expect(handicapConsistencyLabel(5, 9.9)).toBe("Consistent");   // spread 4.9
+  });
+
+  it("returns Moderate when spread is between 5 and 9", () => {
+    expect(handicapConsistencyLabel(10, 15)).toBe("Moderate");     // spread 5
+    expect(handicapConsistencyLabel(10, 19.9)).toBe("Moderate");   // spread 9.9
+  });
+
+  it("returns Variable when spread is 10 or greater", () => {
+    expect(handicapConsistencyLabel(10, 20)).toBe("Variable");     // spread 10
+    expect(handicapConsistencyLabel(5, 20)).toBe("Variable");      // spread 15
   });
 });

@@ -27,6 +27,8 @@
 package handlers
 
 import (
+	"math"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
@@ -62,17 +64,23 @@ type ScorecardHoleStat struct {
 	FirstPuttDistance *int    `json:"first_putt_distance"` // feet
 	PuttDistanceMade  *int    `json:"putt_distance_made"`  // feet
 	ApproachYds       *int    `json:"approach_yds"`        // yards; optional
+	TeeShotClub       *string `json:"tee_shot_club"`       // DR | 3W | 5W | 7W | DI | 3H
+	TeeShotDistance   *int    `json:"tee_shot_distance"`   // yards
 }
 
 // ScorecardPlayer is a player in a group with their handicap, all hole scores, and hole stats.
 type ScorecardPlayer struct {
-	RoundPlayerID  string              `json:"round_player_id"`
-	UserID         string              `json:"user_id"`
-	DisplayName    string              `json:"display_name"`
-	AvatarURL      *string             `json:"avatar_url"`
-	CourseHandicap *int                `json:"course_handicap"`
-	Scores         []ScorecardScore    `json:"scores"`
-	HoleStats      []ScorecardHoleStat `json:"hole_stats"`
+	RoundPlayerID  string  `json:"round_player_id"`
+	UserID         string  `json:"user_id"`
+	DisplayName    string  `json:"display_name"`
+	AvatarURL      *string `json:"avatar_url"`
+	CourseHandicap *int    `json:"course_handicap"`
+	// EffectiveCourseHandicap is CourseHandicap after applying the event's handicap allowance
+	// (floor(course_handicap * allowance / 100)). Nil when CourseHandicap is nil.
+	// Equal to CourseHandicap when no allowance is set.
+	EffectiveCourseHandicap *int                `json:"effective_course_handicap"`
+	Scores                  []ScorecardScore    `json:"scores"`
+	HoleStats               []ScorecardHoleStat `json:"hole_stats"`
 	// TotalGross / TotalNet are null when fewer holes have been scored than the
 	// round's hole_count — preventing partial totals from being misleading.
 	TotalGross *int `json:"total_gross"`
@@ -95,11 +103,14 @@ type ScorecardResponse struct {
 	RequiresHandicap bool   `json:"requires_handicap"`
 	ScoringFormat    string `json:"scoring_format"`
 	// CallerUserID is the database UUID of the requesting user. The mobile client
-	// uses this to find its own player entry in the groups list — Clerk's user.id
-	// is different from the database UUID, so the server must supply it.
+	// uses this to find its own player entry in the groups list — the Supabase auth UUID
+	// differs from the database UUID, so the server must supply it.
 	CallerUserID string `json:"caller_user_id"`
 	// IsOrganizer lets the mobile client show/hide the "End Round" button without a separate query.
 	IsOrganizer bool `json:"is_organizer"`
+	// HandicapAllowance is the event-level allowance percentage (0–100), or nil for full handicap.
+	// Included so the scorecard screen can display effective vs. gross handicap.
+	HandicapAllowance *float64 `json:"handicap_allowance"`
 	// NineHoleSelection is "front" (holes 1–9), "back" (holes 10–18), or null (full round).
 	// When set, HoleCount is 9 and Holes contains only the selected half.
 	NineHoleSelection *string                  `json:"nine_hole_selection"`
@@ -125,6 +136,11 @@ type UpsertScoresRequest struct {
 	Scores []ScoreInput `json:"scores"`
 }
 
+// validTeeShotClubs is the allowed set for the tee_shot_club enum.
+var validTeeShotClubs = map[string]bool{
+	"DR": true, "3W": true, "5W": true, "7W": true, "DI": true, "3H": true,
+}
+
 // HoleStatInput is a single hole's advanced stats for one player.
 type HoleStatInput struct {
 	HoleNumber       int     `json:"hole_number"`
@@ -136,6 +152,8 @@ type HoleStatInput struct {
 	FirstPuttDist    *int    `json:"first_putt_distance"` // feet
 	PuttDistMade     *int    `json:"putt_distance_made"`  // feet
 	ApproachYds      *int    `json:"approach_yds"`        // yards; optional
+	TeeShotClub      *string `json:"tee_shot_club"`       // DR | 3W | 5W | 7W | DI | 3H
+	TeeShotDistance  *int    `json:"tee_shot_distance"`   // yards
 }
 
 // UpsertHoleStatsRequest is the JSON body for PUT /rounds/:roundId/players/:roundPlayerId/hole-stats.
@@ -207,6 +225,57 @@ func HandicapStrokes(courseHandicap, strokeIndex int) int {
 	return strokes
 }
 
+// EffectiveCourseHandicap applies the event's handicap allowance percentage to a
+// course handicap. Returns the full handicap when allowance is nil.
+// Uses floor so the result is always a whole number (USGA convention).
+func EffectiveCourseHandicap(courseHandicap int, allowance *float64) int {
+	if allowance == nil {
+		return courseHandicap
+	}
+	return int(math.Floor(float64(courseHandicap) * (*allowance) / 100.0))
+}
+
+// recalculateEventScores recomputes the net_score for every scored hole across
+// all rounds in an event after the handicap allowance changes.
+// Uses each round's default tee stroke indexes to determine per-hole strokes.
+// Best-effort: returns the first DB error encountered.
+func recalculateEventScores(db *gorm.DB, eventID uuid.UUID, allowance *float64) error {
+	type scoreRow struct {
+		ScoreID        uuid.UUID
+		GrossScore     int
+		CourseHandicap *int
+		StrokeIndex    int
+	}
+
+	var rows []scoreRow
+	err := db.Table("scores s").
+		Select("s.id as score_id, s.gross_score, rp.course_handicap, h.stroke_index").
+		Joins("JOIN round_players rp ON rp.id = s.round_player_id").
+		Joins("JOIN rounds r ON r.id = rp.round_id").
+		Joins("JOIN holes h ON h.tee_id = r.default_tee_id AND h.hole_number = s.hole_number").
+		Where("r.event_id = ?", eventID).
+		Scan(&rows).Error
+	if err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		chandi := 0
+		if row.CourseHandicap != nil {
+			chandi = *row.CourseHandicap
+		}
+		eff := EffectiveCourseHandicap(chandi, allowance)
+		netScore := row.GrossScore - HandicapStrokes(eff, row.StrokeIndex)
+
+		if err := db.Model(&models.Score{}).
+			Where("id = ?", row.ScoreID).
+			Update("net_score", netScore).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 // GetRoundScorecard returns a handler for GET /api/v1/rounds/:roundId/scorecard.
@@ -226,11 +295,12 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 		callerID, _ := uuid.Parse(userIDStr)
 		isOrg, _ := isRoundOrganizer(db, roundID, callerID, userRole)
 
-		// Load round with its default tee and tee's holes.
+		// Load round with its default tee, tee holes, and parent event (for handicap allowance).
 		var round models.Round
 		if err := db.
 			Preload("DefaultTee.Holes").
 			Preload("Course").
+			Preload("Event").
 			First(&round, "id = ?", roundID).Error; err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
 		}
@@ -340,19 +410,29 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 						FirstPuttDistance: s.FirstPuttDistance,
 						PuttDistanceMade:  s.PuttDistanceMade,
 						ApproachYds:       s.ApproachYds,
+						TeeShotClub:       s.TeeShotClub,
+						TeeShotDistance:   s.TeeShotDistance,
 					})
 				}
 
+				// Compute the effective handicap after applying the event-level allowance.
+				var effHCP *int
+				if pr.CourseHandicap != nil {
+					eff := EffectiveCourseHandicap(*pr.CourseHandicap, round.Event.HandicapAllowance)
+					effHCP = &eff
+				}
+
 				players = append(players, ScorecardPlayer{
-					RoundPlayerID:  pr.RoundPlayerID,
-					UserID:         pr.UserID,
-					DisplayName:    pr.DisplayName,
-					AvatarURL:      pr.AvatarURL,
-					CourseHandicap: pr.CourseHandicap,
-					Scores:         scores,
-					HoleStats:      holeStats,
-					TotalGross:     tg,
-					TotalNet:       tn,
+					RoundPlayerID:           pr.RoundPlayerID,
+					UserID:                  pr.UserID,
+					DisplayName:             pr.DisplayName,
+					AvatarURL:               pr.AvatarURL,
+					CourseHandicap:          pr.CourseHandicap,
+					EffectiveCourseHandicap: effHCP,
+					Scores:                  scores,
+					HoleStats:               holeStats,
+					TotalGross:              tg,
+					TotalNet:                tn,
 				})
 			}
 
@@ -372,6 +452,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 			ScoringFormat:     string(round.ScoringFormat),
 			CallerUserID:      userIDStr,
 			IsOrganizer:       isOrg,
+			HandicapAllowance: round.Event.HandicapAllowance,
 			NineHoleSelection: round.NineHoleSelection,
 			Holes:             holeRows,
 			Groups:            groupResponses,
@@ -460,9 +541,9 @@ func UpsertPlayerScores(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
 		}
 
-		// Load the round with its default tee holes for net-score calculation.
+		// Load the round with its default tee holes and event (for handicap allowance).
 		var round models.Round
-		if err := db.Preload("DefaultTee.Holes").Preload("Course").
+		if err := db.Preload("DefaultTee.Holes").Preload("Course").Preload("Event").
 			First(&round, "id = ?", roundID).Error; err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
 		}
@@ -505,11 +586,13 @@ func UpsertPlayerScores(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		// Determine the effective course handicap (0 when not set).
-		chandi := 0
+		// Determine the effective course handicap: raw handicap adjusted by the event
+		// allowance (floor(course_handicap * allowance / 100)). Falls back to 0 when unset.
+		rawHandicap := 0
 		if rp.CourseHandicap != nil {
-			chandi = *rp.CourseHandicap
+			rawHandicap = *rp.CourseHandicap
 		}
+		chandi := EffectiveCourseHandicap(rawHandicap, round.Event.HandicapAllowance)
 
 		// Build Score records. Net = gross - handicap strokes for that hole.
 		records := make([]models.Score, 0, len(req.Scores))
@@ -582,6 +665,11 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 					fiber.Map{"error": "fir_miss_direction must be one of: short, left, right, long"},
 				)
 			}
+			if s.TeeShotClub != nil && !validTeeShotClubs[*s.TeeShotClub] {
+				return c.Status(fiber.StatusBadRequest).JSON(
+					fiber.Map{"error": "tee_shot_club must be one of: DR, 3W, 5W, 7W, DI, 3H"},
+				)
+			}
 		}
 
 		userIDStr, _ := c.Locals("userID").(string)
@@ -614,6 +702,8 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 				FirstPuttDistance: s.FirstPuttDist,
 				PuttDistanceMade:  s.PuttDistMade,
 				ApproachYds:       s.ApproachYds,
+				TeeShotClub:       s.TeeShotClub,
+				TeeShotDistance:   s.TeeShotDistance,
 			})
 		}
 
@@ -625,6 +715,7 @@ func UpsertHoleStats(db *gorm.DB) fiber.Handler {
 				"gir", "gir_miss_direction",
 				"fir", "fir_miss_direction",
 				"putts", "first_putt_distance", "putt_distance_made", "approach_yds",
+				"tee_shot_club", "tee_shot_distance",
 				"updated_at",
 			}),
 		}).Create(&records)

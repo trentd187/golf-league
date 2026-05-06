@@ -54,6 +54,33 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 **`paddingBottom` for scrollable forms with inputs near the bottom:** use at least 320 so `scrollToEnd` has room to move the focused input above the keyboard on both platforms.
 
+**Chaining keyboard focus between TextInputs without a reload:** `blurOnSubmit` defaults to `true`, which dismisses the keyboard on Enter before `.focus()` on the next field re-opens it — visible as a jarring reload. Use this pattern instead:
+```tsx
+const focusingRef = useRef(false);
+
+// On each TextInput that chains to a next field:
+blurOnSubmit={nextTarget === null}   // false = keep keyboard up when there's a next field
+returnKeyType={nextTarget !== null ? "next" : "done"}
+onSubmitEditing={() => {
+  if (nextTarget !== null) {
+    focusingRef.current = true;      // suppress onBlur's scroll-to-top
+    nextInputRef.current?.focus();
+  }
+}}
+onFocus={() => {
+  // scroll-to-end for bottom inputs (150 ms delay)
+  setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
+}}
+onBlur={() => {
+  if (!focusingRef.current) {
+    // keyboard actually dismissed — reset scroll
+    setTimeout(() => scrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
+  }
+  focusingRef.current = false;
+}}
+```
+See `scorecard/[roundId].tsx` numeric stat → score chaining for a full example.
+
 **Platform-split rendering** (e.g. Android dialog vs iOS modal sheet for date pickers) is intentional and correct — just ensure both branches are complete and tested.
 
 ---
@@ -761,12 +788,18 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 ### Bypass (escape hatch)
 
 ```bash
-LEFTHOOK=0 git commit -m "add scores handler (tests to follow)"
+LEFTHOOK=0 git commit -m "layout/style change — logic already in utils with tests"
 ```
+
+**The escape hatch is only for layout, styling, or wiring changes where all non-trivial logic has already been extracted to `utils/` and tested.** It is NOT for deferring tests to a later commit — if logic was added without tests, write the tests first.
 
 ### Mobile coverage ratchet
 
 `mobile-coverage` runs on `pre-commit`. It runs Jest with `--coverage`, parses the Statements percentage, and blocks commits that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
+
+**What is measured:** `utils/**/*.ts`, `app/sign-in.tsx`, `app/index.tsx`, `app/(tabs)/profile.tsx`, `app/users/**/*.tsx`. Large screen files that can only be integration-tested (scorecard, events, rounds, courses) are excluded — they belong to a future E2E suite, not unit coverage.
+
+**Extract-first rule — mandatory:** Any non-trivial logic added to a screen component MUST be extracted to `utils/` before the component calls it. Write the `utils/` function and its test first (TDD), then write the component code that calls it. This prevents coverage from dropping on every feature addition. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
 
 ---
 

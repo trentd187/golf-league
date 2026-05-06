@@ -20,7 +20,7 @@ import { useMe } from "@/hooks/useMe";
 import { supabase } from "@/utils/supabase";
 import { apiFetch } from "@/utils/api";
 import { API_URL } from "@/constants/api";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import UserAvatar from "@/components/UserAvatar";
 import * as ImagePicker from "expo-image-picker";
@@ -35,6 +35,7 @@ import {
   ScrollView,
   Platform,
   Image,
+  Switch,
 } from "react-native";
 import { useState } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -42,6 +43,11 @@ import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
 import { getTelemetryClient } from "@/utils/telemetry";
+import {
+  type ScorecardSettings,
+  DEFAULT_SCORECARD_SETTINGS,
+} from "@/types/scorecard";
+import { moveStatUp, moveStatDown } from "@/utils/scorecard";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -49,9 +55,8 @@ import { getTelemetryClient } from "@/utils/telemetry";
 // Role colors are categorical — hardcoded and NOT affected by the theme.
 function SystemRoleBadge({ role }: { role?: string }) {
   const styles: Record<string, { bg: string; text: string; label: string }> = {
-    admin:   { bg: "bg-green-100",  text: "text-green-700", label: "Admin" },
-    manager: { bg: "bg-blue-100",   text: "text-blue-700",  label: "Manager" },
-    user:    { bg: "bg-gray-100",   text: "text-gray-600",  label: "User" },
+    admin: { bg: "bg-green-100", text: "text-green-700", label: "Admin" },
+    user:  { bg: "bg-gray-100",  text: "text-gray-600",  label: "User" },
   };
   const style = styles[role ?? ""] ?? styles.user;
   const label = styles[role ?? ""]?.label ?? "User";
@@ -62,6 +67,19 @@ function SystemRoleBadge({ role }: { role?: string }) {
   );
 }
 
+// STAT_META maps each stat key to its human-readable label in the settings UI.
+// Module-level so it isn't recreated on every render.
+const STAT_META: Record<string, string> = {
+  fir:                 "Fairway (FIR)",
+  gir:                 "Green (GIR)",
+  putts:               "Putts",
+  first_putt_distance: "First Putt Distance",
+  putt_distance_made:  "Made Putt Distance",
+  approach_yds:        "Approach Yards",
+  tee_shot_club:       "Tee Shot Club",
+  tee_shot_distance:   "Tee Shot Distance",
+};
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ProfileScreen() {
@@ -70,6 +88,7 @@ export default function ProfileScreen() {
   const { data: meData } = useMe();
   const router = useRouter();
   const t = useTheme();
+  const queryClient = useQueryClient();
 
   // Fetch the list of users this player is following so they appear in the profile.
   const { data: following, isLoading: followingLoading } = useQuery({
@@ -87,6 +106,40 @@ export default function ProfileScreen() {
     // Only fetch once the Supabase session is ready (user is truthy).
     enabled: !!user,
   });
+
+  const { data: scorecardSettings } = useQuery<ScorecardSettings>({
+    queryKey: ["scorecardSettings"],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to load scorecard settings");
+      return res.json();
+    },
+    enabled: !!user,
+  });
+
+  const settingsMutation = useMutation({
+    mutationFn: async (next: ScorecardSettings) => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      if (!res.ok) throw new Error("Failed to save scorecard settings");
+      return res.json() as Promise<ScorecardSettings>;
+    },
+    // Optimistically update the cache so the toggle feels instant.
+    onSuccess: (_, next) => {
+      queryClient.setQueryData<ScorecardSettings>(["scorecardSettings"], next);
+    },
+  });
+
+  // Merge with defaults so partial or missing data (e.g. old server responses without
+  // stat_order) still produces a fully-shaped ScorecardSettings object.
+  const settings: ScorecardSettings = { ...DEFAULT_SCORECARD_SETTINGS, ...(scorecardSettings as Partial<ScorecardSettings> | undefined) };
 
   // Why two separate useThemeStore calls instead of one selector returning an object?
   // A selector like `(s) => ({ themeName, setTheme })` creates a new object on every
@@ -178,11 +231,16 @@ export default function ProfileScreen() {
         .from("avatars")
         .getPublicUrl(fileName);
 
+      // Append a cache-busting timestamp so the CDN and React Native's image cache
+      // treat each upload as a new resource. The storage path stays the same (no
+      // orphaned files), but the URL changes on every upload, bypassing stale caches.
+      const cacheBustedUrl = `${publicUrl}?t=${Date.now()}`;
+
       // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
       // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
       // is user-writable only and is never touched by the OAuth flow.
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { custom_avatar_url: publicUrl },
+        data: { custom_avatar_url: cacheBustedUrl },
       });
 
       if (updateError) throw updateError;
@@ -487,6 +545,101 @@ export default function ProfileScreen() {
                     <Ionicons name="checkmark-circle" size={14} color={t.colors.tabBarActive} />
                   )}
                 </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* ── Score Position picker ─────────────────────────────────────────── */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
+            Score Position
+          </Text>
+
+          <View className={`${t.surface} rounded-2xl mb-6 border ${t.border} overflow-hidden`}>
+            <View className="flex-row items-center justify-between px-4 py-3">
+              <Text className={`text-sm ${t.textPrimary}`}>Score entry appears</Text>
+              <View className="flex-row gap-2">
+                {(["first", "last"] as const).map((pos) => {
+                  const active = settings.score_position === pos;
+                  const label = pos === "first" ? "Before Stats" : "After Stats";
+                  return (
+                    <TouchableOpacity
+                      key={pos}
+                      testID={`score-position-${pos}`}
+                      onPress={() => settingsMutation.mutate({ ...settings, score_position: pos })}
+                      disabled={settingsMutation.isPending}
+                      className={`px-3 py-1.5 rounded-full border ${
+                        active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
+                      }`}
+                      activeOpacity={0.7}
+                    >
+                      <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>
+                        {label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          {/* ── Scorecard Stats toggles (ordered, draggable via arrows) ─────────── */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
+            Scorecard Stats
+          </Text>
+
+          <View className={`${t.surface} rounded-2xl mb-6 border ${t.border} overflow-hidden`}>
+            {settings.stat_order.map((key, idx, arr) => {
+              const enabledKey = `${key}_enabled` as keyof ScorecardSettings;
+              const label = STAT_META[key] ?? key;
+              return (
+                <View
+                  key={key}
+                  className={`flex-row items-center px-4 py-3 ${
+                    idx < arr.length - 1 ? `border-b ${t.divider}` : ""
+                  }`}
+                >
+                  {/* Reorder arrows */}
+                  <View className="flex-col mr-2">
+                    <TouchableOpacity
+                      testID={`${key}-up`}
+                      onPress={() =>
+                        settingsMutation.mutate({ ...settings, stat_order: moveStatUp(settings.stat_order, key) })
+                      }
+                      disabled={idx === 0 || settingsMutation.isPending}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="chevron-up"
+                        size={18}
+                        color={idx === 0 ? t.colors.tabBarInactive : t.colors.tabBarActive}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID={`${key}-down`}
+                      onPress={() =>
+                        settingsMutation.mutate({ ...settings, stat_order: moveStatDown(settings.stat_order, key) })
+                      }
+                      disabled={idx === arr.length - 1 || settingsMutation.isPending}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="chevron-down"
+                        size={18}
+                        color={idx === arr.length - 1 ? t.colors.tabBarInactive : t.colors.tabBarActive}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                  <Text className={`flex-1 text-sm ${t.textPrimary}`}>{label}</Text>
+                  <Switch
+                    value={settings[enabledKey] as boolean}
+                    onValueChange={(val) =>
+                      settingsMutation.mutate({ ...settings, [enabledKey]: val })
+                    }
+                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
+                    thumbColor="#ffffff"
+                    disabled={settingsMutation.isPending}
+                  />
+                </View>
               );
             })}
           </View>

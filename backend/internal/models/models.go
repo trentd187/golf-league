@@ -20,12 +20,14 @@ import (
 // without sacrificing human-readable values in the database.
 
 // UserRole represents a user's global permission level across the entire platform.
+// There are two global roles: admin (full platform access, course editing) and user
+// (any authenticated user — can create and manage their own events via the event-level
+// organizer role). The manager role was removed in migration 000014.
 type UserRole string
 
 const (
-	UserRoleAdmin   UserRole = "admin"   // Full access: manage users, events, everything
-	UserRoleManager UserRole = "manager" // Can create and manage events
-	UserRoleUser    UserRole = "user"    // Regular player: can join events and record scores
+	UserRoleAdmin UserRole = "admin" // Full access: manage users, courses, all events
+	UserRoleUser  UserRole = "user"  // Any authenticated user — can create events, becomes organizer
 )
 
 // EventType describes what kind of golf competition is being organized.
@@ -149,13 +151,16 @@ type Event struct {
 	Status      EventStatus `gorm:"type:event_status;not null;default:'active'"`
 	StartDate   *time.Time  // Pointer = nullable (some events don't have a fixed date)
 	EndDate     *time.Time  // Pointer = nullable
-	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`
-	Creator     User        `gorm:"foreignKey:CreatedBy"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	PointsRules []EventPointsRule `gorm:"foreignKey:EventID"`
-	Players     []EventPlayer     `gorm:"foreignKey:EventID"`
-	Rounds      []Round           `gorm:"foreignKey:EventID"`
+	// HandicapAllowance is the percentage of each player's course_handicap applied when
+	// calculating net scores (e.g. 90 = 90%). NULL means full handicap (no allowance set).
+	HandicapAllowance *float64  `gorm:"type:decimal(5,2)"`
+	CreatedBy         uuid.UUID `gorm:"type:uuid;not null"`
+	Creator           User      `gorm:"foreignKey:CreatedBy"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	PointsRules       []EventPointsRule `gorm:"foreignKey:EventID"`
+	Players           []EventPlayer     `gorm:"foreignKey:EventID"`
+	Rounds            []Round           `gorm:"foreignKey:EventID"`
 }
 
 // EventPointsRule defines how many league points a player earns for a given finishing position.
@@ -258,14 +263,39 @@ type HoleStat struct {
 	// FIR (Fairway in Regulation): true = hit the fairway, false = missed
 	FIR *bool `gorm:"column:fir;type:boolean"`
 	// FIRMissDirection: which side the drive missed
-	FIRMissDirection  *string   `gorm:"column:fir_miss_direction;type:text"`
-	Putts             *int      `gorm:"column:putts;type:int"`
-	FirstPuttDistance *int      `gorm:"column:first_putt_distance;type:int"` // feet
-	PuttDistanceMade  *int      `gorm:"column:putt_distance_made;type:int"`  // feet
-	ApproachYds       *int      `gorm:"column:approach_yds;type:int"`        // yards; optional
-	EnteredAt         time.Time `gorm:"autoCreateTime"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime"`
+	FIRMissDirection  *string `gorm:"column:fir_miss_direction;type:text"`
+	Putts             *int    `gorm:"column:putts;type:int"`
+	FirstPuttDistance *int    `gorm:"column:first_putt_distance;type:int"` // feet
+	PuttDistanceMade  *int    `gorm:"column:putt_distance_made;type:int"`  // feet
+	ApproachYds       *int    `gorm:"column:approach_yds;type:int"`        // yards; optional
+	// TeeShotClub: club used off the tee — constrained enum: DR, 3W, 5W, 7W, DI, 3H
+	TeeShotClub     *string   `gorm:"column:tee_shot_club;type:text"`
+	TeeShotDistance *int      `gorm:"column:tee_shot_distance;type:int"` // yards
+	EnteredAt       time.Time `gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `gorm:"autoUpdateTime"`
 }
+
+// ScorecardSettings stores per-user toggles controlling which supplemental stats are
+// displayed on the active scorecard. One row per user; missing row = server defaults.
+// Existing stats (FIR, GIR, putts, approach) default true to preserve current behaviour.
+type ScorecardSettings struct {
+	UserID                   uuid.UUID `gorm:"type:uuid;primaryKey"`
+	FIREnabled               bool      `gorm:"not null;default:true"`
+	GIREnabled               bool      `gorm:"not null;default:true"`
+	PuttsEnabled             bool      `gorm:"not null;default:true"`
+	FirstPuttDistanceEnabled bool      `gorm:"not null;default:true"`
+	PuttDistanceMadeEnabled  bool      `gorm:"not null;default:true"`
+	ApproachYdsEnabled       bool      `gorm:"not null;default:true"`
+	TeeShotClubEnabled       bool      `gorm:"not null;default:false"`
+	TeeShotDistanceEnabled   bool      `gorm:"not null;default:false"`
+	StatOrder                string    `gorm:"not null;default:'fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance'"`
+	ScorePosition            string    `gorm:"not null;default:'last'"`
+	UpdatedAt                time.Time `gorm:"autoUpdateTime"`
+}
+
+// TableName overrides GORM's default pluralisation ("scorecard_settings") to match
+// the actual table name created by migration 000015.
+func (ScorecardSettings) TableName() string { return "user_scorecard_settings" }
 
 // Group represents a tee-time group — players who tee off together.
 type Group struct {

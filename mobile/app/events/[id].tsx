@@ -82,6 +82,7 @@ type EventDetail = {
   status: string;
   start_date: string | null;
   end_date: string | null;
+  handicap_allowance: number | null; // 0–100; null = full handicap
   creator_name: string;
   member_count: number;
   created_at: string;
@@ -149,9 +150,11 @@ export default function EventDetailScreen() {
 
   // --- Edit event form state ---
   const [editName, setEditName]               = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editStartDate, setEditStartDate]     = useState("");
-  const [editEndDate, setEditEndDate]         = useState("");
+  const [editDescription, setEditDescription]             = useState("");
+  const [editStartDate, setEditStartDate]                 = useState("");
+  const [editEndDate, setEditEndDate]                     = useState("");
+  // Handicap allowance stored as display string (e.g. "90"); converted to number on submit.
+  const [editHandicapAllowance, setEditHandicapAllowance] = useState("");
 
   // --- Add member search state (owned here so it resets when the modal closes) ---
   const [memberSearch, setMemberSearch] = useState("");
@@ -284,6 +287,7 @@ export default function EventDetailScreen() {
       description?: string;
       start_date?: string;
       end_date?: string;
+      handicap_allowance?: number | null;
     }) => {
       const token = await getToken();
       const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
@@ -435,6 +439,7 @@ export default function EventDetailScreen() {
     setEditDescription(event?.description ?? "");
     setEditStartDate(apiToDisplay(event?.start_date));
     setEditEndDate(apiToDisplay(event?.end_date));
+    setEditHandicapAllowance(event?.handicap_allowance != null ? String(event.handicap_allowance) : "");
     setEditModalVisible(true);
   };
 
@@ -443,11 +448,25 @@ export default function EventDetailScreen() {
       Alert.alert("Name required", "Event name cannot be empty.", [{ text: "OK" }]);
       return;
     }
+    const allowanceStr = editHandicapAllowance.trim();
+    let allowanceVal: number | null | undefined = undefined;
+    if (allowanceStr === "") {
+      // Empty string = clear the allowance (set to null = full handicap).
+      allowanceVal = null;
+    } else {
+      const parsed = parseFloat(allowanceStr);
+      if (isNaN(parsed) || parsed < 0 || parsed > 100) {
+        Alert.alert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.", [{ text: "OK" }]);
+        return;
+      }
+      allowanceVal = parsed;
+    }
     updateEventMutation.mutate({
       name: editName.trim(),
       description: editDescription,
       start_date: displayToApi(editStartDate.trim()),
       end_date: displayToApi(editEndDate.trim()),
+      handicap_allowance: allowanceVal,
     });
   };
 
@@ -679,6 +698,15 @@ export default function EventDetailScreen() {
               <Text className={`text-xs ${t.textTertiary}`}>
                 {event.start_date ? apiToDisplay(event.start_date) : "—"}
                 {event.end_date ? ` → ${apiToDisplay(event.end_date)}` : ""}
+              </Text>
+            </View>
+          )}
+
+          {event.handicap_allowance != null && (
+            <View className="flex-row items-center gap-1 mb-2">
+              <Ionicons name="golf-outline" size={14} color={t.colors.tabBarInactive} />
+              <Text className={`text-xs ${t.textTertiary}`}>
+                {event.handicap_allowance}% handicap allowance
               </Text>
             </View>
           )}
@@ -1024,14 +1052,32 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              <View className="mb-8">
+              <View className="mb-4">
                 <DateInput
                   label="End Date"
                   optional
                   value={editEndDate}
                   onChange={setEditEndDate}
                   disabled={updateEventMutation.isPending}
+                  returnKeyType="next"
+                />
+              </View>
+
+              {/* Handicap allowance — leave blank to remove (full handicap) */}
+              <View className="mb-8">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                  Handicap Allowance{" "}
+                  <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional, 0–100%)</Text>
+                </Text>
+                <TextInput
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="e.g. 90  (leave blank for full handicap)"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  value={editHandicapAllowance}
+                  onChangeText={setEditHandicapAllowance}
+                  keyboardType="numeric"
                   returnKeyType="done"
+                  editable={!updateEventMutation.isPending}
                 />
               </View>
 

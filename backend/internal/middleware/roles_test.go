@@ -39,7 +39,8 @@ func TestRequireRole_MissingLocal_Forbidden(t *testing.T) {
 }
 
 func TestRequireRole_WrongRole_Forbidden(t *testing.T) {
-	app := makeRoleApp("user", "admin", "manager")
+	// user role is forbidden on an admin-only route (e.g. course mutations)
+	app := makeRoleApp("user", "admin")
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req, -1)
@@ -49,7 +50,8 @@ func TestRequireRole_WrongRole_Forbidden(t *testing.T) {
 }
 
 func TestRequireRole_MatchingRole_Passes(t *testing.T) {
-	app := makeRoleApp("manager", "admin", "manager")
+	// user role passes when it is explicitly included in the allowed set
+	app := makeRoleApp("user", "admin", "user")
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req, -1)

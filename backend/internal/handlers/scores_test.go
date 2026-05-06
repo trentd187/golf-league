@@ -290,3 +290,31 @@ func TestHandicapStrokes_TwentyHandicap(t *testing.T) {
 	assert.Equal(t, 1, handlers.HandicapStrokes(20, 3))
 	assert.Equal(t, 1, handlers.HandicapStrokes(20, 18))
 }
+
+// ─── EffectiveCourseHandicap unit tests ───────────────────────────────────────
+
+func ptrFloat(v float64) *float64 { return &v }
+
+// TestEffectiveCourseHandicap_NilAllowance verifies that nil allowance returns
+// the full course handicap unchanged.
+func TestEffectiveCourseHandicap_NilAllowance(t *testing.T) {
+	assert.Equal(t, 18, handlers.EffectiveCourseHandicap(18, nil))
+	assert.Equal(t, 0, handlers.EffectiveCourseHandicap(0, nil))
+}
+
+// TestEffectiveCourseHandicap_100Percent verifies that 100% allowance is a no-op.
+func TestEffectiveCourseHandicap_100Percent(t *testing.T) {
+	assert.Equal(t, 18, handlers.EffectiveCourseHandicap(18, ptrFloat(100)))
+}
+
+// TestEffectiveCourseHandicap_90Percent verifies that 90% allowance floors correctly.
+// 18 * 0.90 = 16.2 → floor = 16.
+func TestEffectiveCourseHandicap_90Percent(t *testing.T) {
+	assert.Equal(t, 16, handlers.EffectiveCourseHandicap(18, ptrFloat(90)))
+}
+
+// TestEffectiveCourseHandicap_75Percent verifies a common tournament allowance.
+// 20 * 0.75 = 15.0 → floor = 15.
+func TestEffectiveCourseHandicap_75Percent(t *testing.T) {
+	assert.Equal(t, 15, handlers.EffectiveCourseHandicap(20, ptrFloat(75)))
+}

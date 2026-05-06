@@ -151,13 +151,16 @@ type Event struct {
 	Status      EventStatus `gorm:"type:event_status;not null;default:'active'"`
 	StartDate   *time.Time  // Pointer = nullable (some events don't have a fixed date)
 	EndDate     *time.Time  // Pointer = nullable
-	CreatedBy   uuid.UUID   `gorm:"type:uuid;not null"`
-	Creator     User        `gorm:"foreignKey:CreatedBy"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	PointsRules []EventPointsRule `gorm:"foreignKey:EventID"`
-	Players     []EventPlayer     `gorm:"foreignKey:EventID"`
-	Rounds      []Round           `gorm:"foreignKey:EventID"`
+	// HandicapAllowance is the percentage of each player's course_handicap applied when
+	// calculating net scores (e.g. 90 = 90%). NULL means full handicap (no allowance set).
+	HandicapAllowance *float64  `gorm:"type:decimal(5,2)"`
+	CreatedBy         uuid.UUID `gorm:"type:uuid;not null"`
+	Creator           User      `gorm:"foreignKey:CreatedBy"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	PointsRules       []EventPointsRule `gorm:"foreignKey:EventID"`
+	Players           []EventPlayer     `gorm:"foreignKey:EventID"`
+	Rounds            []Round           `gorm:"foreignKey:EventID"`
 }
 
 // EventPointsRule defines how many league points a player earns for a given finishing position.

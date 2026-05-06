@@ -648,8 +648,8 @@ export default function ScorecardScreen() {
       if (!isNaN(g) && g >= 1) {
         indivGrossTotal += g;
         indivGrossCount++;
-        if (showNetCol && selectedPlayer.course_handicap != null && hole.stroke_index) {
-          indivNetTotal += g - handicapStrokes(selectedPlayer.course_handicap, hole.stroke_index);
+        if (showNetCol && selectedPlayer.effective_course_handicap != null && hole.stroke_index) {
+          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, hole.stroke_index);
           indivNetCount++;
         }
       }
@@ -1012,7 +1012,9 @@ export default function ScorecardScreen() {
               const holeData   = holeRows.find((h) => h.hole_number === currentHole) ?? holeRows[0];
               const val        = scores[rpId]?.[holeData.hole_number] ?? "";
               const gross      = parseInt(val, 10);
-              const hcp        = selectedPlayer.course_handicap ?? null;
+              // Use effective_course_handicap for net preview so the live display
+              // matches what the server will store (allowance already applied).
+              const hcp        = selectedPlayer.effective_course_handicap ?? null;
               const strokes    = (holeData.stroke_index && hcp != null)
                 ? handicapStrokes(hcp, holeData.stroke_index)
                 : 0;
@@ -1169,7 +1171,13 @@ export default function ScorecardScreen() {
                   )}
                   {hcp != null && strokes > 0 && (
                     <View className="items-center gap-1">
-                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>HCP</Text>
+                      {/* Show gross/effective handicaps when an allowance is active */}
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
+                        {scorecard.handicap_allowance != null &&
+                         selectedPlayer.course_handicap !== hcp
+                          ? `HCP ${selectedPlayer.course_handicap}→${hcp}`
+                          : "HCP"}
+                      </Text>
                       <View className={`w-16 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
                         <Text className={`text-2xl font-bold ${t.textTertiary}`}>+{strokes}</Text>
                       </View>

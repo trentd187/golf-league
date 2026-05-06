@@ -41,25 +41,27 @@ import (
 // We use a dedicated response struct so we control exactly what gets serialised
 // and can include computed fields like MemberCount.
 type EventResponse struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
-	EventType   string  `json:"event_type"`
-	Status      string  `json:"status"`
-	StartDate   *string `json:"start_date"`
-	EndDate     *string `json:"end_date"`
-	CreatorName string  `json:"creator_name"`
-	MemberCount int64   `json:"member_count"`
-	CreatedAt   string  `json:"created_at"`
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Description       *string  `json:"description"`
+	EventType         string   `json:"event_type"`
+	Status            string   `json:"status"`
+	StartDate         *string  `json:"start_date"`
+	EndDate           *string  `json:"end_date"`
+	HandicapAllowance *float64 `json:"handicap_allowance"` // nil = full handicap (no allowance set)
+	CreatorName       string   `json:"creator_name"`
+	MemberCount       int64    `json:"member_count"`
+	CreatedAt         string   `json:"created_at"`
 }
 
 // CreateEventRequest is the JSON body we expect on POST /api/v1/events.
 type CreateEventRequest struct {
-	Name        string  `json:"name"`
-	Description *string `json:"description"`
-	EventType   string  `json:"event_type"` // "league", "tournament", or "casual"
-	StartDate   *string `json:"start_date"` // optional "YYYY-MM-DD"
-	EndDate     *string `json:"end_date"`   // optional "YYYY-MM-DD"
+	Name              string   `json:"name"`
+	Description       *string  `json:"description"`
+	EventType         string   `json:"event_type"`         // "league", "tournament", or "casual"
+	StartDate         *string  `json:"start_date"`         // optional "YYYY-MM-DD"
+	EndDate           *string  `json:"end_date"`           // optional "YYYY-MM-DD"
+	HandicapAllowance *float64 `json:"handicap_allowance"` // optional 0–100; nil = full handicap
 }
 
 // formatOptionalDate converts a *time.Time to a *string in "2006-01-02" format.
@@ -134,16 +136,17 @@ func GetEvents(db *gorm.DB) fiber.Handler {
 				Count(&memberCount)
 
 			response = append(response, EventResponse{
-				ID:          event.ID.String(),
-				Name:        event.Name,
-				Description: event.Description,
-				EventType:   string(event.EventType),
-				Status:      string(event.Status),
-				StartDate:   formatOptionalDate(event.StartDate),
-				EndDate:     formatOptionalDate(event.EndDate),
-				CreatorName: event.Creator.DisplayName,
-				MemberCount: memberCount,
-				CreatedAt:   event.CreatedAt.UTC().Format(time.RFC3339),
+				ID:                event.ID.String(),
+				Name:              event.Name,
+				Description:       event.Description,
+				EventType:         string(event.EventType),
+				Status:            string(event.Status),
+				StartDate:         formatOptionalDate(event.StartDate),
+				EndDate:           formatOptionalDate(event.EndDate),
+				HandicapAllowance: event.HandicapAllowance,
+				CreatorName:       event.Creator.DisplayName,
+				MemberCount:       memberCount,
+				CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
 			})
 		}
 
@@ -199,15 +202,22 @@ func CreateEvent(db *gorm.DB) fiber.Handler {
 			})
 		}
 
+		if req.HandicapAllowance != nil && (*req.HandicapAllowance < 0 || *req.HandicapAllowance > 100) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "handicap_allowance must be between 0 and 100",
+			})
+		}
+
 		// Use a transaction so that if the event_player insert fails, the event is also
 		// rolled back — preventing orphaned event records.
 		var createdEvent models.Event
 
 		txErr := db.Transaction(func(tx *gorm.DB) error {
 			event := models.Event{
-				Name:        req.Name,
-				Description: req.Description,
-				EventType:   models.EventType(req.EventType),
+				Name:              req.Name,
+				Description:       req.Description,
+				EventType:         models.EventType(req.EventType),
+				HandicapAllowance: req.HandicapAllowance,
 				// New events start as "active" — "upcoming" was removed from the status enum.
 				Status:    models.EventStatusActive,
 				StartDate: startDate,
@@ -250,16 +260,17 @@ func CreateEvent(db *gorm.DB) fiber.Handler {
 		db.First(&creator, "id = ?", userID)
 
 		return c.Status(fiber.StatusCreated).JSON(EventResponse{
-			ID:          createdEvent.ID.String(),
-			Name:        createdEvent.Name,
-			Description: createdEvent.Description,
-			EventType:   string(createdEvent.EventType),
-			Status:      string(createdEvent.Status),
-			StartDate:   formatOptionalDate(createdEvent.StartDate),
-			EndDate:     formatOptionalDate(createdEvent.EndDate),
-			CreatorName: creator.DisplayName,
-			MemberCount: 1, // Just the creator so far
-			CreatedAt:   createdEvent.CreatedAt.UTC().Format(time.RFC3339),
+			ID:                createdEvent.ID.String(),
+			Name:              createdEvent.Name,
+			Description:       createdEvent.Description,
+			EventType:         string(createdEvent.EventType),
+			Status:            string(createdEvent.Status),
+			StartDate:         formatOptionalDate(createdEvent.StartDate),
+			EndDate:           formatOptionalDate(createdEvent.EndDate),
+			HandicapAllowance: createdEvent.HandicapAllowance,
+			CreatorName:       creator.DisplayName,
+			MemberCount:       1, // Just the creator so far
+			CreatedAt:         createdEvent.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 }
@@ -304,11 +315,12 @@ type MemberResponse struct {
 // All fields are optional pointers — only non-nil fields are applied (partial update).
 // "upcoming" was removed — valid status values are "active", "completed", "cancelled".
 type UpdateEventRequest struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
-	StartDate   *string `json:"start_date"` // "YYYY-MM-DD"; "" clears it
-	EndDate     *string `json:"end_date"`   // "YYYY-MM-DD"; "" clears it
-	Status      *string `json:"status"`
+	Name              *string  `json:"name"`
+	Description       *string  `json:"description"`
+	StartDate         *string  `json:"start_date"` // "YYYY-MM-DD"; "" clears it
+	EndDate           *string  `json:"end_date"`   // "YYYY-MM-DD"; "" clears it
+	Status            *string  `json:"status"`
+	HandicapAllowance *float64 `json:"handicap_allowance"` // 0–100; nil leaves current value unchanged
 }
 
 // AddMemberRequest is the JSON body for POST /api/v1/events/:id/members.
@@ -409,16 +421,17 @@ func GetEvent(db *gorm.DB) fiber.Handler {
 
 		return c.JSON(EventDetailResponse{
 			EventResponse: EventResponse{
-				ID:          event.ID.String(),
-				Name:        event.Name,
-				Description: event.Description,
-				EventType:   string(event.EventType),
-				Status:      string(event.Status),
-				StartDate:   formatOptionalDate(event.StartDate),
-				EndDate:     formatOptionalDate(event.EndDate),
-				CreatorName: event.Creator.DisplayName,
-				MemberCount: int64(len(players)),
-				CreatedAt:   event.CreatedAt.UTC().Format(time.RFC3339),
+				ID:                event.ID.String(),
+				Name:              event.Name,
+				Description:       event.Description,
+				EventType:         string(event.EventType),
+				Status:            string(event.Status),
+				StartDate:         formatOptionalDate(event.StartDate),
+				EndDate:           formatOptionalDate(event.EndDate),
+				HandicapAllowance: event.HandicapAllowance,
+				CreatorName:       event.Creator.DisplayName,
+				MemberCount:       int64(len(players)),
+				CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
 			},
 			Members: members,
 		})
@@ -428,6 +441,8 @@ func GetEvent(db *gorm.DB) fiber.Handler {
 // UpdateEvent returns a handler for PATCH /api/v1/events/:id.
 // Only organizers of the event (or global admins) may update it.
 // Only non-nil fields are applied — partial update pattern.
+// Body is parsed and validated before the DB load so Tier-1 tests can reach
+// validation paths (e.g. invalid handicap_allowance) without a real database.
 func UpdateEvent(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userIDStr, _ := c.Locals("userID").(string)
@@ -442,6 +457,22 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
 		}
 
+		// Parse and validate body before the DB load so Tier-1 tests reach validation
+		// without needing a real database.
+		var req UpdateEventRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		if req.Name != nil && *req.Name == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name cannot be empty"})
+		}
+		if req.HandicapAllowance != nil && (*req.HandicapAllowance < 0 || *req.HandicapAllowance > 100) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "handicap_allowance must be between 0 and 100",
+			})
+		}
+
 		var event models.Event
 		if err := db.Preload("Creator").First(&event, "id = ?", eventID).Error; err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
@@ -451,19 +482,11 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
 		}
 
-		var req UpdateEventRequest
-		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
-		}
-
-		if req.Name != nil {
-			if *req.Name == "" {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name cannot be empty"})
-			}
-			event.Name = *req.Name
-		}
 		if req.Description != nil {
 			event.Description = req.Description
+		}
+		if req.Name != nil {
+			event.Name = *req.Name
 		}
 		if req.StartDate != nil {
 			t, err := parseOptionalDate(req.StartDate)
@@ -491,6 +514,12 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			}
 		}
 
+		// Track whether the allowance changed so we know whether to recalculate scores.
+		allowanceChanged := req.HandicapAllowance != nil
+		if allowanceChanged {
+			event.HandicapAllowance = req.HandicapAllowance
+		}
+
 		// db.Save() issues an UPDATE for all columns (GORM doesn't diff).
 		if err := db.Save(&event).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update event"})
@@ -503,20 +532,39 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			)
 		}
 
+		// Recalculate all existing net scores in every round of this event
+		// when the handicap allowance changes. Best-effort — log on failure but
+		// don't reject the update since the event record was already saved.
+		if allowanceChanged {
+			if err := recalculateEventScores(db, eventID, event.HandicapAllowance); err != nil {
+				observability.LogInfo(c.UserContext(), "event.handicap_allowance_recalc_error",
+					"Failed to recalculate scores after allowance change",
+					"event_id", eventID.String(),
+					"error", err.Error(),
+				)
+			} else {
+				observability.LogInfo(c.UserContext(), "event.handicap_allowance_changed",
+					"Handicap allowance updated; scores recalculated",
+					"event_id", eventID.String(),
+				)
+			}
+		}
+
 		var memberCount int64
 		db.Model(&models.EventPlayer{}).Where("event_id = ?", event.ID).Count(&memberCount)
 
 		return c.JSON(EventResponse{
-			ID:          event.ID.String(),
-			Name:        event.Name,
-			Description: event.Description,
-			EventType:   string(event.EventType),
-			Status:      string(event.Status),
-			StartDate:   formatOptionalDate(event.StartDate),
-			EndDate:     formatOptionalDate(event.EndDate),
-			CreatorName: event.Creator.DisplayName,
-			MemberCount: memberCount,
-			CreatedAt:   event.CreatedAt.UTC().Format(time.RFC3339),
+			ID:                event.ID.String(),
+			Name:              event.Name,
+			Description:       event.Description,
+			EventType:         string(event.EventType),
+			Status:            string(event.Status),
+			StartDate:         formatOptionalDate(event.StartDate),
+			EndDate:           formatOptionalDate(event.EndDate),
+			HandicapAllowance: event.HandicapAllowance,
+			CreatorName:       event.Creator.DisplayName,
+			MemberCount:       memberCount,
+			CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 }

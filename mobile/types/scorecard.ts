@@ -75,6 +75,9 @@ export interface ScorecardPlayer {
   display_name: string;
   avatar_url: string | null;
   course_handicap: number | null;
+  // effective_course_handicap is course_handicap after applying the event's handicap allowance.
+  // Equal to course_handicap when no allowance is set. Null when course_handicap is null.
+  effective_course_handicap: number | null;
   scores: ScorecardScore[];
   hole_stats: ScorecardHoleStat[];
   // Null when fewer holes have been scored than hole_count — prevents showing partial totals.
@@ -116,6 +119,9 @@ export interface Scorecard {
   // is_organizer is true when the requesting user is an organizer of this round's event.
   // The mobile client uses this to show/hide the "End Round" button.
   is_organizer: boolean;
+  // handicap_allowance is the event-level percentage applied to each player's course handicap
+  // (e.g. 90 = 90%). Null means full handicap (no allowance set).
+  handicap_allowance: number | null;
   // nine_hole_selection is "front" (holes 1–9), "back" (holes 10–18), or null (full round).
   // When set, hole_count is 9 and holes contains only the selected half.
   nine_hole_selection: "front" | "back" | null;

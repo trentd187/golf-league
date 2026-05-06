@@ -47,6 +47,7 @@ type EventResponse = {
   status: string;
   start_date: string | null; // "YYYY-MM-DD" or null
   end_date: string | null;
+  handicap_allowance: number | null; // 0–100, null = full handicap
   creator_name: string;
   member_count: number;
   created_at: string;
@@ -171,6 +172,8 @@ export default function EventsScreen() {
   // Dates stored in MM-DD-YY display format; converted to YYYY-MM-DD when sent to the API.
   const [newStartDate, setNewStartDate] = useState("");
   const [newEndDate, setNewEndDate] = useState("");
+  // Handicap allowance stored as a display string (e.g. "90"); converted to number on submit.
+  const [newHandicapAllowance, setNewHandicapAllowance] = useState("");
 
   // When start date is picked, pre-fill end date if it's still empty (saves a tap for single-day events).
   const handleStartDateChange = (value: string) => {
@@ -279,6 +282,7 @@ export default function EventsScreen() {
       description?: string;
       start_date?: string;
       end_date?: string;
+      handicap_allowance?: number;
     }) => {
       const token = await getToken();
       const res = await apiFetch(`${API_URL}/api/v1/events`, {
@@ -303,6 +307,7 @@ export default function EventsScreen() {
       setNewEventType("league");
       setNewStartDate("");
       setNewEndDate("");
+      setNewHandicapAllowance("");
     },
     onError: (err: Error) => {
       Alert.alert("Something went wrong", err.message, [{ text: "OK" }]);
@@ -319,12 +324,19 @@ export default function EventsScreen() {
     // sending an empty string that the backend would try to parse.
     const startDate = displayToApi(newStartDate.trim()) || undefined;
     const endDate   = displayToApi(newEndDate.trim())   || undefined;
+    const allowanceStr = newHandicapAllowance.trim();
+    const allowanceNum = allowanceStr ? parseFloat(allowanceStr) : undefined;
+    if (allowanceNum !== undefined && (isNaN(allowanceNum) || allowanceNum < 0 || allowanceNum > 100)) {
+      Alert.alert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.", [{ text: "OK" }]);
+      return;
+    }
     createEventMutation.mutate({
       name: trimmedName,
       event_type: newEventType,
       description: newDescription.trim() || undefined,
       start_date: startDate,
       end_date:   endDate,
+      handicap_allowance: allowanceNum,
     });
   };
 
@@ -335,6 +347,7 @@ export default function EventsScreen() {
     setNewEventType("league");
     setNewStartDate("");
     setNewEndDate("");
+    setNewHandicapAllowance("");
   };
 
   const clearFilters = () => {
@@ -721,14 +734,32 @@ export default function EventsScreen() {
                 />
               </View>
 
-              <View className="mb-8">
+              <View className="mb-4">
                 <DateInput
                   label="End Date"
                   optional
                   value={newEndDate}
                   onChange={setNewEndDate}
                   disabled={createEventMutation.isPending}
+                  returnKeyType="next"
+                />
+              </View>
+
+              {/* Handicap allowance — percentage of each player's course handicap applied to net scores */}
+              <View className="mb-8">
+                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+                  Handicap Allowance{" "}
+                  <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional, 0–100%)</Text>
+                </Text>
+                <TextInput
+                  className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="e.g. 90  (leave blank for full handicap)"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  value={newHandicapAllowance}
+                  onChangeText={setNewHandicapAllowance}
+                  keyboardType="numeric"
                   returnKeyType="done"
+                  editable={!createEventMutation.isPending}
                 />
               </View>
 

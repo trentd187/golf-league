@@ -22,6 +22,7 @@ const mockUseMutation = jest.fn();
 const mockUseQueries  = jest.fn();
 const mockUseQueryClient = jest.fn(() => ({
   setQueryData: jest.fn(),
+  getQueryData: jest.fn(),
   invalidateQueries: jest.fn(),
 }));
 
@@ -135,6 +136,12 @@ beforeEach(() => {
   mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: false });
   mockUseQueries.mockReturnValue([]);
   mockBuildMyStats.mockReturnValue(emptyStats);
+  // Reset the query client mock so each test gets a fresh stable object.
+  mockUseQueryClient.mockImplementation(() => ({
+    setQueryData: jest.fn(),
+    getQueryData: jest.fn(),
+    invalidateQueries: jest.fn(),
+  }));
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -274,4 +281,105 @@ it("calls the follow mutation when the Follow button is pressed", async () => {
     fireEvent.press(getByText("Follow"));
   });
   expect(mutateFn).toHaveBeenCalledWith({ following: false });
+});
+
+it("follow onSuccess: flips profile cache and appends user to following list cache", async () => {
+  // Use a stable client so we can assert on the exact same function instances.
+  const stableClient = {
+    setQueryData: jest.fn(),
+    getQueryData: jest.fn().mockReturnValue(mockProfile),
+    invalidateQueries: jest.fn(),
+  };
+  mockUseQueryClient.mockReturnValue(stableClient);
+
+  let capturedOnSuccess: ((data: undefined, vars: { following: boolean }) => void) | undefined;
+  mockUseMutation.mockImplementation((options: { onSuccess?: typeof capturedOnSuccess }) => {
+    capturedOnSuccess = options.onSuccess;
+    return { mutate: jest.fn(), isPending: false };
+  });
+
+  mockUseQuery
+    .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
+    .mockReturnValueOnce(mockHcStats)
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+
+  render(<UserProfileScreen />);
+
+  await act(async () => {
+    capturedOnSuccess!(undefined, { following: false }); // simulates a successful follow
+  });
+
+  // Verify profile cache updater flips is_following to true.
+  const profileCall = stableClient.setQueryData.mock.calls.find(
+    ([key]: [string[]]) => key[0] === "user"
+  );
+  expect(profileCall).toBeDefined();
+  const profileUpdater = profileCall![1] as (prev: typeof mockProfile) => typeof mockProfile;
+  expect(profileUpdater(mockProfile)).toEqual({ ...mockProfile, is_following: true });
+
+  // Verify following list updater appends the followed user.
+  const listCall = stableClient.setQueryData.mock.calls.find(
+    ([key]: [string[]]) => key[0] === "users"
+  );
+  expect(listCall).toBeDefined();
+  const listUpdater = listCall![1] as (prev: { id: string }[]) => { id: string }[];
+  const existing = [{ id: "other", display_name: "Other", avatar_url: null, rounds_played: 3 }];
+  const updated = listUpdater(existing);
+  expect(updated).toContainEqual({
+    id: "test-user-id-123",
+    display_name: "Jane Golfer",
+    avatar_url: null,
+    rounds_played: 12,
+  });
+
+  expect(stableClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["users", "following"] });
+});
+
+it("unfollow onSuccess: flips profile cache and removes user from following list cache", async () => {
+  const stableClient = {
+    setQueryData: jest.fn(),
+    getQueryData: jest.fn(),
+    invalidateQueries: jest.fn(),
+  };
+  mockUseQueryClient.mockReturnValue(stableClient);
+
+  let capturedOnSuccess: ((data: undefined, vars: { following: boolean }) => void) | undefined;
+  mockUseMutation.mockImplementation((options: { onSuccess?: typeof capturedOnSuccess }) => {
+    capturedOnSuccess = options.onSuccess;
+    return { mutate: jest.fn(), isPending: false };
+  });
+
+  const followingProfile = { ...mockProfile, is_following: true };
+  mockUseQuery
+    .mockReturnValueOnce({ data: followingProfile, isLoading: false, isError: false })
+    .mockReturnValueOnce(mockHcStats)
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+
+  render(<UserProfileScreen />);
+
+  await act(async () => {
+    capturedOnSuccess!(undefined, { following: true }); // simulates a successful unfollow
+  });
+
+  // Verify profile cache updater flips is_following to false.
+  const profileCall = stableClient.setQueryData.mock.calls.find(
+    ([key]: [string[]]) => key[0] === "user"
+  );
+  const profileUpdater = profileCall![1] as (prev: typeof followingProfile) => typeof followingProfile;
+  expect(profileUpdater(followingProfile)).toEqual({ ...followingProfile, is_following: false });
+
+  // Verify following list updater removes this user.
+  const listCall = stableClient.setQueryData.mock.calls.find(
+    ([key]: [string[]]) => key[0] === "users"
+  );
+  const listUpdater = listCall![1] as (prev: { id: string }[]) => { id: string }[];
+  const existing = [
+    { id: "test-user-id-123", display_name: "Jane Golfer", avatar_url: null, rounds_played: 12 },
+    { id: "other", display_name: "Other", avatar_url: null, rounds_played: 3 },
+  ];
+  const updated = listUpdater(existing);
+  expect(updated).not.toContainEqual(expect.objectContaining({ id: "test-user-id-123" }));
+  expect(updated).toContainEqual(expect.objectContaining({ id: "other" }));
+
+  expect(stableClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["users", "following"] });
 });

@@ -145,7 +145,36 @@ export default function UserProfileScreen() {
       queryClient.setQueryData<UserProfile>(["user", userId], (prev) =>
         prev ? { ...prev, is_following: !following } : prev
       );
-      // Keep the profile tab's following list in sync.
+      // Optimistically update the profile tab's cached following list so the change
+      // is visible immediately. invalidateQueries alone only refetches if the query
+      // has an active observer at this moment, which is not guaranteed when navigating
+      // outside the tab group.
+      type FollowingUser = { id: string; display_name: string; avatar_url: string | null; rounds_played: number };
+      if (following) {
+        // Unfollowed — remove from list.
+        queryClient.setQueryData<FollowingUser[]>(["users", "following"], (prev) =>
+          prev ? prev.filter((u) => u.id !== userId) : prev
+        );
+      } else {
+        // Followed — append to list using cached profile data.
+        const profileData = queryClient.getQueryData<UserProfile>(["user", userId]);
+        if (profileData) {
+          queryClient.setQueryData<FollowingUser[]>(["users", "following"], (prev) => {
+            if (!prev) return prev;
+            if (prev.some((u) => u.id === userId)) return prev;
+            return [
+              ...prev,
+              {
+                id: userId,
+                display_name: profileData.display_name,
+                avatar_url: profileData.avatar_url,
+                rounds_played: profileData.rounds_played,
+              },
+            ];
+          });
+        }
+      }
+      // Invalidate so the list syncs with the server on next active fetch.
       queryClient.invalidateQueries({ queryKey: ["users", "following"] });
     },
   });

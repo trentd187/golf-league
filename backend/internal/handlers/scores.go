@@ -27,11 +27,10 @@
 package handlers
 
 import (
-	"math"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/services"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -204,78 +203,6 @@ func canModifyScores(db *gorm.DB, roundID, targetRoundPlayerID, callerID uuid.UU
 	return err == nil
 }
 
-// ─── Net score helper ─────────────────────────────────────────────────────────
-
-// HandicapStrokes returns the number of strokes a player with the given course
-// handicap receives on a hole identified by its stroke_index.
-//
-// USGA allocation rule: a player with handicap 5 gets one stroke on holes
-// whose stroke_index is ≤ 5 (the five hardest holes). A player with handicap 20
-// gets two strokes on the two hardest holes (SI 1–2) and one stroke on holes 3–18.
-func HandicapStrokes(courseHandicap, strokeIndex int) int {
-	if courseHandicap <= 0 || strokeIndex <= 0 {
-		return 0
-	}
-	full := courseHandicap / 18      // complete passes over all 18 holes
-	remainder := courseHandicap % 18 // extra strokes distributed from SI 1 upward
-	strokes := full
-	if strokeIndex <= remainder {
-		strokes++
-	}
-	return strokes
-}
-
-// EffectiveCourseHandicap applies the event's handicap allowance percentage to a
-// course handicap. Returns the full handicap when allowance is nil.
-// Uses floor so the result is always a whole number (USGA convention).
-func EffectiveCourseHandicap(courseHandicap int, allowance *float64) int {
-	if allowance == nil {
-		return courseHandicap
-	}
-	return int(math.Floor(float64(courseHandicap) * (*allowance) / 100.0))
-}
-
-// recalculateEventScores recomputes the net_score for every scored hole across
-// all rounds in an event after the handicap allowance changes.
-// Uses each round's default tee stroke indexes to determine per-hole strokes.
-// Best-effort: returns the first DB error encountered.
-func recalculateEventScores(db *gorm.DB, eventID uuid.UUID, allowance *float64) error {
-	type scoreRow struct {
-		ScoreID        uuid.UUID
-		GrossScore     int
-		CourseHandicap *int
-		StrokeIndex    int
-	}
-
-	var rows []scoreRow
-	err := db.Table("scores s").
-		Select("s.id as score_id, s.gross_score, rp.course_handicap, h.stroke_index").
-		Joins("JOIN round_players rp ON rp.id = s.round_player_id").
-		Joins("JOIN rounds r ON r.id = rp.round_id").
-		Joins("JOIN holes h ON h.tee_id = r.default_tee_id AND h.hole_number = s.hole_number").
-		Where("r.event_id = ?", eventID).
-		Scan(&rows).Error
-	if err != nil {
-		return err
-	}
-
-	for _, row := range rows {
-		chandi := 0
-		if row.CourseHandicap != nil {
-			chandi = *row.CourseHandicap
-		}
-		eff := EffectiveCourseHandicap(chandi, allowance)
-		netScore := row.GrossScore - HandicapStrokes(eff, row.StrokeIndex)
-
-		if err := db.Model(&models.Score{}).
-			Where("id = ?", row.ScoreID).
-			Update("net_score", netScore).Error; err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 // GetRoundScorecard returns a handler for GET /api/v1/rounds/:roundId/scorecard.
@@ -418,7 +345,7 @@ func GetRoundScorecard(db *gorm.DB) fiber.Handler {
 				// Compute the effective handicap after applying the event-level allowance.
 				var effHCP *int
 				if pr.CourseHandicap != nil {
-					eff := EffectiveCourseHandicap(*pr.CourseHandicap, round.Event.HandicapAllowance)
+					eff := services.EffectiveCourseHandicap(*pr.CourseHandicap, round.Event.HandicapAllowance)
 					effHCP = &eff
 				}
 
@@ -592,13 +519,13 @@ func UpsertPlayerScores(db *gorm.DB) fiber.Handler {
 		if rp.CourseHandicap != nil {
 			rawHandicap = *rp.CourseHandicap
 		}
-		chandi := EffectiveCourseHandicap(rawHandicap, round.Event.HandicapAllowance)
+		chandi := services.EffectiveCourseHandicap(rawHandicap, round.Event.HandicapAllowance)
 
 		// Build Score records. Net = gross - handicap strokes for that hole.
 		records := make([]models.Score, 0, len(req.Scores))
 		for _, s := range req.Scores {
 			si := siByHole[s.HoleNumber]
-			net := s.GrossScore - HandicapStrokes(chandi, si)
+			net := s.GrossScore - services.HandicapStrokes(chandi, si)
 
 			records = append(records, models.Score{
 				RoundPlayerID: roundPlayerID,

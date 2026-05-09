@@ -67,6 +67,10 @@ func main() {
 	// for every course/tee/hole handler.
 	courseService := services.NewCourseService(db, golfAPI)
 
+	// EventService owns event/member/event-round-list business logic.
+	// IsOrganizer is exposed for use by rounds and scores handlers in later PRs.
+	eventService := services.NewEventService(db)
+
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
 	})
@@ -112,19 +116,21 @@ func main() {
 	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
 	// Event routes — any authenticated user can create events (they become the organizer)
-	api.Get("/events", handlers.GetEvents(db))
-	api.Post("/events", handlers.CreateEvent(db))
+	api.Get("/events", handlers.GetEvents(eventService))
+	api.Post("/events", handlers.CreateEvent(eventService))
 
-	api.Get("/events/:id", handlers.GetEvent(db))
-	api.Patch("/events/:id", handlers.UpdateEvent(db))
-	api.Delete("/events/:id", handlers.DeleteEvent(db))
+	api.Get("/events/:id", handlers.GetEvent(eventService))
+	api.Patch("/events/:id", handlers.UpdateEvent(eventService))
+	api.Delete("/events/:id", handlers.DeleteEvent(eventService))
 
-	api.Get("/events/:id/members", handlers.GetEventMembers(db))
-	api.Post("/events/:id/members", handlers.AddEventMember(db))
-	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(db))
+	api.Get("/events/:id/members", handlers.GetEventMembers(eventService))
+	api.Post("/events/:id/members", handlers.AddEventMember(eventService))
+	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(eventService))
 
-	api.Get("/events/:id/rounds", handlers.GetEventRounds(db))
-	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db))
+	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
+	// ScheduleEventRound takes both eventService (for IsOrganizer) and db (for the
+	// transactional round/group/course creation). PR #3 moves the body into RoundsService.
+	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(eventService, db))
 
 	// Round routes — round IDs are globally unique, so these are top-level
 	// GET /rounds must be registered before /rounds/:roundId so Fiber's router

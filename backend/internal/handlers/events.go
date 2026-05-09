@@ -3,30 +3,24 @@
 //
 //	GET    /events                        — list events (filtered by membership)
 //	POST   /events                        — create a new event
-//	GET    /events/:id                    — get event detail + members list
+//	GET    /events/:id                    — event detail + members list
 //	PATCH  /events/:id                    — update event name/description/dates/status
-//	GET    /events/:id/members            — list all members of an event
-//	POST   /events/:id/members            — add a member to an event
-//	DELETE /events/:id/members/:userId    — remove a member from an event
+//	DELETE /events/:id                    — delete an event (cascades)
+//	GET    /events/:id/members            — list event members
+//	POST   /events/:id/members            — add a member
+//	DELETE /events/:id/members/:userId    — remove a member
 //	GET    /events/:id/rounds             — list rounds for an event
-//	POST   /events/:id/rounds             — schedule a new round
+//	POST   /events/:id/rounds             — schedule a new round (kept here pending PR #3)
 //
-// An "event" is the top-level container for any golf competition:
-//   - "league"     — ongoing, multi-round season with accumulated standings
-//   - "tournament" — one-off competitive event (1 or more rounds)
-//   - "casual"     — informal round; no standings, no points
-//
-// Each exported function follows the "handler factory" pattern: it accepts a *gorm.DB
-// and returns a fiber.Handler, injecting the database without global variables.
-//
-// Permission model — two layers:
-//  1. Route-level (middleware.RequireRole): who can call the route at all.
-//  2. Resource-level (isEventOrganizer): who can modify a specific event.
-//     - "admin" global role → can manage ANY event.
-//     - "user" → only events where they hold the "organizer" event_player role.
+// All business logic lives in internal/services.EventService. Each handler
+// here parses HTTP input (URL params, JSON body, content-type), calls the
+// service, and translates (value, error) into HTTP status + JSON via
+// writeEventError, which also records error_detail on every 5xx so causes
+// flow into Loki.
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,12 +28,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/observability"
+	"github.com/trentd187/golf-league/internal/services"
 	"gorm.io/gorm"
 )
 
-// EventResponse is what we send back to the mobile app.
-// We use a dedicated response struct so we control exactly what gets serialised
-// and can include computed fields like MemberCount.
+// ─── Response types ────────────────────────────────────────────────────────────
+
+// EventResponse is the JSON shape returned for individual events and list rows.
 type EventResponse struct {
 	ID                string   `json:"id"`
 	Name              string   `json:"name"`
@@ -48,253 +43,13 @@ type EventResponse struct {
 	Status            string   `json:"status"`
 	StartDate         *string  `json:"start_date"`
 	EndDate           *string  `json:"end_date"`
-	HandicapAllowance *float64 `json:"handicap_allowance"` // nil = full handicap (no allowance set)
+	HandicapAllowance *float64 `json:"handicap_allowance"`
 	CreatorName       string   `json:"creator_name"`
 	MemberCount       int64    `json:"member_count"`
 	CreatedAt         string   `json:"created_at"`
 }
 
-// CreateEventRequest is the JSON body we expect on POST /api/v1/events.
-type CreateEventRequest struct {
-	Name              string   `json:"name"`
-	Description       *string  `json:"description"`
-	EventType         string   `json:"event_type"`         // "league", "tournament", or "casual"
-	StartDate         *string  `json:"start_date"`         // optional "YYYY-MM-DD"
-	EndDate           *string  `json:"end_date"`           // optional "YYYY-MM-DD"
-	HandicapAllowance *float64 `json:"handicap_allowance"` // optional 0–100; nil = full handicap
-}
-
-// formatOptionalDate converts a *time.Time to a *string in "2006-01-02" format.
-// Returns nil if the input is nil.
-func formatOptionalDate(t *time.Time) *string {
-	if t == nil {
-		return nil
-	}
-	s := t.UTC().Format("2006-01-02")
-	return &s
-}
-
-// parseOptionalDate parses an optional "YYYY-MM-DD" string into a *time.Time.
-// Returns nil if the input is nil or empty; returns an error for invalid dates.
-func parseOptionalDate(s *string) (*time.Time, error) {
-	if s == nil || *s == "" {
-		return nil, nil
-	}
-	t, err := time.Parse("2006-01-02", *s)
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-// GetEvents returns a handler for GET /api/v1/events.
-// Admins see all events; everyone else sees only events they are an event_player of.
-// Optional query param: ?type=league|tournament|casual
-func GetEvents(db *gorm.DB) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid user ID",
-			})
-		}
-
-		typeFilter := c.Query("type")
-
-		// Preload("Creator") fetches the related User row to avoid N+1 queries.
-		var events []models.Event
-		query := db.Preload("Creator")
-
-		if typeFilter != "" {
-			query = query.Where("event_type = ?", typeFilter)
-		}
-
-		if userRole == "admin" {
-			query = query.Find(&events)
-		} else {
-			// Non-admins only see events they've joined via event_players.
-			query = query.
-				Joins("JOIN event_players ON event_players.event_id = events.id").
-				Where("event_players.user_id = ?", userID).
-				Find(&events)
-		}
-
-		if query.Error != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "failed to fetch events",
-			})
-		}
-
-		response := make([]EventResponse, 0, len(events))
-		for _, event := range events {
-			var memberCount int64
-			db.Model(&models.EventPlayer{}).
-				Where("event_id = ?", event.ID).
-				Count(&memberCount)
-
-			response = append(response, EventResponse{
-				ID:                event.ID.String(),
-				Name:              event.Name,
-				Description:       event.Description,
-				EventType:         string(event.EventType),
-				Status:            string(event.Status),
-				StartDate:         formatOptionalDate(event.StartDate),
-				EndDate:           formatOptionalDate(event.EndDate),
-				HandicapAllowance: event.HandicapAllowance,
-				CreatorName:       event.Creator.DisplayName,
-				MemberCount:       memberCount,
-				CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
-			})
-		}
-
-		return c.JSON(response)
-	}
-}
-
-// CreateEvent returns a handler for POST /api/v1/events.
-// Any authenticated user may create an event; they are auto-assigned the organizer role.
-// Creates the event and automatically adds the creator as an organizer in one transaction.
-func CreateEvent(db *gorm.DB) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid user ID",
-			})
-		}
-
-		var req CreateEventRequest
-		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "invalid request body",
-			})
-		}
-
-		if req.Name == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "name is required",
-			})
-		}
-
-		switch req.EventType {
-		case "league", "tournament", "casual":
-			// valid
-		default:
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "event_type must be 'league', 'tournament', or 'casual'",
-			})
-		}
-
-		startDate, err := parseOptionalDate(req.StartDate)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "start_date must be in YYYY-MM-DD format",
-			})
-		}
-		endDate, err := parseOptionalDate(req.EndDate)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "end_date must be in YYYY-MM-DD format",
-			})
-		}
-
-		if req.HandicapAllowance != nil && (*req.HandicapAllowance < 0 || *req.HandicapAllowance > 100) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "handicap_allowance must be between 0 and 100",
-			})
-		}
-
-		// Use a transaction so that if the event_player insert fails, the event is also
-		// rolled back — preventing orphaned event records.
-		var createdEvent models.Event
-
-		txErr := db.Transaction(func(tx *gorm.DB) error {
-			event := models.Event{
-				Name:              req.Name,
-				Description:       req.Description,
-				EventType:         models.EventType(req.EventType),
-				HandicapAllowance: req.HandicapAllowance,
-				// New events start as "active" — "upcoming" was removed from the status enum.
-				Status:    models.EventStatusActive,
-				StartDate: startDate,
-				EndDate:   endDate,
-				CreatedBy: userID,
-			}
-
-			if err := tx.Create(&event).Error; err != nil {
-				return err
-			}
-
-			// Auto-add the creator as an organizer so they can manage the event immediately.
-			player := models.EventPlayer{
-				EventID: event.ID,
-				UserID:  userID,
-				Role:    models.EventPlayerRoleOrganizer,
-				Status:  models.EventPlayerStatusRegistered,
-			}
-			if err := tx.Create(&player).Error; err != nil {
-				return err
-			}
-
-			createdEvent = event
-			return nil
-		})
-
-		if txErr != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "failed to create event",
-			})
-		}
-
-		observability.LogInfo(c.UserContext(), "event.created", "Event created",
-			"event_id", createdEvent.ID.String(),
-			"event_type", string(createdEvent.EventType),
-			"user_id", userID.String(),
-		)
-
-		var creator models.User
-		db.First(&creator, "id = ?", userID)
-
-		return c.Status(fiber.StatusCreated).JSON(EventResponse{
-			ID:                createdEvent.ID.String(),
-			Name:              createdEvent.Name,
-			Description:       createdEvent.Description,
-			EventType:         string(createdEvent.EventType),
-			Status:            string(createdEvent.Status),
-			StartDate:         formatOptionalDate(createdEvent.StartDate),
-			EndDate:           formatOptionalDate(createdEvent.EndDate),
-			HandicapAllowance: createdEvent.HandicapAllowance,
-			CreatorName:       creator.DisplayName,
-			MemberCount:       1, // Just the creator so far
-			CreatedAt:         createdEvent.CreatedAt.UTC().Format(time.RFC3339),
-		})
-	}
-}
-
-// isEventOrganizer reports whether a user has permission to manage a specific event.
-//
-// Two-tier permission model:
-//   - Global "admin" → can manage ANY event.
-//   - Everyone else (including global "manager") → must hold the "organizer"
-//     event_player role for THIS specific event.
-//
-// Call this at the start of any handler that modifies an event.
-func isEventOrganizer(db *gorm.DB, eventID, userID uuid.UUID, userRole string) bool {
-	if userRole == "admin" {
-		return true
-	}
-
-	var player models.EventPlayer
-	err := db.Where("event_id = ? AND user_id = ?", eventID, userID).First(&player).Error
-	return err == nil && player.Role == models.EventPlayerRoleOrganizer
-}
-
 // EventDetailResponse extends EventResponse with the full members list.
-// Returned by GET /api/v1/events/:id.
 type EventDetailResponse struct {
 	EventResponse
 	Members []MemberResponse `json:"members"`
@@ -306,60 +61,12 @@ type MemberResponse struct {
 	DisplayName string  `json:"display_name"`
 	Email       string  `json:"email"`
 	AvatarURL   *string `json:"avatar_url"`
-	Role        string  `json:"role"`   // "organizer" or "player"
-	Status      string  `json:"status"` // "invited", "registered", "withdrawn", "completed"
+	Role        string  `json:"role"`
+	Status      string  `json:"status"`
 	JoinedAt    string  `json:"joined_at"`
 }
 
-// UpdateEventRequest is the JSON body for PATCH /api/v1/events/:id.
-// All fields are optional pointers — only non-nil fields are applied (partial update).
-// "upcoming" was removed — valid status values are "active", "completed", "cancelled".
-type UpdateEventRequest struct {
-	Name              *string  `json:"name"`
-	Description       *string  `json:"description"`
-	StartDate         *string  `json:"start_date"` // "YYYY-MM-DD"; "" clears it
-	EndDate           *string  `json:"end_date"`   // "YYYY-MM-DD"; "" clears it
-	Status            *string  `json:"status"`
-	HandicapAllowance *float64 `json:"handicap_allowance"` // 0–100; nil leaves current value unchanged
-}
-
-// AddMemberRequest is the JSON body for POST /api/v1/events/:id/members.
-type AddMemberRequest struct {
-	UserID string `json:"user_id"` // UUID of the user to add
-}
-
-// GroupInput describes one tee-time group to create along with a new round.
-// Players are assigned later via POST /rounds/:id/groups/:groupId/members.
-type GroupInput struct {
-	// TeeTime accepts "15:04" (24-hour) or "3:04 PM". Unparseable values are silently ignored.
-	TeeTime *string `json:"tee_time"`
-}
-
-// ScheduleRoundRequest is the JSON body for POST /api/v1/events/:id/rounds.
-type ScheduleRoundRequest struct {
-	// Name defaults to "Round N" (1-based count of existing rounds + 1) if omitted.
-	Name          string  `json:"name"`
-	ScheduledDate string  `json:"scheduled_date"` // required "YYYY-MM-DD"
-	ScoringFormat *string `json:"scoring_format"` // defaults to "stroke" if omitted
-	// Groups lists tee-time groups (1–8). An empty slice creates one default group.
-	Groups []GroupInput `json:"groups"`
-
-	// Preferred: select a pre-managed course by UUID.
-	// When course_id is set, default_tee_id is also required.
-	CourseID     *string `json:"course_id"`      // UUID of an existing course
-	DefaultTeeID *string `json:"default_tee_id"` // UUID of a tee set on that course
-
-	// Legacy fallback: find-or-create by name. Used only when course_id is absent.
-	// Prefer course_id — this field will be removed in a future version.
-	CourseName string `json:"course_name"`
-
-	// NineHoleSelection restricts play to 9 holes on an 18-hole course.
-	// "front" = holes 1–9, "back" = holes 10–18. Omit (or null) for a full round.
-	// Invalid on 9-hole courses — the backend returns 400 in that case.
-	NineHoleSelection *string `json:"nine_hole_selection"`
-}
-
-// RoundSummaryResponse is returned per round in the rounds list and on round creation.
+// RoundSummaryResponse is one row in the rounds-for-event list.
 type RoundSummaryResponse struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
@@ -371,172 +78,275 @@ type RoundSummaryResponse struct {
 	GroupCount    int    `json:"group_count"`
 }
 
-// GetEvent returns a handler for GET /api/v1/events/:id.
-// Non-admins can only fetch events they are a member of.
-// Returns EventDetailResponse (includes the full members list).
-func GetEvent(db *gorm.DB) fiber.Handler {
+// ─── Request types ─────────────────────────────────────────────────────────────
+
+// CreateEventRequest is the body for POST /api/v1/events.
+type CreateEventRequest struct {
+	Name              string   `json:"name"`
+	Description       *string  `json:"description"`
+	EventType         string   `json:"event_type"`
+	StartDate         *string  `json:"start_date"`
+	EndDate           *string  `json:"end_date"`
+	HandicapAllowance *float64 `json:"handicap_allowance"`
+}
+
+// UpdateEventRequest is the body for PATCH /api/v1/events/:id.
+// All fields are optional pointers — only present fields are applied.
+type UpdateEventRequest struct {
+	Name              *string  `json:"name"`
+	Description       *string  `json:"description"`
+	StartDate         *string  `json:"start_date"`
+	EndDate           *string  `json:"end_date"`
+	Status            *string  `json:"status"`
+	HandicapAllowance *float64 `json:"handicap_allowance"`
+}
+
+// AddMemberRequest is the body for POST /api/v1/events/:id/members.
+type AddMemberRequest struct {
+	UserID string `json:"user_id"`
+}
+
+// GroupInput describes one tee-time group passed to ScheduleEventRound.
+// Players are assigned later via POST /rounds/:id/groups/:groupId/members.
+type GroupInput struct {
+	// TeeTime accepts "15:04" (24-hour) or "3:04 PM". Unparseable values are silently ignored.
+	TeeTime *string `json:"tee_time"`
+}
+
+// ScheduleRoundRequest is the body for POST /api/v1/events/:id/rounds.
+type ScheduleRoundRequest struct {
+	Name              string       `json:"name"`
+	ScheduledDate     string       `json:"scheduled_date"`
+	ScoringFormat     *string      `json:"scoring_format"`
+	Groups            []GroupInput `json:"groups"`
+	CourseID          *string      `json:"course_id"`
+	DefaultTeeID      *string      `json:"default_tee_id"`
+	CourseName        string       `json:"course_name"`
+	NineHoleSelection *string      `json:"nine_hole_selection"`
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+// formatOptionalDate converts a *time.Time to a *string in "YYYY-MM-DD" format.
+func formatOptionalDate(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format("2006-01-02")
+	return &s
+}
+
+// authUser pulls the requesting user's UUID + role out of c.Locals (set by the
+// auth middleware). Returns false on error and writes a 401; the caller should
+// `return nil`.
+func authUser(c *fiber.Ctx) (uuid.UUID, string, bool) {
+	userIDStr, _ := c.Locals("userID").(string)
+	userRole, _ := c.Locals("userRole").(string)
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		return uuid.Nil, "", false
+	}
+	return userID, userRole, true
+}
+
+// parseEventID parses ":id" as a UUID. Writes 400 + returns false on failure.
+func parseEventID(c *fiber.Ctx) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// writeEventError translates a service error into HTTP status + JSON body.
+// For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so the
+// HTTPMetrics middleware emits the cause in the Loki http.error log line.
+//
+// Always returns nil — handlers do `return writeEventError(c, err, ...)`.
+func writeEventError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
+	var ve *services.ValidationError
+	if errors.As(err, &ve) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
+	}
+	switch {
+	case errors.Is(err, services.ErrEventNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
+	case errors.Is(err, services.ErrUserNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	case errors.Is(err, services.ErrMemberNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "member not found"})
+	case errors.Is(err, services.ErrEventForbidden):
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+	case errors.Is(err, services.ErrEventNotMember):
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not a member of this event"})
+	case errors.Is(err, services.ErrMemberAlreadyExists):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "user is already a member"})
+	case errors.Is(err, services.ErrLastOrganizer):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "cannot remove the last organizer; promote another member first",
+		})
+	}
+	c.Locals("error_detail", tag+": "+err.Error())
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
+}
+
+// buildEventResponse converts a service-layer EventListItem into the JSON shape.
+func buildEventResponse(item services.EventListItem) EventResponse {
+	return EventResponse{
+		ID:                item.Event.ID.String(),
+		Name:              item.Event.Name,
+		Description:       item.Event.Description,
+		EventType:         string(item.Event.EventType),
+		Status:            string(item.Event.Status),
+		StartDate:         formatOptionalDate(item.Event.StartDate),
+		EndDate:           formatOptionalDate(item.Event.EndDate),
+		HandicapAllowance: item.Event.HandicapAllowance,
+		CreatorName:       item.Creator.DisplayName,
+		MemberCount:       item.MemberCount,
+		CreatedAt:         item.Event.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func buildMemberResponse(m services.EventMemberItem) MemberResponse {
+	return MemberResponse{
+		UserID:      m.User.ID.String(),
+		DisplayName: m.User.DisplayName,
+		Email:       m.User.Email,
+		AvatarURL:   m.User.AvatarURL,
+		Role:        string(m.Player.Role),
+		Status:      string(m.Player.Status),
+		JoinedAt:    m.Player.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// ─── Handlers ──────────────────────────────────────────────────────────────────
+
+// GetEvents returns a handler for GET /api/v1/events.
+func GetEvents(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		items, err := svc.List(c.UserContext(), services.ListEventsFilters{
+			UserID:   userID,
+			UserRole: userRole,
+			Type:     c.Query("type"),
+		})
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+			return writeEventError(c, err, "event.list", "failed to fetch events")
 		}
+		out := make([]EventResponse, 0, len(items))
+		for _, item := range items {
+			out = append(out, buildEventResponse(item))
+		}
+		return c.JSON(out)
+	}
+}
 
-		eventID, err := uuid.Parse(c.Params("id"))
+// CreateEvent returns a handler for POST /api/v1/events.
+// Any authenticated user may create an event; they are auto-added as the organizer.
+func CreateEvent(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, _, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		var req CreateEventRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		item, err := svc.Create(c.UserContext(), services.CreateEventInput{
+			Name:              req.Name,
+			Description:       req.Description,
+			EventType:         req.EventType,
+			StartDate:         req.StartDate,
+			EndDate:           req.EndDate,
+			HandicapAllowance: req.HandicapAllowance,
+			CreatedBy:         userID,
+		})
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+			return writeEventError(c, err, "event.create", "failed to create event")
 		}
+		observability.LogInfo(c.UserContext(), "event.created", "Event created",
+			"event_id", item.Event.ID.String(),
+			"event_type", string(item.Event.EventType),
+			"user_id", userID.String(),
+		)
+		return c.Status(fiber.StatusCreated).JSON(buildEventResponse(item))
+	}
+}
 
-		var event models.Event
-		if err := db.Preload("Creator").First(&event, "id = ?", eventID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
+// GetEvent returns a handler for GET /api/v1/events/:id.
+func GetEvent(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
-
-		if userRole != "admin" {
-			var count int64
-			db.Model(&models.EventPlayer{}).
-				Where("event_id = ? AND user_id = ?", eventID, userID).
-				Count(&count)
-			if count == 0 {
-				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not a member of this event"})
-			}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
 		}
-
-		var players []models.EventPlayer
-		db.Preload("User").Where("event_id = ?", eventID).Find(&players)
-
-		members := make([]MemberResponse, 0, len(players))
-		for _, p := range players {
-			members = append(members, MemberResponse{
-				UserID:      p.UserID.String(),
-				DisplayName: p.User.DisplayName,
-				Email:       p.User.Email,
-				AvatarURL:   p.User.AvatarURL,
-				Role:        string(p.Role),
-				Status:      string(p.Status),
-				JoinedAt:    p.CreatedAt.UTC().Format(time.RFC3339),
-			})
+		detail, err := svc.Get(c.UserContext(), eventID, userID, userRole)
+		if err != nil {
+			return writeEventError(c, err, "event.get", "failed to load event")
 		}
-
+		members := make([]MemberResponse, len(detail.Members))
+		for i, m := range detail.Members {
+			members[i] = buildMemberResponse(m)
+		}
 		return c.JSON(EventDetailResponse{
-			EventResponse: EventResponse{
-				ID:                event.ID.String(),
-				Name:              event.Name,
-				Description:       event.Description,
-				EventType:         string(event.EventType),
-				Status:            string(event.Status),
-				StartDate:         formatOptionalDate(event.StartDate),
-				EndDate:           formatOptionalDate(event.EndDate),
-				HandicapAllowance: event.HandicapAllowance,
-				CreatorName:       event.Creator.DisplayName,
-				MemberCount:       int64(len(players)),
-				CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
-			},
+			EventResponse: buildEventResponse(services.EventListItem{
+				Event:       detail.Event,
+				Creator:     detail.Creator,
+				MemberCount: detail.MemberCount,
+			}),
 			Members: members,
 		})
 	}
 }
 
 // UpdateEvent returns a handler for PATCH /api/v1/events/:id.
-// Only organizers of the event (or global admins) may update it.
-// Only non-nil fields are applied — partial update pattern.
-// Body is parsed and validated before the DB load so Tier-1 tests can reach
-// validation paths (e.g. invalid handicap_allowance) without a real database.
-func UpdateEvent(db *gorm.DB) fiber.Handler {
+// On a successful allowance change, fires RecalculateEventScores best-effort —
+// failures are logged but don't fail the response (the event row is already saved).
+func UpdateEvent(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
-
-		eventID, err := uuid.Parse(c.Params("id"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
 		}
-
-		// Parse and validate body before the DB load so Tier-1 tests reach validation
-		// without needing a real database.
 		var req UpdateEventRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-
-		if req.Name != nil && *req.Name == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name cannot be empty"})
-		}
-		if req.HandicapAllowance != nil && (*req.HandicapAllowance < 0 || *req.HandicapAllowance > 100) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "handicap_allowance must be between 0 and 100",
-			})
-		}
-
-		var event models.Event
-		if err := db.Preload("Creator").First(&event, "id = ?", eventID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
+		result, err := svc.Update(c.UserContext(), eventID, userID, userRole, services.UpdateEventInput{
+			Name:              req.Name,
+			Description:       req.Description,
+			StartDate:         req.StartDate,
+			EndDate:           req.EndDate,
+			Status:            req.Status,
+			HandicapAllowance: req.HandicapAllowance,
+		})
+		if err != nil {
+			return writeEventError(c, err, "event.update", "failed to update event")
 		}
 
-		if !isEventOrganizer(db, eventID, userID, userRole) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
-		}
-
-		if req.Description != nil {
-			event.Description = req.Description
-		}
-		if req.Name != nil {
-			event.Name = *req.Name
-		}
-		if req.StartDate != nil {
-			t, err := parseOptionalDate(req.StartDate)
-			if err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "start_date must be YYYY-MM-DD"})
-			}
-			event.StartDate = t
-		}
-		if req.EndDate != nil {
-			t, err := parseOptionalDate(req.EndDate)
-			if err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "end_date must be YYYY-MM-DD"})
-			}
-			event.EndDate = t
-		}
-		if req.Status != nil {
-			// "upcoming" was removed — only these three values are accepted.
-			switch *req.Status {
-			case "active", "completed", "cancelled":
-				event.Status = models.EventStatus(*req.Status)
-			default:
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "status must be 'active', 'completed', or 'cancelled'",
-				})
-			}
-		}
-
-		// Track whether the allowance changed so we know whether to recalculate scores.
-		allowanceChanged := req.HandicapAllowance != nil
-		if allowanceChanged {
-			event.HandicapAllowance = req.HandicapAllowance
-		}
-
-		// db.Save() issues an UPDATE for all columns (GORM doesn't diff).
-		if err := db.Save(&event).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update event"})
-		}
-
-		if req.Status != nil {
+		if result.StatusChanged {
 			observability.LogInfo(c.UserContext(), "event.status_changed", "Event status changed",
-				"event_id", event.ID.String(),
-				"status", string(event.Status),
+				"event_id", result.Event.ID.String(),
+				"status", string(result.Event.Status),
 			)
 		}
 
-		// Recalculate all existing net scores in every round of this event
-		// when the handicap allowance changes. Best-effort — log on failure but
-		// don't reject the update since the event record was already saved.
-		if allowanceChanged {
-			if err := recalculateEventScores(db, eventID, event.HandicapAllowance); err != nil {
+		if result.AllowanceChanged {
+			if err := services.RecalculateEventScores(c.UserContext(), svc.DB, eventID, result.Event.HandicapAllowance); err != nil {
 				observability.LogInfo(c.UserContext(), "event.handicap_allowance_recalc_error",
 					"Failed to recalculate scores after allowance change",
 					"event_id", eventID.String(),
@@ -550,249 +360,152 @@ func UpdateEvent(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		var memberCount int64
-		db.Model(&models.EventPlayer{}).Where("event_id = ?", event.ID).Count(&memberCount)
+		return c.JSON(buildEventResponse(services.EventListItem{
+			Event:       result.Event,
+			Creator:     result.Creator,
+			MemberCount: result.MemberCount,
+		}))
+	}
+}
 
-		return c.JSON(EventResponse{
-			ID:                event.ID.String(),
-			Name:              event.Name,
-			Description:       event.Description,
-			EventType:         string(event.EventType),
-			Status:            string(event.Status),
-			StartDate:         formatOptionalDate(event.StartDate),
-			EndDate:           formatOptionalDate(event.EndDate),
-			HandicapAllowance: event.HandicapAllowance,
-			CreatorName:       event.Creator.DisplayName,
-			MemberCount:       memberCount,
-			CreatedAt:         event.CreatedAt.UTC().Format(time.RFC3339),
-		})
+// DeleteEvent returns a handler for DELETE /api/v1/events/:id.
+func DeleteEvent(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		if err := svc.Delete(c.UserContext(), eventID, userID, userRole); err != nil {
+			return writeEventError(c, err, "event.delete", "failed to delete event")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 
 // GetEventMembers returns a handler for GET /api/v1/events/:id/members.
-// Any authenticated user who can see the event can see its members list.
-func GetEventMembers(db *gorm.DB) fiber.Handler {
+func GetEventMembers(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		eventID, err := uuid.Parse(c.Params("id"))
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		members, err := svc.GetMembers(c.UserContext(), eventID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+			return writeEventError(c, err, "event.get_members", "failed to load members")
 		}
-
-		var players []models.EventPlayer
-		db.Preload("User").Where("event_id = ?", eventID).Find(&players)
-
-		members := make([]MemberResponse, 0, len(players))
-		for _, p := range players {
-			members = append(members, MemberResponse{
-				UserID:      p.UserID.String(),
-				DisplayName: p.User.DisplayName,
-				Email:       p.User.Email,
-				AvatarURL:   p.User.AvatarURL,
-				Role:        string(p.Role),
-				Status:      string(p.Status),
-				JoinedAt:    p.CreatedAt.UTC().Format(time.RFC3339),
-			})
+		out := make([]MemberResponse, len(members))
+		for i, m := range members {
+			out[i] = buildMemberResponse(m)
 		}
-		return c.JSON(members)
+		return c.JSON(out)
 	}
 }
 
 // AddEventMember returns a handler for POST /api/v1/events/:id/members.
-// Requires the caller to be an organizer. New members receive the "player" role
-// and "registered" status by default.
-func AddEventMember(db *gorm.DB) fiber.Handler {
+func AddEventMember(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
-
-		eventID, err := uuid.Parse(c.Params("id"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
 		}
-
-		if !isEventOrganizer(db, eventID, userID, userRole) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
-		}
-
 		var req AddMemberRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-
 		targetUserID, err := uuid.Parse(req.UserID)
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user_id"})
 		}
-
-		var targetUser models.User
-		if err := db.First(&targetUser, "id = ?", targetUserID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		member, err := svc.AddMember(c.UserContext(), eventID, userID, userRole, targetUserID)
+		if err != nil {
+			return writeEventError(c, err, "event.add_member", "failed to add member")
 		}
-
-		// Friendly duplicate check — the DB has a unique index on (event_id, user_id) too.
-		var existing models.EventPlayer
-		if err := db.Where("event_id = ? AND user_id = ?", eventID, targetUserID).First(&existing).Error; err == nil {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "user is already a member"})
-		}
-
-		player := models.EventPlayer{
-			EventID: eventID,
-			UserID:  targetUserID,
-			Role:    models.EventPlayerRolePlayer,
-			Status:  models.EventPlayerStatusRegistered,
-		}
-		if err := db.Create(&player).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to add member"})
-		}
-
-		return c.Status(fiber.StatusCreated).JSON(MemberResponse{
-			UserID:      targetUser.ID.String(),
-			DisplayName: targetUser.DisplayName,
-			Email:       targetUser.Email,
-			AvatarURL:   targetUser.AvatarURL,
-			Role:        string(player.Role),
-			Status:      string(player.Status),
-			JoinedAt:    player.CreatedAt.UTC().Format(time.RFC3339),
-		})
+		return c.Status(fiber.StatusCreated).JSON(buildMemberResponse(member))
 	}
 }
 
 // RemoveEventMember returns a handler for DELETE /api/v1/events/:id/members/:userId.
-// Requires the caller to be an organizer.
-// Prevents removing the last organizer — every event must have at least one.
-func RemoveEventMember(db *gorm.DB) fiber.Handler {
+func RemoveEventMember(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
-
-		eventID, err := uuid.Parse(c.Params("id"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
 		}
-
 		targetUserID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
 		}
-
-		if !isEventOrganizer(db, eventID, userID, userRole) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		if err := svc.RemoveMember(c.UserContext(), eventID, userID, userRole, targetUserID); err != nil {
+			return writeEventError(c, err, "event.remove_member", "failed to remove member")
 		}
-
-		var player models.EventPlayer
-		if err := db.Where("event_id = ? AND user_id = ?", eventID, targetUserID).First(&player).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "member not found"})
-		}
-
-		// Guard: removing the last organizer would leave the event unmanageable.
-		if player.Role == models.EventPlayerRoleOrganizer {
-			var organizerCount int64
-			db.Model(&models.EventPlayer{}).
-				Where("event_id = ? AND role = ?", eventID, models.EventPlayerRoleOrganizer).
-				Count(&organizerCount)
-			if organizerCount <= 1 {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "cannot remove the last organizer; promote another member first",
-				})
-			}
-		}
-
-		if err := db.Delete(&player).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to remove member"})
-		}
-
 		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 
 // GetEventRounds returns a handler for GET /api/v1/events/:id/rounds.
-// Returns rounds sorted by round_number ascending.
-func GetEventRounds(db *gorm.DB) fiber.Handler {
+func GetEventRounds(svc *services.EventService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		eventID, err := uuid.Parse(c.Params("id"))
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		items, err := svc.GetRounds(c.UserContext(), eventID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+			return writeEventError(c, err, "event.get_rounds", "failed to load rounds")
 		}
-
-		var rounds []models.Round
-		db.Preload("Course").
-			Where("event_id = ?", eventID).
-			Order("round_number ASC").
-			Find(&rounds)
-
-		// Fetch group counts in one query rather than N individual COUNTs.
-		roundIDs := make([]string, len(rounds))
-		for i, r := range rounds {
-			roundIDs[i] = r.ID.String()
+		out := make([]RoundSummaryResponse, len(items))
+		for i, item := range items {
+			out[i] = RoundSummaryResponse{
+				ID:            item.Round.ID.String(),
+				Name:          item.Round.Name,
+				CourseName:    item.CourseName,
+				ScheduledDate: item.Round.ScheduledDate.UTC().Format("2006-01-02"),
+				Status:        string(item.Round.Status),
+				ScoringFormat: string(item.Round.ScoringFormat),
+				RoundNumber:   item.Round.RoundNumber,
+				GroupCount:    item.GroupCount,
+			}
 		}
-
-		type groupCountRow struct {
-			RoundID string
-			Count   int
-		}
-		var groupCountRows []groupCountRow
-		if len(roundIDs) > 0 {
-			db.Model(&models.Group{}).
-				Select("round_id, COUNT(*) as count").
-				Where("round_id IN ?", roundIDs).
-				Group("round_id").
-				Scan(&groupCountRows)
-		}
-
-		groupCountMap := make(map[string]int, len(groupCountRows))
-		for _, row := range groupCountRows {
-			groupCountMap[row.RoundID] = row.Count
-		}
-
-		response := make([]RoundSummaryResponse, 0, len(rounds))
-		for _, r := range rounds {
-			response = append(response, RoundSummaryResponse{
-				ID:            r.ID.String(),
-				Name:          r.Name,
-				CourseName:    r.Course.Name,
-				ScheduledDate: r.ScheduledDate.UTC().Format("2006-01-02"),
-				Status:        string(r.Status),
-				ScoringFormat: string(r.ScoringFormat),
-				RoundNumber:   r.RoundNumber,
-				GroupCount:    groupCountMap[r.ID.String()],
-			})
-		}
-		return c.JSON(response)
+		return c.JSON(out)
 	}
 }
 
-// ScheduleEventRound returns a handler for POST /api/v1/events/:id/rounds.
-// Requires organizer permission.
-//
-// Course handling:
-//   - Looks for an existing course by name (case-insensitive via ILIKE).
-//   - If none found, creates a new Course + a "Default" Tee with standard par-72 ratings.
-//   - If found but has no tees, creates the default Tee on the existing course.
-//
-// Round number is determined automatically: COUNT(existing rounds) + 1.
-func ScheduleEventRound(db *gorm.DB) fiber.Handler {
+// ─── Round scheduling (kept in this file pending PR #3) ────────────────────────
+
+// ScheduleEventRound creates a Round under an event. The route lives under
+// /events/:id/rounds, but the operation is logically a Rounds-domain mutation
+// that creates a Round + its initial Groups + (legacy) finds-or-creates a Course.
+// PR #3 will move this handler's body into RoundsService and leave only the
+// HTTP plumbing here. The IsOrganizer check goes through EventService so we
+// don't fork the permission logic.
+func ScheduleEventRound(eventSvc *services.EventService, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
 		}
 
-		eventID, err := uuid.Parse(c.Params("id"))
+		authorized, err := eventSvc.IsOrganizer(c.UserContext(), eventID, userID, userRole)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+			return writeEventError(c, err, "event.schedule_round.authz", "failed to check authorization")
 		}
-
-		if !isEventOrganizer(db, eventID, userID, userRole) {
+		if !authorized {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
 		}
 
@@ -809,20 +522,14 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		if req.ScheduledDate == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date is required"})
 		}
-
 		scheduledDate, err := time.Parse("2006-01-02", req.ScheduledDate)
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date must be YYYY-MM-DD"})
 		}
-
 		scoringFormat := models.ScoringFormatStroke
 		if req.ScoringFormat != nil && *req.ScoringFormat != "" {
 			scoringFormat = models.ScoringFormat(*req.ScoringFormat)
 		}
-
-		// Validate nine_hole_selection value before hitting the DB.
-		// The course hole-count check (requires 18-hole course) happens inside the
-		// transaction once the course record is loaded — that path is DB-dependent (Tier 2).
 		if req.NineHoleSelection != nil {
 			sel := *req.NineHoleSelection
 			if sel != "front" && sel != "back" {
@@ -834,16 +541,14 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 		var courseName string
 		groupInputs := req.Groups
 		if len(groupInputs) == 0 {
-			// Always create at least one group so the round has a roster structure.
 			groupInputs = []GroupInput{{}}
 		}
 
-		txErr := db.Transaction(func(tx *gorm.DB) error {
+		txErr := db.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 			var course models.Course
 			var teeID uuid.UUID
 
 			if req.CourseID != nil {
-				// Preferred path: use a pre-managed course selected by UUID.
 				courseUUID, err := uuid.Parse(*req.CourseID)
 				if err != nil {
 					return fiber.NewError(fiber.StatusBadRequest, "invalid course_id")
@@ -861,14 +566,12 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 				}
 				teeID = teeUUID
 			} else {
-				// Legacy fallback: find-or-create by name (ILIKE = case-insensitive match).
 				courseErr := tx.Where("name ILIKE ?", req.CourseName).First(&course).Error
 				if courseErr != nil {
 					course = models.Course{Name: req.CourseName, HoleCount: 18}
 					if err := tx.Create(&course).Error; err != nil {
 						return err
 					}
-					// Default tee: CourseRating 72.0 and SlopeRating 113 are USGA baseline values.
 					defaultTee := models.Tee{
 						CourseID:     course.ID,
 						Name:         "Default",
@@ -885,7 +588,6 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 					var tee models.Tee
 					teeErr := tx.Where("course_id = ?", course.ID).First(&tee).Error
 					if teeErr != nil {
-						// Course exists but has no tees — create the default.
 						tee = models.Tee{
 							CourseID:     course.ID,
 							Name:         "Default",
@@ -904,7 +606,6 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 
 			courseName = course.Name
 
-			// Nine-hole selection is only valid for 18-hole courses.
 			if req.NineHoleSelection != nil && course.HoleCount != 18 {
 				return fiber.NewError(fiber.StatusBadRequest, "nine_hole_selection is only valid for 18-hole courses")
 			}
@@ -940,9 +641,6 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 					GroupNumber:  i + 1,
 					StartingHole: 1,
 				}
-
-				// Try 24-hour "15:04" first, then 12-hour "3:04 PM" as fallback.
-				// If neither matches, TeeTime stays nil — no error raised.
 				if g.TeeTime != nil && *g.TeeTime != "" {
 					var parsedTime time.Time
 					var parseErr error
@@ -951,7 +649,6 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 						parsedTime, parseErr = time.Parse("3:04 PM", *g.TeeTime)
 					}
 					if parseErr == nil {
-						// Combine the round's scheduled date with the parsed hours/minutes.
 						teeTime := time.Date(
 							scheduledDate.Year(), scheduledDate.Month(), scheduledDate.Day(),
 							parsedTime.Hour(), parsedTime.Minute(), 0, 0, time.UTC,
@@ -959,21 +656,18 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 						group.TeeTime = &teeTime
 					}
 				}
-
 				if err := tx.Create(&group).Error; err != nil {
 					return err
 				}
 			}
-
 			return nil
 		})
 
 		if txErr != nil {
-			// fiber.NewError() errors carry an HTTP status (e.g. 400, 404) from validation
-			// inside the transaction. Pass those through; all other errors are 500.
 			if fe, ok := txErr.(*fiber.Error); ok {
 				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
 			}
+			c.Locals("error_detail", "event.schedule_round: "+txErr.Error())
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to schedule round"})
 		}
 
@@ -992,41 +686,5 @@ func ScheduleEventRound(db *gorm.DB) fiber.Handler {
 			RoundNumber:   createdRound.RoundNumber,
 			GroupCount:    len(groupInputs),
 		})
-	}
-}
-
-// DeleteEvent returns a handler for DELETE /api/v1/events/:id.
-// Permanently deletes the event and all its associated data via ON DELETE CASCADE.
-// Only organizers of the event (or global admins) may delete it.
-func DeleteEvent(db *gorm.DB) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
-		}
-
-		eventID, err := uuid.Parse(c.Params("id"))
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
-		}
-
-		var event models.Event
-		if err := db.First(&event, "id = ?", eventID).Error; err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
-		}
-
-		if !isEventOrganizer(db, eventID, userID, userRole) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
-		}
-
-		// Our Event model has no DeletedAt field, so this is a hard DELETE.
-		// ON DELETE CASCADE removes all child records automatically.
-		if err := db.Delete(&event).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete event"})
-		}
-
-		return c.SendStatus(fiber.StatusNoContent)
 	}
 }

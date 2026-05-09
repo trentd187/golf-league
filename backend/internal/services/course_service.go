@@ -628,12 +628,15 @@ func (s *CourseService) ImportExternal(ctx context.Context, externalID string) (
 			ExternalID:     strconv.Itoa(detail.ID),
 		}
 		if err := tx.Create(&created).Error; err != nil {
-			return err
+			return fmt.Errorf("create course: %w", err)
 		}
-		return insertExternalTees(tx, created.ID, detail.Tees)
+		if err := insertExternalTees(tx, created.ID, detail.Tees); err != nil {
+			return fmt.Errorf("insert tees: %w", err)
+		}
+		return nil
 	})
 	if txErr != nil {
-		return models.Course{}, fmt.Errorf("import course: %w", txErr)
+		return models.Course{}, fmt.Errorf("import external course %s: %w", externalID, txErr)
 	}
 
 	return s.Get(ctx, created.ID)
@@ -665,12 +668,15 @@ func (s *CourseService) Refresh(ctx context.Context, courseID uuid.UUID) (models
 	txErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Deleting tees cascades to holes via ON DELETE CASCADE.
 		if err := tx.Where("course_id = ?", courseID).Delete(&models.Tee{}).Error; err != nil {
-			return err
+			return fmt.Errorf("delete existing tees: %w", err)
 		}
-		return insertExternalTees(tx, courseID, detail.Tees)
+		if err := insertExternalTees(tx, courseID, detail.Tees); err != nil {
+			return fmt.Errorf("insert tees: %w", err)
+		}
+		return nil
 	})
 	if txErr != nil {
-		return models.Course{}, fmt.Errorf("refresh course: %w", txErr)
+		return models.Course{}, fmt.Errorf("refresh course %s: %w", courseID, txErr)
 	}
 
 	return s.Get(ctx, courseID)
@@ -753,7 +759,7 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees
 	for _, t := range tees.Male {
 		c := best[t.TeeName]
 		if err := insertOneTee(tx, courseID, c.tee, c.gender); err != nil {
-			return err
+			return fmt.Errorf("insert tee %q (%s): %w", c.tee.TeeName, c.gender, err)
 		}
 		inserted[t.TeeName] = true
 	}
@@ -762,7 +768,7 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees
 			continue
 		}
 		if err := insertOneTee(tx, courseID, t, models.TeeGenderWomens); err != nil {
-			return err
+			return fmt.Errorf("insert tee %q (womens): %w", t.TeeName, err)
 		}
 		inserted[t.TeeName] = true
 	}
@@ -788,7 +794,11 @@ func insertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee ExternalTeeBox, gender
 		Par:          par,
 	}
 	if err := tx.Create(&tee).Error; err != nil {
-		return err
+		// Surface the source values that triggered the constraint so we can
+		// diagnose without re-running. Common culprits: slope_rating outside
+		// 55–155 and course_rating overflowing decimal(4,1).
+		return fmt.Errorf("create tee row (rating=%v slope=%d par=%d): %w",
+			extTee.CourseRating, extTee.SlopeRating, par, err)
 	}
 	for i, extHole := range extTee.Holes {
 		var yardage *int
@@ -803,7 +813,8 @@ func insertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee ExternalTeeBox, gender
 			StrokeIndex: extHole.StrokeIndex,
 			Yardage:     yardage,
 		}).Error; err != nil {
-			return err
+			return fmt.Errorf("create hole %d (par=%d si=%d): %w",
+				i+1, extHole.Par, extHole.StrokeIndex, err)
 		}
 	}
 	return nil

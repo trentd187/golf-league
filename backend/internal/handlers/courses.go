@@ -173,63 +173,67 @@ func parseTeeID(c *fiber.Ctx) (uuid.UUID, bool) {
 	return id, true
 }
 
-// writeCourseError writes the right HTTP status + JSON body for a known
-// service-level error and returns true. If err is unrecognised it writes
-// nothing and returns false; the caller should write its own 500.
+// writeCourseError translates a service-level error into the appropriate HTTP
+// response and (for any 5xx) records the underlying cause via c.Locals so the
+// HTTPMetrics middleware can emit it as the `error` field of the http.error
+// log line in Loki.
 //
-// Note: c.Status(...).JSON(...) returns nil on success, so we can't return its
-// error value as a "handled" sentinel — every successful response would look
-// unhandled. The bool form is unambiguous.
-func writeCourseError(c *fiber.Ctx, err error) bool {
+// Always returns nil — handlers do `return writeCourseError(c, err, ...)`.
+//
+//   - tag identifies the call site in logs (e.g. "course.refresh"). Search
+//     Loki by `error=~"course.refresh.*"` to find every occurrence.
+//   - fallbackMsg is the user-facing JSON error body for unknown errors that
+//     map to a 500. Known errors (validation, not-found, etc.) use their own
+//     specific messages and ignore this argument.
+func writeCourseError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
-		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
-		return true
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
 	}
 	switch {
 	case errors.Is(err, services.ErrCourseNotFound):
-		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
-		return true
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
 	case errors.Is(err, services.ErrTeeNotFound):
-		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
-		return true
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found"})
 	case errors.Is(err, services.ErrHoleNotFound):
-		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "hole not found"})
-		return true
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "hole not found"})
 	case errors.Is(err, services.ErrCourseInUse):
-		_ = c.Status(fiber.StatusConflict).JSON(fiber.Map{
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": "cannot modify course data while an active round is in progress",
 		})
-		return true
 	case errors.Is(err, services.ErrCourseNotExternal):
-		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "course was not imported from an external API; use manual editing instead",
 		})
-		return true
 	case errors.Is(err, services.ErrExternalAPINotConfigured):
-		_ = c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "GOLF_COURSE_API_KEY is not configured — external course feature is disabled",
 		})
-		return true
 	}
 
 	var dup *services.AlreadyImportedError
 	if errors.As(err, &dup) {
-		_ = c.Status(fiber.StatusConflict).JSON(fiber.Map{
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error":     "course already imported",
 			"course_id": dup.ExistingCourseID.String(),
 		})
-		return true
 	}
 
+	// Upstream API errors get their cause logged as well as surfaced in the
+	// response body — they're a class of failure where the *cause* (DNS,
+	// 401 from provider, 5xx from provider, …) is the actual signal we want.
 	var ext *services.ExternalAPIError
 	if errors.As(err, &ext) {
-		_ = c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+		c.Locals("error_detail", tag+".external_api: "+ext.Cause.Error())
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
 			"error": "external API error: " + ext.Cause.Error(),
 		})
-		return true
 	}
-	return false
+
+	// Unrecognised error → 500. Record the full cause for Loki; users get
+	// the generic fallback message.
+	c.Locals("error_detail", tag+": "+err.Error())
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
 }
 
 func buildHoleResponses(holes []models.Hole) []HoleResponse {
@@ -324,10 +328,7 @@ func GetCourse(svc *services.CourseService) fiber.Handler {
 		}
 		course, err := svc.Get(c.UserContext(), courseID)
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch course"})
+			return writeCourseError(c, err, "course.get", "failed to fetch course")
 		}
 		return c.JSON(buildCourseDetail(course))
 	}
@@ -347,10 +348,7 @@ func CreateCourse(svc *services.CourseService) fiber.Handler {
 			HoleCount: req.HoleCount,
 		})
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create course"})
+			return writeCourseError(c, err, "course.create", "failed to create course")
 		}
 		return c.Status(fiber.StatusCreated).JSON(buildCourseDetail(course))
 	}
@@ -374,10 +372,7 @@ func UpdateCourse(svc *services.CourseService) fiber.Handler {
 			HoleCount: req.HoleCount,
 		})
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update course"})
+			return writeCourseError(c, err, "course.update", "failed to update course")
 		}
 		return c.JSON(buildCourseDetail(course))
 	}
@@ -402,10 +397,7 @@ func CreateTee(svc *services.CourseService) fiber.Handler {
 			Par:          req.Par,
 		})
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create tee"})
+			return writeCourseError(c, err, "tee.create", "failed to create tee")
 		}
 		return c.Status(fiber.StatusCreated).JSON(buildTeeResponse(tee, []HoleResponse{}))
 	}
@@ -434,10 +426,7 @@ func UpdateTee(svc *services.CourseService) fiber.Handler {
 			Par:          req.Par,
 		})
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update tee"})
+			return writeCourseError(c, err, "tee.update", "failed to update tee")
 		}
 		return c.JSON(buildTeeResponse(tee, buildHoleResponses(holes)))
 	}
@@ -455,10 +444,7 @@ func DeleteTee(svc *services.CourseService) fiber.Handler {
 			return nil
 		}
 		if err := svc.DeleteTee(c.UserContext(), courseID, teeID); err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete tee"})
+			return writeCourseError(c, err, "tee.delete", "failed to delete tee")
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	}
@@ -490,10 +476,7 @@ func UpsertHoles(svc *services.CourseService) fiber.Handler {
 		}
 		tee, saved, err := svc.UpsertHoles(c.UserContext(), courseID, teeID, holes)
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save holes"})
+			return writeCourseError(c, err, "holes.upsert", "failed to save holes")
 		}
 		return c.JSON(buildTeeResponse(tee, buildHoleResponses(saved)))
 	}
@@ -526,10 +509,7 @@ func UpdateHole(svc *services.CourseService) fiber.Handler {
 			Yardage:     req.Yardage,
 		})
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update hole"})
+			return writeCourseError(c, err, "hole.update", "failed to update hole")
 		}
 		return c.JSON(HoleResponse{
 			HoleNumber:  hole.HoleNumber,
@@ -551,10 +531,7 @@ func SearchExternalCourse(svc *services.CourseService) fiber.Handler {
 		}
 		results, err := svc.SearchExternal(c.UserContext(), req.Search, req.Location)
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "search failed"})
+			return writeCourseError(c, err, "course.search_external", "search failed")
 		}
 		out := make([]ExternalCourseSummaryResponse, 0, len(results))
 		for _, r := range results {
@@ -573,10 +550,7 @@ func ImportExternalCourse(svc *services.CourseService) fiber.Handler {
 		}
 		course, err := svc.ImportExternal(c.UserContext(), req.ExternalID)
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to import course"})
+			return writeCourseError(c, err, "course.import_external", "failed to import course")
 		}
 		return c.Status(fiber.StatusCreated).JSON(buildCourseDetail(course))
 	}
@@ -593,10 +567,7 @@ func RefreshCourse(svc *services.CourseService) fiber.Handler {
 		}
 		course, err := svc.Refresh(c.UserContext(), courseID)
 		if err != nil {
-			if writeCourseError(c, err) {
-				return nil
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to refresh course"})
+			return writeCourseError(c, err, "course.refresh", "failed to refresh course")
 		}
 		return c.JSON(buildCourseDetail(course))
 	}

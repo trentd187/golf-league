@@ -16,6 +16,7 @@ package handlers_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,6 +73,27 @@ func stubClient() *services.GolfCourseAPIClient {
 // Validation in the service runs before any DB access, so a nil DB is safe.
 func nilSvc(client *services.GolfCourseAPIClient) *services.CourseService {
 	return services.NewCourseService(nil, client)
+}
+
+// captureErrorDetail wraps a single route in a tiny app whose afterware reads
+// c.Locals("error_detail") into a captured string. Used by tests that assert a
+// 500 actually populated the visibility hook the metrics middleware reads.
+//
+// Returning the captured value via a pointer rather than a channel keeps tests
+// straightforward — the request runs synchronously through app.Test, so the
+// pointer is fully populated by the time the response is returned.
+func captureErrorDetail(method, path string, handler fiber.Handler) (*fiber.App, *string) {
+	captured := new(string)
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	// Use a wrapper handler so we can read Locals AFTER the real handler runs.
+	app.Add(method, path, func(c *fiber.Ctx) error {
+		err := handler(c)
+		if v, ok := c.Locals("error_detail").(string); ok {
+			*captured = v
+		}
+		return err
+	})
+	return app, captured
 }
 
 // ─── GetCourse ─────────────────────────────────────────────────────────────────
@@ -345,4 +367,97 @@ func TestRefreshCourse_InvalidUUID(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/courses/not-a-uuid/refresh", nil), -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── writeCourseError visibility ───────────────────────────────────────────────
+
+// TestWriteCourseError_StatusMapping locks in the status code each known service
+// error maps to. If anyone changes the mapping (or adds a new sentinel without
+// wiring it in) this catches it without standing up a real DB.
+func TestWriteCourseError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{"validation", &services.ValidationError{Field: "x", Message: "bad"}, http.StatusBadRequest},
+		{"course not found", services.ErrCourseNotFound, http.StatusNotFound},
+		{"tee not found", services.ErrTeeNotFound, http.StatusNotFound},
+		{"hole not found", services.ErrHoleNotFound, http.StatusNotFound},
+		{"course in use", services.ErrCourseInUse, http.StatusConflict},
+		{"course not external", services.ErrCourseNotExternal, http.StatusBadRequest},
+		{"external api not configured", services.ErrExternalAPINotConfigured, http.StatusServiceUnavailable},
+		{"already imported", &services.AlreadyImportedError{}, http.StatusConflict},
+		{"external api error", &services.ExternalAPIError{Cause: errors.New("upstream 500")}, http.StatusBadGateway},
+		{"unrecognised → 500", errors.New("disk on fire"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteCourseErrorExported(c, tc.err, "test.tag", "fallback")
+			})
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
+}
+
+// TestWriteCourseError_ErrorDetailFor5xx asserts the visibility hook is set on
+// every response that produces a 5xx — the metrics middleware reads this Local
+// to emit the `error` field on the http.error log line in Loki. A regression
+// here is exactly the visibility bug that hid the refresh failure: the 500 went
+// out, no detail was logged, and we had nothing to debug from.
+func TestWriteCourseError_ErrorDetailFor5xx(t *testing.T) {
+	cases := []struct {
+		name         string
+		err          error
+		wantInDetail string
+	}{
+		{
+			name:         "unrecognised 500 includes tag and cause",
+			err:          errors.New("connection refused"),
+			wantInDetail: "course.refresh: connection refused",
+		},
+		{
+			name:         "external api 502 includes tag and upstream cause",
+			err:          &services.ExternalAPIError{Cause: errors.New("upstream timeout")},
+			wantInDetail: "course.refresh.external_api: upstream timeout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, captured := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteCourseErrorExported(c, tc.err, "course.refresh", "failed to refresh course")
+			})
+			_, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantInDetail, *captured,
+				"the metrics middleware reads error_detail to emit the `error` field in Loki — keep this populated for every 5xx")
+		})
+	}
+}
+
+// TestWriteCourseError_NoDetailFor4xx asserts we don't pollute Loki with
+// expected client-side errors. ValidationError, NotFound, etc. produce 4xx
+// responses with no error_detail set — they're not bugs, they're the API
+// behaving correctly.
+func TestWriteCourseError_NoDetailFor4xx(t *testing.T) {
+	cases := []error{
+		&services.ValidationError{Field: "x", Message: "bad"},
+		services.ErrCourseNotFound,
+		services.ErrCourseInUse,
+		services.ErrExternalAPINotConfigured,
+		&services.AlreadyImportedError{},
+	}
+	for _, e := range cases {
+		t.Run(e.Error(), func(t *testing.T) {
+			app, captured := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteCourseErrorExported(c, e, "test.tag", "fallback")
+			})
+			_, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Empty(t, *captured, "expected 4xx errors should not populate error_detail")
+		})
+	}
 }

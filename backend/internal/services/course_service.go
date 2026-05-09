@@ -630,7 +630,7 @@ func (s *CourseService) ImportExternal(ctx context.Context, externalID string) (
 		if err := tx.Create(&created).Error; err != nil {
 			return fmt.Errorf("create course: %w", err)
 		}
-		if err := insertExternalTees(tx, created.ID, detail.Tees); err != nil {
+		if err := upsertExternalTees(tx, created.ID, detail.Tees); err != nil {
 			return fmt.Errorf("insert tees: %w", err)
 		}
 		return nil
@@ -665,13 +665,15 @@ func (s *CourseService) Refresh(ctx context.Context, courseID uuid.UUID) (models
 		return models.Course{}, &ExternalAPIError{Cause: err}
 	}
 
+	// Upsert (don't delete-then-insert) so we don't break rounds.default_tee_id
+	// FKs on scheduled or completed rounds. Tees are matched by (course_id, name)
+	// so an existing tee's ID is preserved and the round keeps pointing at it
+	// after refresh. Tees in the DB but not in the external response are left
+	// alone — they may be manually-added or referenced by old rounds; users
+	// can prune them via DELETE /courses/:courseId/tees/:teeId.
 	txErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Deleting tees cascades to holes via ON DELETE CASCADE.
-		if err := tx.Where("course_id = ?", courseID).Delete(&models.Tee{}).Error; err != nil {
-			return fmt.Errorf("delete existing tees: %w", err)
-		}
-		if err := insertExternalTees(tx, courseID, detail.Tees); err != nil {
-			return fmt.Errorf("insert tees: %w", err)
+		if err := upsertExternalTees(tx, courseID, detail.Tees); err != nil {
+			return fmt.Errorf("upsert tees: %w", err)
 		}
 		return nil
 	})
@@ -728,13 +730,19 @@ func isValidGender(g string) bool {
 	return false
 }
 
-// insertExternalTees creates tee + hole records from GolfCourseAPI data inside
-// an existing transaction. Shared by Import and Refresh.
+// upsertExternalTees applies a GolfCourseAPI tee set to courseID inside an
+// existing transaction. Shared by Import and Refresh.
+//
+// Match key is (course_id, name): a tee with the same name is UPDATEd in
+// place (preserving its ID, so rounds.default_tee_id FKs stay valid); a tee
+// not yet in the DB is INSERTed. Tees in the DB but absent from the external
+// response are left alone — they may be manually-added or referenced by old
+// rounds; users prune them via the DELETE tee endpoint.
 //
 // GolfCourseAPI splits tees by gender into separate male[] / female[] arrays.
 // The same physical tee can appear in both — we deduplicate by name, preferring
 // whichever copy has more complete hole data.
-func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees) error {
+func upsertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees) error {
 	type candidate struct {
 		tee    ExternalTeeBox
 		gender models.TeeGender
@@ -758,7 +766,7 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees
 	inserted := make(map[string]bool)
 	for _, t := range tees.Male {
 		c := best[t.TeeName]
-		if err := insertOneTee(tx, courseID, c.tee, c.gender); err != nil {
+		if err := upsertOneTee(tx, courseID, c.tee, c.gender); err != nil {
 			return fmt.Errorf("insert tee %q (%s): %w", c.tee.TeeName, c.gender, err)
 		}
 		inserted[t.TeeName] = true
@@ -767,7 +775,7 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees
 		if inserted[t.TeeName] {
 			continue
 		}
-		if err := insertOneTee(tx, courseID, t, models.TeeGenderWomens); err != nil {
+		if err := upsertOneTee(tx, courseID, t, models.TeeGenderWomens); err != nil {
 			return fmt.Errorf("insert tee %q (womens): %w", t.TeeName, err)
 		}
 		inserted[t.TeeName] = true
@@ -775,30 +783,61 @@ func insertExternalTees(tx *gorm.DB, courseID uuid.UUID, tees ExternalCourseTees
 	return nil
 }
 
-// insertOneTee creates one tee and all its holes inside an existing transaction.
-// Hole numbers are positional (array index + 1) — GolfCourseAPI has no hole_number field.
-// par_total can be 0 even with hole-level pars; in that case sum the per-hole pars.
-func insertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee ExternalTeeBox, gender models.TeeGender) error {
+// upsertOneTee writes a single tee + all its holes inside an existing transaction.
+//
+// If a tee with the same (course_id, name) already exists, it is UPDATEd in
+// place (preserving its ID so rounds.default_tee_id FKs remain valid) and its
+// existing holes are deleted before re-inserting. Otherwise a new tee row is
+// created. Holes have no inbound FKs from elsewhere, so the wholesale replace
+// is safe.
+//
+// Hole numbers are positional (array index + 1) — GolfCourseAPI has no
+// hole_number field. par_total can be 0 even with hole-level pars; in that
+// case we sum the per-hole pars.
+func upsertOneTee(tx *gorm.DB, courseID uuid.UUID, extTee ExternalTeeBox, gender models.TeeGender) error {
 	par := extTee.Par
 	if par == 0 && len(extTee.Holes) > 0 {
 		for _, h := range extTee.Holes {
 			par += h.Par
 		}
 	}
-	tee := models.Tee{
-		CourseID:     courseID,
-		Name:         extTee.TeeName,
-		Gender:       gender,
-		CourseRating: extTee.CourseRating,
-		SlopeRating:  extTee.SlopeRating,
-		Par:          par,
-	}
-	if err := tx.Create(&tee).Error; err != nil {
-		// Surface the source values that triggered the constraint so we can
-		// diagnose without re-running. Common culprits: slope_rating outside
-		// 55–155 and course_rating overflowing decimal(4,1).
-		return fmt.Errorf("create tee row (rating=%v slope=%d par=%d): %w",
-			extTee.CourseRating, extTee.SlopeRating, par, err)
+
+	var tee models.Tee
+	lookupErr := tx.Where("course_id = ? AND name = ?", courseID, extTee.TeeName).
+		First(&tee).Error
+	switch {
+	case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+		tee = models.Tee{
+			CourseID:     courseID,
+			Name:         extTee.TeeName,
+			Gender:       gender,
+			CourseRating: extTee.CourseRating,
+			SlopeRating:  extTee.SlopeRating,
+			Par:          par,
+		}
+		if err := tx.Create(&tee).Error; err != nil {
+			// Surface the source values that triggered the constraint so we can
+			// diagnose without re-running. Common culprits: slope_rating outside
+			// 55–155 and course_rating overflowing decimal(4,1).
+			return fmt.Errorf("create tee row (rating=%v slope=%d par=%d): %w",
+				extTee.CourseRating, extTee.SlopeRating, par, err)
+		}
+	case lookupErr != nil:
+		return fmt.Errorf("lookup existing tee: %w", lookupErr)
+	default:
+		// Existing tee — keep its ID (rounds.default_tee_id depends on it),
+		// update mutable fields, and replace its holes below.
+		tee.Gender = gender
+		tee.CourseRating = extTee.CourseRating
+		tee.SlopeRating = extTee.SlopeRating
+		tee.Par = par
+		if err := tx.Save(&tee).Error; err != nil {
+			return fmt.Errorf("update tee row (rating=%v slope=%d par=%d): %w",
+				extTee.CourseRating, extTee.SlopeRating, par, err)
+		}
+		if err := tx.Where("tee_id = ?", tee.ID).Delete(&models.Hole{}).Error; err != nil {
+			return fmt.Errorf("clear existing holes: %w", err)
+		}
 	}
 	for i, extHole := range extTee.Holes {
 		var yardage *int

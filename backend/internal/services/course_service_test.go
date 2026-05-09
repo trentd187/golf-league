@@ -678,7 +678,10 @@ func TestCourseService_Refresh_NotExternal(t *testing.T) {
 	assert.ErrorIs(t, err, services.ErrCourseNotExternal)
 }
 
-func TestCourseService_Refresh_ReplacesTees(t *testing.T) {
+// TestCourseService_Refresh_UpdatesExistingTeeByName covers the upsert match
+// path: a tee with the same (course_id, name) keeps its ID and gets its
+// rating/slope/par updated, with its holes replaced.
+func TestCourseService_Refresh_UpdatesExistingTeeByName(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	c := models.Course{
 		Name:           "Imported",
@@ -687,15 +690,20 @@ func TestCourseService_Refresh_ReplacesTees(t *testing.T) {
 		ExternalID:     "42",
 	}
 	require.NoError(t, db.Create(&c).Error)
-	old := seedTee(t, db, c.ID) // existing tee that should be replaced
-	require.NoError(t, db.Create(&models.Hole{TeeID: old.ID, HoleNumber: 1, Par: 4, StrokeIndex: 1}).Error)
+	existing := seedTee(t, db, c.ID) // name="Blue", rating=72.4, slope=130, par=72
+	require.NoError(t, db.Create(&models.Hole{TeeID: existing.ID, HoleNumber: 1, Par: 4, StrokeIndex: 1}).Error)
 
 	external := services.ExternalCourse{
 		ID:         42,
 		CourseName: "Imported",
 		Tees: services.ExternalCourseTees{
 			Male: []services.ExternalTeeBox{{
-				TeeName: "Refreshed", CourseRating: 70.0, SlopeRating: 120, Par: 70, NumHoles: 18,
+				TeeName:      "Blue", // matches the existing seeded tee by name
+				CourseRating: 70.5,
+				SlopeRating:  118,
+				Par:          71,
+				NumHoles:     18,
+				Holes:        []services.ExternalHole{{Par: 5, StrokeIndex: 2}},
 			}},
 		},
 	}
@@ -705,7 +713,113 @@ func TestCourseService_Refresh_ReplacesTees(t *testing.T) {
 	got, err := svc.Refresh(context.Background(), c.ID)
 	require.NoError(t, err)
 	require.Len(t, got.Tees, 1)
-	assert.Equal(t, "Refreshed", got.Tees[0].Name)
+	assert.Equal(t, existing.ID, got.Tees[0].ID, "tee ID must be preserved so rounds.default_tee_id FKs stay valid")
+	assert.Equal(t, "Blue", got.Tees[0].Name)
+	assert.Equal(t, 70.5, got.Tees[0].CourseRating)
+	assert.Equal(t, 118, got.Tees[0].SlopeRating)
+	assert.Equal(t, 71, got.Tees[0].Par)
+	require.Len(t, got.Tees[0].Holes, 1)
+	assert.Equal(t, 5, got.Tees[0].Holes[0].Par, "holes are replaced, not merged")
+}
+
+// TestCourseService_Refresh_AddsNewTees covers the upsert miss path: tees in
+// the external response that aren't in the DB get inserted. Existing tees
+// with names not in the response are LEFT ALONE — they may still be in use
+// (e.g. as rounds.default_tee_id) and the user can prune them via DeleteTee.
+func TestCourseService_Refresh_AddsNewTees(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	c := models.Course{
+		Name:           "Imported",
+		HoleCount:      18,
+		ExternalSource: "golfcourseapi",
+		ExternalID:     "42",
+	}
+	require.NoError(t, db.Create(&c).Error)
+	existing := seedTee(t, db, c.ID) // name="Blue"
+
+	external := services.ExternalCourse{
+		ID:         42,
+		CourseName: "Imported",
+		Tees: services.ExternalCourseTees{
+			Male: []services.ExternalTeeBox{{
+				TeeName: "Black", CourseRating: 75, SlopeRating: 140, Par: 72, NumHoles: 18,
+			}},
+		},
+	}
+	api := newFakeGolfAPI(t, nil, map[string]services.ExternalCourse{"42": external})
+	svc := services.NewCourseService(db, api.client())
+
+	got, err := svc.Refresh(context.Background(), c.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Tees, 2, "existing 'Blue' tee preserved, new 'Black' tee added")
+
+	names := []string{got.Tees[0].Name, got.Tees[1].Name}
+	assert.Contains(t, names, "Blue")
+	assert.Contains(t, names, "Black")
+
+	// Confirm the existing tee's ID was preserved.
+	var blueID uuid.UUID
+	for _, tee := range got.Tees {
+		if tee.Name == "Blue" {
+			blueID = tee.ID
+		}
+	}
+	assert.Equal(t, existing.ID, blueID)
+}
+
+// TestCourseService_Refresh_PreservesTeesReferencedByNonActiveRound is the
+// regression test for the FK violation we hit in production: a scheduled
+// (non-active) round references a tee as its default_tee_id, refresh runs,
+// and the rounds_default_tee_id_fkey constraint blocks the wholesale tee
+// delete. The fix (upsert by name) preserves the tee row so the FK stays
+// valid; refresh succeeds and the round still points at the same tee row.
+func TestCourseService_Refresh_PreservesTeesReferencedByNonActiveRound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	c := models.Course{
+		Name:           "Imported",
+		HoleCount:      18,
+		ExternalSource: "golfcourseapi",
+		ExternalID:     "42",
+	}
+	require.NoError(t, db.Create(&c).Error)
+	tee := seedTee(t, db, c.ID) // "Blue"
+
+	// Seed a scheduled round (NOT active — active would trip ErrCourseInUse).
+	user := models.User{Email: "u@test.local", DisplayName: "U", Role: models.UserRole("user")}
+	require.NoError(t, db.Create(&user).Error)
+	event := models.Event{Name: "Test Event", EventType: models.EventTypeCasual, CreatedBy: user.ID}
+	require.NoError(t, db.Create(&event).Error)
+	round := models.Round{
+		EventID:       event.ID,
+		CourseID:      c.ID,
+		DefaultTeeID:  tee.ID, // <-- FK we must not break
+		ScheduledDate: time.Now(),
+		Status:        models.RoundStatusScheduled,
+		ScoringFormat: models.ScoringFormatStroke,
+	}
+	require.NoError(t, db.Create(&round).Error)
+
+	// Refresh returns the same Blue tee with new ratings — exercises the upsert
+	// match path with a tee that is referenced by an existing round.
+	external := services.ExternalCourse{
+		ID:         42,
+		CourseName: "Imported",
+		Tees: services.ExternalCourseTees{
+			Male: []services.ExternalTeeBox{{
+				TeeName: "Blue", CourseRating: 71.0, SlopeRating: 125, Par: 72, NumHoles: 18,
+			}},
+		},
+	}
+	api := newFakeGolfAPI(t, nil, map[string]services.ExternalCourse{"42": external})
+	svc := services.NewCourseService(db, api.client())
+
+	_, err := svc.Refresh(context.Background(), c.ID)
+	require.NoError(t, err, "must not violate rounds_default_tee_id_fkey")
+
+	// Round still references the same tee row.
+	var reloaded models.Round
+	require.NoError(t, db.First(&reloaded, "id = ?", round.ID).Error)
+	assert.Equal(t, tee.ID, reloaded.DefaultTeeID)
 }
 
 func TestCourseService_Refresh_BlockedByActiveRound(t *testing.T) {

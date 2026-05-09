@@ -62,23 +62,47 @@ Or copy the `doJSON` helper pattern from `courses_test.go` into your new test fi
 
 `testutil.NewTestApp` + `testutil.DoRequest` work for simple GET handlers (see `health_test.go`).
 
-### Tier 2 — With database (integration tests, requires `TEST_DATABASE_URL`)
+### Tier 2 — With database (integration tests, testcontainers-based)
 
-Not yet implemented. When needed: `testutil.NewTestDB(t)` will connect to a test PostgreSQL, run migrations, return a `*gorm.DB`. Tests in this tier should be in `*_integration_test.go` files and skipped when `TEST_DATABASE_URL` is not set.
+`testutil.NewTestDB(t)` spins up an ephemeral `postgres:16-alpine` container per `go test` invocation via [testcontainers-go](https://golang.testcontainers.org/), applies every migration, and returns a `*gorm.DB`. The container is shared across all tests in the process (one ~5s cold start, then fast); each `NewTestDB` call TRUNCATEs every public-schema table CASCADE so individual tests start clean.
+
+**Setup**: install Docker. That's it. No env vars, no manual `CREATE DATABASE`, no separate dev/test DB to manage. The pre-commit ratchet always runs Tier 2 — there is no skip path.
+
+```bash
+go test -count=1 ./internal/services/...
+```
+
+If Docker isn't running you'll see `failed to start postgres container` — start Docker Desktop and re-run.
+
+**Tests using `NewTestDB` must NOT call `t.Parallel()`** — TRUNCATE is global and would race across goroutines sharing the same database.
+
+The canonical example is `internal/services/course_service_test.go`.
 
 ## What to test (ordered by impact on coverage ratchet)
 
-| Priority | Target | Tier |
-|---|---|---|
-| **Required** | Every validation branch reachable without a DB | 1 |
-| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) | 1 |
-| High | Score entry validation (handicap gate, group membership) | 1 |
-| Medium | Handler happy paths (correct status + response shape) | 2 |
-| Low | Additional error paths (404, 403) | 2 |
+| Priority | Target | Tier | Where |
+|---|---|---|---|
+| **Required** | Every validation branch reachable without a DB | 1 | `*_test.go` next to handler/service |
+| High | Service business logic (happy + error paths) | 2 | `internal/services/*_test.go` |
+| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) | 1 or 2 | service or handler |
+| High | Score entry validation (handicap gate, group membership) | 1 or 2 | service or handler |
+| Medium | Handler happy paths (correct status + response shape) | 2 | service test (preferred) |
+| Low | Additional error paths (404, 403) | 2 | service test |
+
+### Layered convention (post course-service refactor)
+
+New domains follow the layered pattern: handlers parse HTTP and delegate to a service in `internal/services/<domain>_service.go`. Validation, DB access, and external-API orchestration live in the service.
+
+- Handler tests: Tier 1, focused on HTTP plumbing (UUID/body parsing, content-type, route wiring).
+- Service tests: Tier 2, focused on business rules — validation errors, sentinel errors, transaction boundaries, happy paths. Wire external APIs to an `httptest.Server` via the service constructor's client (e.g. `GolfCourseAPIClient.SetBaseURL`).
+
+Sentinel errors (e.g. `services.ErrCourseNotFound`, `services.ErrCourseInUse`) and `*ValidationError` are the contract between the two layers — handlers map them to HTTP statuses via a `writeCourseError`-style helper. **Note:** that helper returns `bool` (handled / not-handled), not `error`. Fiber's `c.Status().JSON()` returns `nil` on success, so an `error`-returning helper can't distinguish "wrote a response" from "fell through".
 
 ## Coverage ratchet
 
-Baseline in `.go-coverage-baseline` (repo root, committed). Auto-updates upward when coverage improves; never decreases. Measured: `internal/handlers`, `internal/middleware`.
+Baseline in `.go-coverage-baseline` (repo root, committed). Auto-updates upward when coverage improves; never decreases. Measured: `internal/handlers`, `internal/middleware`, `internal/services`.
+
+Because Tier 2 tests run via testcontainers (no skip path), the ratchet measurement is consistent across machines — you cannot accidentally drop coverage by forgetting to start a database.
 
 Before committing, run:
 ```bash
@@ -88,6 +112,8 @@ go test -count=1 -coverpkg=github.com/trentd187/golf-league/internal/handlers,gi
 Compare against `.go-coverage-baseline`. If it drops, add Tier 1 tests **in the same commit** — don't rely on auto-update to paper over the regression.
 
 **`-count=1` is required.** Go's test cache replays the coverage profile from the last run. If any instrumented file changed since the cached run, the merged `coverage.out` miscounts total statements (observed: 19.4% reported instead of actual 24.9%). `-count=1` disables the cache and forces a fresh measurement every time.
+
+**`-timeout 180s` is required for the ratchet.** The default 60s timeout is fine when only Tier 1 runs, but the first Tier 2 test in a fresh process spends ~5s starting Postgres + applying migrations. Pre-commit uses 180s; ad-hoc runs can drop it back when iterating.
 
 ## Common Tier 1 patterns (no DB needed)
 

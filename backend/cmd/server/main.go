@@ -59,8 +59,13 @@ func main() {
 	observability.SetDefault(obs.Handler())
 
 	// GolfCourseAPIClient is created once and shared across requests.
-	// GOLF_COURSE_API_KEY may be empty — handlers check and return 503 if called without a key.
+	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
+	// (mapped to 503) if any external-API method is called without a key.
 	golfAPI := services.NewGolfCourseAPIClient(cfg.GolfCourseAPIKey)
+
+	// CourseService bundles the DB and external-API client behind one dependency
+	// for every course/tee/hole handler.
+	courseService := services.NewCourseService(db, golfAPI)
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
@@ -141,22 +146,22 @@ func main() {
 	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(db))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
-	api.Get("/courses", handlers.GetCourses(db))
-	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(db))
-	api.Get("/courses/:courseId", handlers.GetCourse(db))
-	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(db))
+	api.Get("/courses", handlers.GetCourses(courseService))
+	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(courseService))
+	api.Get("/courses/:courseId", handlers.GetCourse(courseService))
+	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(courseService))
 
-	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(db))
-	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(db))
-	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(db))
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(courseService))
+	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(courseService))
+	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(courseService))
 
-	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(db))
-	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(db))
+	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(courseService))
+	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(courseService))
 
 	// External course import — search returns results without writing; import/refresh write to DB
-	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(golfAPI))
-	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(db, golfAPI))
-	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(db, golfAPI))
+	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(courseService))
+	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(courseService))
+	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(courseService))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
 	// doesn't treat "following" or "me" as a userId value.

@@ -335,7 +335,7 @@ Hooks managed by **lefthook** (`lefthook.yml`). Installed automatically when run
 | Hook | Trigger | Action |
 |---|---|---|
 | `backend-lint` | `backend/**/*.go` staged | golangci-lint; blocks on errors |
-| `backend-coverage` | `backend/**/*.go` staged | `go test ./...` with coverage; blocks if below `.go-coverage-baseline` |
+| `backend-coverage` | `backend/**/*.go` staged | `go test ./...` with coverage (Tier 1 + Tier 2); blocks if below `.go-coverage-baseline`. **Requires Docker running** — Tier 2 uses testcontainers-go to spin up an ephemeral Postgres |
 | `backend-docker-build` | `backend/**` or `Dockerfile` changed vs origin/main | Builds Railway Dockerfile; skipped if Docker not running |
 | `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | `tsc --noEmit` |
 | `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | ESLint via `expo lint` |

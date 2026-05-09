@@ -19,6 +19,11 @@
 # Manual run (from the backend/ directory):
 #   cd backend && bash ../scripts/check-go-coverage.sh
 #
+# Tier 1 + Tier 2 are both measured. Tier 2 tests use testcontainers-go
+# (see internal/testutil/db.go) so Docker must be running on the dev machine.
+# If Docker is unavailable, every Tier 2 test fails fast — there is no silent
+# skip path that would let the ratchet drift.
+#
 # Packages excluded from coverage (require live infra or have no logic):
 #   - internal/database  (requires a real PostgreSQL connection)
 #   - internal/websocket (requires live WebSocket clients)
@@ -38,6 +43,7 @@ BASELINE_FILE="../.go-coverage-baseline"
 PACKAGES=(
   "github.com/trentd187/golf-league/internal/handlers"
   "github.com/trentd187/golf-league/internal/middleware"
+  "github.com/trentd187/golf-league/internal/services"
 )
 
 # Coverage output file written to backend/coverage.out (relative to backend/, where
@@ -93,16 +99,21 @@ COVERPKG=$(IFS=,; echo "${PACKAGES[*]}")
 #            against an older binary and replays stale statement counts, causing
 #            the merged coverage.out to miscount total statements when any
 #            instrumented file has changed since the cached run
-# -timeout 60s: fail fast if any test hangs for more than 60 seconds
+# -timeout 180s: Tier 2 tests start a Postgres container on first call (~5s
+#                cold start), then run fast. 180s leaves plenty of headroom
+#                for slow Docker daemons or first-time image pulls.
 if ! go test \
     -coverprofile="$COVERAGE_FILE" \
     -covermode=count \
     -coverpkg="$COVERPKG" \
     -count=1 \
-    -timeout 60s \
+    -timeout 180s \
     ./...; then
   echo ""
   echo "✗ Tests are failing — fix them before committing."
+  echo ""
+  echo "  If you see 'failed to start postgres container' errors, ensure Docker"
+  echo "  Desktop is running. Tier 2 tests use testcontainers-go and require it."
   exit 1
 fi
 

@@ -75,6 +75,10 @@ func main() {
 	// Depends on EventService for the shared IsOrganizer permission check.
 	roundService := services.NewRoundService(db, eventService)
 
+	// ScoreService owns scorecard assembly, score entry, handicap, and hole stats.
+	// Depends on EventService for the organizer-bypass permission path in canModifyScores.
+	scoreService := services.NewScoreService(db, eventService)
+
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
 	})
@@ -147,11 +151,11 @@ func main() {
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
-	// Score routes — permission enforced per-handler (group member, organizer, or admin)
-	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(db))
+	// Score routes — permission enforced inside ScoreService.canModifyScores
+	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(scoreService))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))

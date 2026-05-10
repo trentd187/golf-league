@@ -79,6 +79,9 @@ func main() {
 	// Depends on EventService for the organizer-bypass permission path in canModifyScores.
 	scoreService := services.NewScoreService(db, eventService)
 
+	// UserService owns profile lookup, follow/unfollow, career stats, and scorecard settings.
+	userService := services.NewUserService(db)
+
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
 	})
@@ -177,16 +180,16 @@ func main() {
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
 	// doesn't treat "following" or "me" as a userId value.
-	api.Get("/me", handlers.GetMe(db))
-	api.Get("/users/following", handlers.GetFollowing(db))
-	api.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(db))
-	api.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(db))
-	api.Get("/users/:userId", handlers.GetUserProfile(db))
-	api.Get("/users/:userId/stats", handlers.GetUserStats(db))
-	api.Get("/users/:userId/rounds", handlers.GetUserRounds(db))
-	api.Post("/users/:userId/follow", handlers.FollowUser(db))
-	api.Delete("/users/:userId/follow", handlers.UnfollowUser(db))
-	api.Get("/users", handlers.SearchUsers(db))
+	api.Get("/me", handlers.GetMe(userService))
+	api.Get("/users/following", handlers.GetFollowing(userService))
+	api.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(userService))
+	api.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(userService))
+	api.Get("/users/:userId", handlers.GetUserProfile(userService))
+	api.Get("/users/:userId/stats", handlers.GetUserStats(userService))
+	api.Get("/users/:userId/rounds", handlers.GetUserRounds(userService))
+	api.Post("/users/:userId/follow", handlers.FollowUser(userService))
+	api.Delete("/users/:userId/follow", handlers.UnfollowUser(userService))
+	api.Get("/users", handlers.SearchUsers(userService))
 
 	// Start the server in a goroutine so we can listen for OS signals below.
 	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;

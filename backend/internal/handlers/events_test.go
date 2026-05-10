@@ -61,7 +61,7 @@ func newEventAppWithAuth(method, path string, handler fiber.Handler) *fiber.App 
 // TestScheduleEventRound_MissingAuth verifies that a request with no auth
 // context (no userID local) returns 401 before any DB call.
 func TestScheduleEventRound_MissingAuth(t *testing.T) {
-	app := newSingleRouteApp(http.MethodPost, scheduleRoundRoute, handlers.ScheduleEventRound(nilEventSvc(), nil))
+	app := newSingleRouteApp(http.MethodPost, scheduleRoundRoute, handlers.ScheduleEventRound(nil))
 	resp, err := app.Test(
 		httptest.NewRequest(http.MethodPost, "/events/"+validUUID+"/rounds", nil), -1)
 	require.NoError(t, err)
@@ -69,18 +69,16 @@ func TestScheduleEventRound_MissingAuth(t *testing.T) {
 }
 
 // TestScheduleEventRound_InvalidEventID verifies that a non-UUID event ID in
-// the path returns 400 before any DB call.
+// the path returns 400 before any service call.
 // A stub auth middleware injects a valid userID local so the handler reaches
 // the event-UUID parse step — otherwise it exits early with 401.
 func TestScheduleEventRound_InvalidEventID(t *testing.T) {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	// Inject a valid userID so uuid.Parse(userIDStr) succeeds and the handler
-	// proceeds to validate the event UUID in the URL path.
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("userID", validUUID)
 		return c.Next()
 	})
-	app.Post(scheduleRoundRoute, handlers.ScheduleEventRound(nilEventSvc(), nil))
+	app.Post(scheduleRoundRoute, handlers.ScheduleEventRound(nil))
 
 	resp, err := app.Test(
 		httptest.NewRequest(http.MethodPost, "/events/not-a-uuid/rounds", nil), -1)

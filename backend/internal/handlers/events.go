@@ -21,15 +21,12 @@ package handlers
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
-	"gorm.io/gorm"
 )
 
 // ─── Response types ────────────────────────────────────────────────────────────
@@ -482,15 +479,12 @@ func GetEventRounds(svc *services.EventService) fiber.Handler {
 	}
 }
 
-// ─── Round scheduling (kept in this file pending PR #3) ────────────────────────
+// ─── Round scheduling ─────────────────────────────────────────────────────────
 
 // ScheduleEventRound creates a Round under an event. The route lives under
-// /events/:id/rounds, but the operation is logically a Rounds-domain mutation
-// that creates a Round + its initial Groups + (legacy) finds-or-creates a Course.
-// PR #3 will move this handler's body into RoundsService and leave only the
-// HTTP plumbing here. The IsOrganizer check goes through EventService so we
-// don't fork the permission logic.
-func ScheduleEventRound(eventSvc *services.EventService, db *gorm.DB) fiber.Handler {
+// /events/:id/rounds (event ownership), but the domain logic now lives in
+// RoundService.Schedule so the permission and creation logic are not forked.
+func ScheduleEventRound(roundSvc *services.RoundService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, userRole, ok := authUser(c)
 		if !ok {
@@ -501,190 +495,44 @@ func ScheduleEventRound(eventSvc *services.EventService, db *gorm.DB) fiber.Hand
 			return nil
 		}
 
-		authorized, err := eventSvc.IsOrganizer(c.UserContext(), eventID, userID, userRole)
-		if err != nil {
-			return writeEventError(c, err, "event.schedule_round.authz", "failed to check authorization")
-		}
-		if !authorized {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
-		}
-
 		var req ScheduleRoundRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-		if req.CourseID == nil && req.CourseName == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "course_id or course_name is required"})
-		}
-		if req.CourseID != nil && req.DefaultTeeID == nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "default_tee_id is required when course_id is provided"})
-		}
-		if req.ScheduledDate == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date is required"})
-		}
-		scheduledDate, err := time.Parse("2006-01-02", req.ScheduledDate)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date must be YYYY-MM-DD"})
-		}
-		scoringFormat := models.ScoringFormatStroke
-		if req.ScoringFormat != nil && *req.ScoringFormat != "" {
-			scoringFormat = models.ScoringFormat(*req.ScoringFormat)
-		}
-		if req.NineHoleSelection != nil {
-			sel := *req.NineHoleSelection
-			if sel != "front" && sel != "back" {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "nine_hole_selection must be \"front\" or \"back\""})
-			}
+
+		groups := make([]services.GroupScheduleInput, len(req.Groups))
+		for i, g := range req.Groups {
+			groups[i] = services.GroupScheduleInput{TeeTime: g.TeeTime}
 		}
 
-		var createdRound models.Round
-		var courseName string
-		groupInputs := req.Groups
-		if len(groupInputs) == 0 {
-			groupInputs = []GroupInput{{}}
-		}
-
-		txErr := db.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
-			var course models.Course
-			var teeID uuid.UUID
-
-			if req.CourseID != nil {
-				courseUUID, err := uuid.Parse(*req.CourseID)
-				if err != nil {
-					return fiber.NewError(fiber.StatusBadRequest, "invalid course_id")
-				}
-				if err := tx.First(&course, "id = ?", courseUUID).Error; err != nil {
-					return fiber.NewError(fiber.StatusNotFound, "course not found")
-				}
-				teeUUID, err := uuid.Parse(*req.DefaultTeeID)
-				if err != nil {
-					return fiber.NewError(fiber.StatusBadRequest, "invalid default_tee_id")
-				}
-				var tee models.Tee
-				if err := tx.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {
-					return fiber.NewError(fiber.StatusNotFound, "tee not found for this course")
-				}
-				teeID = teeUUID
-			} else {
-				courseErr := tx.Where("name ILIKE ?", req.CourseName).First(&course).Error
-				if courseErr != nil {
-					course = models.Course{Name: req.CourseName, HoleCount: 18}
-					if err := tx.Create(&course).Error; err != nil {
-						return err
-					}
-					defaultTee := models.Tee{
-						CourseID:     course.ID,
-						Name:         "Default",
-						Gender:       models.TeeGenderUnisex,
-						CourseRating: 72.0,
-						SlopeRating:  113,
-						Par:          72,
-					}
-					if err := tx.Create(&defaultTee).Error; err != nil {
-						return err
-					}
-					teeID = defaultTee.ID
-				} else {
-					var tee models.Tee
-					teeErr := tx.Where("course_id = ?", course.ID).First(&tee).Error
-					if teeErr != nil {
-						tee = models.Tee{
-							CourseID:     course.ID,
-							Name:         "Default",
-							Gender:       models.TeeGenderUnisex,
-							CourseRating: 72.0,
-							SlopeRating:  113,
-							Par:          72,
-						}
-						if err := tx.Create(&tee).Error; err != nil {
-							return err
-						}
-					}
-					teeID = tee.ID
-				}
-			}
-
-			courseName = course.Name
-
-			if req.NineHoleSelection != nil && course.HoleCount != 18 {
-				return fiber.NewError(fiber.StatusBadRequest, "nine_hole_selection is only valid for 18-hole courses")
-			}
-
-			var roundCount int64
-			tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount)
-			nextRoundNumber := int(roundCount) + 1
-
-			roundName := req.Name
-			if roundName == "" {
-				roundName = fmt.Sprintf("Round %d", nextRoundNumber)
-			}
-
-			createdRound = models.Round{
-				EventID:           eventID,
-				CourseID:          course.ID,
-				DefaultTeeID:      teeID,
-				Name:              roundName,
-				RoundNumber:       nextRoundNumber,
-				ScheduledDate:     scheduledDate,
-				Status:            models.RoundStatusScheduled,
-				ScoringFormat:     scoringFormat,
-				RequiresHandicap:  false,
-				NineHoleSelection: req.NineHoleSelection,
-			}
-			if err := tx.Create(&createdRound).Error; err != nil {
-				return err
-			}
-
-			for i, g := range groupInputs {
-				group := models.Group{
-					RoundID:      createdRound.ID,
-					GroupNumber:  i + 1,
-					StartingHole: 1,
-				}
-				if g.TeeTime != nil && *g.TeeTime != "" {
-					var parsedTime time.Time
-					var parseErr error
-					parsedTime, parseErr = time.Parse("15:04", *g.TeeTime)
-					if parseErr != nil {
-						parsedTime, parseErr = time.Parse("3:04 PM", *g.TeeTime)
-					}
-					if parseErr == nil {
-						teeTime := time.Date(
-							scheduledDate.Year(), scheduledDate.Month(), scheduledDate.Day(),
-							parsedTime.Hour(), parsedTime.Minute(), 0, 0, time.UTC,
-						)
-						group.TeeTime = &teeTime
-					}
-				}
-				if err := tx.Create(&group).Error; err != nil {
-					return err
-				}
-			}
-			return nil
+		result, err := roundSvc.Schedule(c.UserContext(), eventID, userID, userRole, services.ScheduleRoundInput{
+			Name:              req.Name,
+			ScheduledDate:     req.ScheduledDate,
+			ScoringFormat:     req.ScoringFormat,
+			CourseID:          req.CourseID,
+			DefaultTeeID:      req.DefaultTeeID,
+			CourseName:        req.CourseName,
+			NineHoleSelection: req.NineHoleSelection,
+			Groups:            groups,
 		})
-
-		if txErr != nil {
-			if fe, ok := txErr.(*fiber.Error); ok {
-				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
-			}
-			c.Locals("error_detail", "event.schedule_round: "+txErr.Error())
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to schedule round"})
+		if err != nil {
+			return writeRoundError(c, err, "event.schedule_round", "failed to schedule round")
 		}
 
 		observability.LogInfo(c.UserContext(), "round.created", "Round scheduled",
-			"round_id", createdRound.ID.String(),
+			"round_id", result.Round.ID.String(),
 			"event_id", eventID.String(),
 		)
 
 		return c.Status(fiber.StatusCreated).JSON(RoundSummaryResponse{
-			ID:            createdRound.ID.String(),
-			Name:          createdRound.Name,
-			CourseName:    courseName,
-			ScheduledDate: createdRound.ScheduledDate.UTC().Format("2006-01-02"),
-			Status:        string(createdRound.Status),
-			ScoringFormat: string(createdRound.ScoringFormat),
-			RoundNumber:   createdRound.RoundNumber,
-			GroupCount:    len(groupInputs),
+			ID:            result.Round.ID.String(),
+			Name:          result.Round.Name,
+			CourseName:    result.CourseName,
+			ScheduledDate: result.Round.ScheduledDate.UTC().Format("2006-01-02"),
+			Status:        string(result.Round.Status),
+			ScoringFormat: string(result.Round.ScoringFormat),
+			RoundNumber:   result.Round.RoundNumber,
+			GroupCount:    result.GroupCount,
 		})
 	}
 }

@@ -160,7 +160,29 @@ type UpsertHoleStatsRequest struct {
 	Stats []HoleStatInput `json:"stats"`
 }
 
-// ─── Permission helper ────────────────────────────────────────────────────────
+// ─── Permission helpers ───────────────────────────────────────────────────────
+
+// isRoundOrganizer checks whether the caller has organizer rights over the event
+// that owns the given round. Kept here until scores.go is migrated to ScoreService
+// (PR #4), at which point it moves into RoundService.IsRoundOrganizer.
+//
+// Returns (isOrganizer, eventID). eventID is uuid.Nil when the round is not found.
+func isRoundOrganizer(db *gorm.DB, roundID, userID uuid.UUID, userRole string) (bool, uuid.UUID) {
+	if userRole == "admin" {
+		var round models.Round
+		if err := db.Select("event_id").First(&round, "id = ?", roundID).Error; err != nil {
+			return true, uuid.Nil
+		}
+		return true, round.EventID
+	}
+	var round models.Round
+	if err := db.Select("event_id").First(&round, "id = ?", roundID).Error; err != nil {
+		return false, uuid.Nil
+	}
+	var player models.EventPlayer
+	err := db.Where("event_id = ? AND user_id = ?", round.EventID, userID).First(&player).Error
+	return err == nil && player.Role == models.EventPlayerRoleOrganizer, round.EventID
+}
 
 // canModifyScores returns true when the caller is allowed to enter or update
 // scores for targetRoundPlayerID. The three allowed cases are:

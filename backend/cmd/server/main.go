@@ -68,8 +68,12 @@ func main() {
 	courseService := services.NewCourseService(db, golfAPI)
 
 	// EventService owns event/member/event-round-list business logic.
-	// IsOrganizer is exposed for use by rounds and scores handlers in later PRs.
+	// IsOrganizer is exposed for cross-service use by RoundService and ScoreService.
 	eventService := services.NewEventService(db)
+
+	// RoundService owns round scheduling, group management, and member assignment.
+	// Depends on EventService for the shared IsOrganizer permission check.
+	roundService := services.NewRoundService(db, eventService)
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
@@ -128,22 +132,20 @@ func main() {
 	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(eventService))
 
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
-	// ScheduleEventRound takes both eventService (for IsOrganizer) and db (for the
-	// transactional round/group/course creation). PR #3 moves the body into RoundsService.
-	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(eventService, db))
+	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(roundService))
 
-	// Round routes — round IDs are globally unique, so these are top-level
+	// Round routes — round IDs are globally unique, so these are top-level.
 	// GET /rounds must be registered before /rounds/:roundId so Fiber's router
 	// doesn't treat "rounds" as a roundId parameter.
-	api.Get("/rounds", handlers.GetMyRounds(db))
-	api.Get("/rounds/:roundId", handlers.GetRound(db))
-	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))
-	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))
-	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(db))
-	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(db))
-	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(db))
-	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))
-	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))
+	api.Get("/rounds", handlers.GetMyRounds(roundService))
+	api.Get("/rounds/:roundId", handlers.GetRound(roundService))
+	api.Patch("/rounds/:roundId", handlers.UpdateRound(roundService))
+	api.Delete("/rounds/:roundId", handlers.DeleteRound(roundService))
+	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(roundService))
+	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(roundService))
+	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(roundService))
+	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
+	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
 	// Score routes — permission enforced per-handler (group member, organizer, or admin)
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(db))

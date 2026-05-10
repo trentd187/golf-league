@@ -98,23 +98,29 @@ backend/
 ├── internal/handlers/         # HTTP handlers, one file per domain (events.go, users.go, …)
 ├── internal/middleware/       # auth.go (JWT) and roles.go (RBAC)
 ├── internal/models/           # All GORM models in models.go
-├── internal/services/         # Business logic (to be added — keep handlers thin)
+├── internal/services/         # Business logic; handlers delegate here (thin HTTP layer)
 ├── internal/websocket/        # WebSocket hub
 └── migrations/                # SQL migration files
 ```
 
 ### Adding a New Handler
 
-1. Create the handler in `internal/handlers/<domain>.go`
-2. Register the route in `cmd/server/main.go`
-3. Apply middleware: `middleware.Auth(cfg)` then `middleware.RequireRole(...)` as needed
-4. **Write the `_test.go` in the same commit.** See [`backend/docs/testing.md`](backend/docs/testing.md).
+New handlers follow the layered pattern — every domain has a service in `internal/services/<domain>_service.go`.
+
+1. Create or extend the service in `internal/services/<domain>_service.go` with the business logic
+2. Create the handler in `internal/handlers/<domain>.go` — parse HTTP, call the service, map errors via a `write<Domain>Error` helper
+3. Register the route in `cmd/server/main.go`, wiring the service into the handler constructor
+4. Apply middleware: `middleware.Auth(cfg)` then `middleware.RequireRole(...)` as needed
+5. **Write the `_test.go` files in the same commit** — Tier 1 in `handlers/`, Tier 2 in `services/`. See [`backend/docs/testing.md`](backend/docs/testing.md).
 
 Handler signature:
 ```go
-func HandlerName(c *fiber.Ctx) error {
-    // read from c.Params(), c.Body(), c.Locals()
-    // return c.JSON(...) or c.Status(...).JSON(...)
+func HandlerName(svc *services.DomainService) fiber.Handler {
+    return func(c *fiber.Ctx) error {
+        // parse from c.Params(), c.Body(), c.Locals()
+        // call svc.Method(ctx, ...)
+        // map errors via write<Domain>Error(c, err, ...)
+    }
 }
 ```
 
@@ -138,7 +144,7 @@ app.Use(middleware.Auth(cfg))                                                   
 app.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent)
 ```
 
-The three global roles: `admin`, `manager`, `user`. **Per-event manager check** uses `isEventOrganizer()` in `handlers/events.go`; **per-round** uses `isRoundOrganizer()` in `handlers/rounds.go` (returns `(bool, uuid.UUID)` — check for `uuid.Nil`).
+The three global roles: `admin`, `manager`, `user`. **Per-event organizer check** uses `EventService.IsOrganizer(ctx, callerID, eventID)`; **per-round** uses `RoundService.IsOrganizer(ctx, callerID, roundID)`. Both return `(bool, error)` and are called from the relevant service methods — not from handlers directly.
 
 ### Score Entry Permission Check
 

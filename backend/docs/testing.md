@@ -41,7 +41,7 @@ Most validation branches return before any DB call, so `nil` can be passed as `*
 
 ```go
 app := fiber.New(fiber.Config{DisableStartupMessage: true})
-app.Get("/courses/:courseId", handlers.GetCourse(nil)) // nil DB — UUID check returns first
+app.Get("/courses/:courseId", handlers.GetCourse(nil)) // nil service — UUID check returns first
 
 req := httptest.NewRequest(http.MethodGet, "/courses/not-a-uuid", nil)
 resp, err := app.Test(req, -1)
@@ -84,7 +84,7 @@ The canonical example is `internal/services/course_service_test.go`.
 |---|---|---|---|
 | **Required** | Every validation branch reachable without a DB | 1 | `*_test.go` next to handler/service |
 | High | Service business logic (happy + error paths) | 2 | `internal/services/*_test.go` |
-| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) | 1 or 2 | service or handler |
+| High | Permission helpers (`EventService.IsOrganizer`, `RoundService.IsOrganizer`) | 2 | `services/*_service_test.go` |
 | High | Score entry validation (handicap gate, group membership) | 1 or 2 | service or handler |
 | Medium | Handler happy paths (correct status + response shape) | 2 | service test (preferred) |
 | Low | Additional error paths (404, 403) | 2 | service test |

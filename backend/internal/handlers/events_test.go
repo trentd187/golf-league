@@ -10,7 +10,7 @@
 //   - CreateEvent body validation: missing name, invalid event_type, bad date → 400
 //
 // Paths that require a real DB (Tier 2):
-//   - isEventOrganizer, DB lookups, actual creates/updates/deletes
+//   - EventService.IsOrganizer, DB lookups, actual creates/updates/deletes
 //
 // Run:
 //

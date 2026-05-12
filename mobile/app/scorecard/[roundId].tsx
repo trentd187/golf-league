@@ -356,6 +356,20 @@ export default function ScorecardScreen() {
   // first stat (score_position "first").
   const scoreInputRef = useRef<TextInput>(null);
 
+  // currentHoleRef / lastHoleRef mirror their respective values so the
+  // autoSavePlayer debounced callback can read them without being recreated
+  // on every hole change (which would cause onBlur prop churn).
+  const currentHoleRef = useRef(currentHole);
+  useEffect(() => { currentHoleRef.current = currentHole; }, [currentHole]);
+
+  const lastHoleRef = useRef<number>(18);
+  useEffect(() => {
+    if (!scorecard) return;
+    const hCount = scorecard.hole_count ?? 18;
+    const start  = scorecard.nine_hole_selection === "back" ? 10 : 1;
+    lastHoleRef.current = start + hCount - 1;
+  }, [scorecard]);
+
   // focusingRef: set to true immediately before programmatically calling .focus()
   // on the next TextInput in the chain so onBlur handlers on the departing field
   // know not to scroll the view back to the top (the keyboard is staying up).
@@ -434,6 +448,11 @@ export default function ScorecardScreen() {
             }
           }, [500, 1000, 2000]);
           setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saved" }));
+          // After saving the last hole, scroll back to the top so the user
+          // sees the updated leaderboard without having to scroll manually.
+          if (currentHoleRef.current === lastHoleRef.current) {
+            outerScrollRef.current?.scrollTo({ y: 0, animated: true });
+          }
           setTimeout(
             () => setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "idle" })),
             2000

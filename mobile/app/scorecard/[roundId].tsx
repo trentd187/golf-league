@@ -265,11 +265,15 @@ export default function ScorecardScreen() {
 
   // ── Score / handicap / UI state ─────────────────────────────────────────────
   const [scores,          setScores]          = useState<LocalScores>({});
-  const [handicaps,       setHandicaps]       = useState<LocalHandicaps>({});
+  const [handicaps,         setHandicaps]         = useState<LocalHandicaps>({});
   const [savingHandicaps,   setSavingHandicaps]   = useState(false);
   // handicapDismissed: user tapped "Skip" in the handicap entry section.
   // Hides the section for the rest of the session even if handicaps are missing.
   const [handicapDismissed, setHandicapDismissed] = useState(false);
+  // editingMyHandicap: user tapped the pencil to correct their already-set handicap.
+  const [editingMyHandicap, setEditingMyHandicap] = useState(false);
+  const [savingMyHandicap,  setSavingMyHandicap]  = useState(false);
+  const [myHandicapDraft,   setMyHandicapDraft]   = useState("");
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
 
   // ── Advanced stats + hole navigation state ───────────────────────────────────
@@ -567,6 +571,37 @@ export default function ScorecardScreen() {
     }
   };
 
+  // ── My handicap edit (post-entry correction for current user) ──────────────
+
+  const handleSaveMyHandicap = async () => {
+    const myPlayer = group?.players.find((p) => p.user_id === user?.id);
+    if (!myPlayer) return;
+    const hNum = Number.parseInt(myHandicapDraft, 10);
+    if (Number.isNaN(hNum) || hNum < 0) {
+      Alert.alert("Invalid", "Enter a valid course handicap (0 or more).");
+      return;
+    }
+    setSavingMyHandicap(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `${API_URL}/api/v1/rounds/${roundId}/players/${myPlayer.round_player_id}/handicap`,
+        {
+          method:  "PUT",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body:    JSON.stringify({ course_handicap: hNum }),
+        }
+      );
+      if (!res.ok) throw new Error("save failed");
+      setEditingMyHandicap(false);
+      queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
+    } catch {
+      Alert.alert("Error", "Could not update handicap. Please try again.");
+    } finally {
+      setSavingMyHandicap(false);
+    }
+  };
+
   // ── Loading / error ─────────────────────────────────────────────────────────
 
   if (isLoading) {
@@ -623,6 +658,15 @@ export default function ScorecardScreen() {
   // user has dismissed it for this session (they chose not to track handicaps).
   const showHandicapSection =
     !handicapDismissed && group.players.some((p) => p.course_handicap == null);
+
+  // The current user's player entry in this group (undefined if they're not in this group).
+  const myPlayer = group.players.find((p) => p.user_id === user?.id);
+  // Show edit affordance when the round is active and the user already has a handicap set.
+  // Hidden while the initial entry section is visible (showHandicapSection covers that case).
+  const canEditMyHandicap =
+    scorecard.status === "active" &&
+    myPlayer?.course_handicap != null &&
+    !showHandicapSection;
 
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
@@ -738,7 +782,7 @@ export default function ScorecardScreen() {
                 color={needsHandicap ? "#d97706" : t.colors.tabBarInactive}
               />
               <Text className={`flex-1 text-sm font-semibold ${needsHandicap ? "text-amber-700" : t.textSecondary}`}>
-                {needsHandicap ? "Handicap required before entering scores" : "Set Handicaps (optional)"}
+                {needsHandicap ? "Course Handicap required to enter scores" : "Set Course Handicaps (optional)"}
               </Text>
               {/* Skip lets the user dismiss this section when they don't want to track handicaps */}
               <TouchableOpacity onPress={() => setHandicapDismissed(true)} hitSlop={8}>
@@ -760,7 +804,7 @@ export default function ScorecardScreen() {
                   </Text>
                   <TextInput
                     className={`w-16 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                    placeholder="HCP"
+                    placeholder="0"
                     placeholderTextColor={t.colors.tabBarInactive}
                     keyboardType="number-pad"
                     maxLength={2}
@@ -780,10 +824,71 @@ export default function ScorecardScreen() {
                 {savingHandicaps ? (
                   <ActivityIndicator color="white" />
                 ) : (
-                  <Text className="text-white font-semibold text-sm">Set Handicaps</Text>
+                  <Text className="text-white font-semibold text-sm">Set Course Handicaps</Text>
                 )}
               </TouchableOpacity>
             </View>
+          </View>
+        )}
+
+        {/* ── My course handicap edit (post-entry correction) ────────────────── */}
+        {/* Visible when the round is active and the user already has a handicap  */}
+        {/* set — lets them fix an incorrect entry without organizer intervention. */}
+        {canEditMyHandicap && (
+          <View className={`mx-4 mt-4 rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
+            <View className={`px-4 py-3 border-b ${t.divider} flex-row items-center gap-2`}>
+              <Ionicons name="golf-outline" size={16} color={t.colors.tabBarInactive} />
+              <Text className={`flex-1 text-sm font-semibold ${t.textSecondary}`}>My Course Handicap</Text>
+            </View>
+            {editingMyHandicap ? (
+              <View className="px-4 py-3 gap-3">
+                <View className="flex-row items-center gap-3">
+                  <Text className={`flex-1 text-sm ${t.textPrimary}`}>{myPlayer!.display_name}</Text>
+                  <TextInput
+                    className={`w-16 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                    placeholder="0"
+                    placeholderTextColor={t.colors.tabBarInactive}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    value={myHandicapDraft}
+                    onChangeText={setMyHandicapDraft}
+                    editable={!savingMyHandicap}
+                    autoFocus
+                  />
+                </View>
+                <View className="flex-row gap-2">
+                  <TouchableOpacity
+                    className={`flex-1 rounded-xl py-3 items-center border ${t.border}`}
+                    onPress={() => setEditingMyHandicap(false)}
+                  >
+                    <Text className={`text-sm font-semibold ${t.textSecondary}`}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    className={`flex-1 rounded-xl py-3 items-center ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                    onPress={handleSaveMyHandicap}
+                    disabled={savingMyHandicap}
+                  >
+                    {savingMyHandicap ? (
+                      <ActivityIndicator color="white" />
+                    ) : (
+                      <Text className="text-white font-semibold text-sm">Save</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity
+                className="px-4 py-3 flex-row items-center gap-3"
+                onPress={() => {
+                  setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
+                  setEditingMyHandicap(true);
+                }}
+              >
+                <Text className={`flex-1 text-sm ${t.textPrimary}`}>{myPlayer!.display_name}</Text>
+                <Text className={`text-sm font-bold ${t.textSecondary}`}>HCP {myPlayer!.course_handicap}</Text>
+                <Ionicons name="pencil-outline" size={14} color={t.colors.tabBarInactive} />
+              </TouchableOpacity>
+            )}
           </View>
         )}
 

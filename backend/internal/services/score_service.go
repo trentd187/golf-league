@@ -28,6 +28,8 @@ var (
 	ErrScoreForbidden = errors.New("not authorized to modify scores for this player")
 	// ErrHandicapRequired is returned when requires_handicap is true but course_handicap is unset.
 	ErrHandicapRequired = errors.New("handicap must be set before entering scores for this round")
+	// ErrRoundCompleted is returned when a non-organizer tries to modify a completed round.
+	ErrRoundCompleted = errors.New("round is completed and scores can no longer be modified")
 )
 
 // ─── Input types ──────────────────────────────────────────────────────────────
@@ -164,7 +166,7 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 	}
 
 	var round models.Round
-	if err := s.DB.WithContext(ctx).Select("event_id").First(&round, "id = ?", roundID).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Select("event_id", "status").First(&round, "id = ?", roundID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrRoundNotFound
 		}
@@ -177,6 +179,11 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 	}
 	if isOrg {
 		return true, nil
+	}
+
+	// Non-organizers cannot modify scores on a completed round.
+	if round.Status == models.RoundStatusCompleted {
+		return false, ErrRoundCompleted
 	}
 
 	// Find which group the target player belongs to.

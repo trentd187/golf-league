@@ -54,6 +54,8 @@ func writeScoreError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round player not found"})
 	case errors.Is(err, services.ErrScoreForbidden):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized to modify scores for this player"})
+	case errors.Is(err, services.ErrRoundCompleted):
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "round is completed — scores can no longer be modified"})
 	case errors.Is(err, services.ErrHandicapRequired):
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "handicap must be set before entering scores for this round"})
 	}

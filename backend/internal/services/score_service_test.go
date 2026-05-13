@@ -261,6 +261,88 @@ func TestScoreService_UpsertScores_Forbidden(t *testing.T) {
 	assert.True(t, errors.Is(err, services.ErrScoreForbidden))
 }
 
+// TestScoreService_UpsertScores_CompletedRoundForbidden verifies that a non-organizer
+// in the same group cannot submit scores after the round is marked completed.
+func TestScoreService_UpsertScores_CompletedRoundForbidden(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	player := seedUser(t, db, "player")
+	course, tee := seedCourseWithTee(t, db, "Completed Scores Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+
+	ep := addEventMember(t, db, event.ID, player.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	rp := addRoundPlayer(t, db, result.Round.ID, ep.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	// Mark round completed.
+	require.NoError(t, db.Model(&result.Round).Update("status", "completed").Error)
+
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, player.ID, "user",
+		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
+	assert.True(t, errors.Is(err, services.ErrRoundCompleted))
+}
+
+// TestScoreService_SetHandicap_CompletedRoundForbidden verifies that a non-organizer
+// cannot set a handicap after the round is marked completed.
+func TestScoreService_SetHandicap_CompletedRoundForbidden(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	player := seedUser(t, db, "player")
+	course, tee := seedCourseWithTee(t, db, "Completed HCP Course")
+	event := seedEvent(t, eventSvc, organizer.ID)
+
+	ep := addEventMember(t, db, event.ID, player.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	rp := addRoundPlayer(t, db, result.Round.ID, ep.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	require.NoError(t, db.Model(&result.Round).Update("status", "completed").Error)
+
+	err := svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, player.ID, "user", 10)
+	assert.True(t, errors.Is(err, services.ErrRoundCompleted))
+}
+
+// TestScoreService_OrganizerCanModifyCompletedRound verifies that the round organizer
+// can still set scores on a completed round (to allow corrections).
+func TestScoreService_OrganizerCanModifyCompletedRound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "Organizer Completed Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	require.NoError(t, db.Model(&result.Round).Update("status", "completed").Error)
+
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user",
+		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
+	require.NoError(t, err, "organizer must be allowed to modify a completed round")
+}
+
 // TestScoreService_UpsertScores_Idempotent verifies that re-submitting a score
 // overwrites the previous value rather than creating a duplicate row.
 func TestScoreService_UpsertScores_Idempotent(t *testing.T) {

@@ -506,14 +506,22 @@ export default function ScorecardScreen() {
         try {
           const token = await getToken();
           // Retry up to 3 times (500 ms → 1 s → 2 s) — same cadence as score saves.
-          await withRetry(() => fetch(
-            `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
-            {
-              method:  "PUT",
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body:    JSON.stringify({ stats: [stat] }),
+          // withRetry only retries on thrown exceptions, so we must check res.ok and
+          // throw explicitly so HTTP errors (4xx/5xx) are retried and surfaced correctly.
+          await withRetry(async () => {
+            const res = await fetch(
+              `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
+              {
+                method:  "PUT",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body:    JSON.stringify({ stats: [stat] }),
+              }
+            );
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(body?.error ?? "Save failed");
             }
-          ), [500, 1000, 2000]);
+          }, [500, 1000, 2000]);
           setStatsSaveError(false);
         } catch {
           setStatsSaveError(true);
@@ -1309,6 +1317,8 @@ export default function ScorecardScreen() {
                                 [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), putts: autoP },
                               },
                             }));
+                            // Persist the auto-filled putt count — setStats alone won't save it.
+                            autoSaveStats(rpId, currentHole, 400);
                           }
                         }
                       }}

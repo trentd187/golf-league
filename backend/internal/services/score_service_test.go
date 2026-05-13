@@ -341,6 +341,53 @@ func TestScoreService_UpsertHoleStats_InvalidGIR(t *testing.T) {
 	assert.True(t, errors.As(err, &ve), "expected ValidationError for invalid GIR")
 }
 
+// TestScoreService_UpsertHoleStats_AfterScores confirms that a player can save
+// stats (GIR, putts) after all 18 hole scores have already been submitted — the
+// reported bug scenario where stats silently failed post-score-entry.
+func TestScoreService_UpsertHoleStats_AfterScores(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "AfterScores Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	// Step 1: submit all 18 scores (mirrors the user's reported pattern).
+	scores := make([]services.ScoreInput, 18)
+	for i := range scores {
+		scores[i] = services.ScoreInput{HoleNumber: i + 1, GrossScore: 4}
+	}
+	saved, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", scores)
+	require.NoError(t, err)
+	assert.Equal(t, 18, saved)
+
+	// Step 2: go back and add stats — this is the path that was silently failing.
+	gir := "hit"
+	putts := 2
+	statsSaved, err := svc.UpsertHoleStats(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user",
+		[]services.HoleStatInput{{HoleNumber: 1, GIR: &gir, Putts: &putts}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, statsSaved)
+
+	var dbStats []models.HoleStat
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).Find(&dbStats).Error)
+	require.Len(t, dbStats, 1)
+	require.NotNil(t, dbStats[0].GIR)
+	assert.Equal(t, "hit", *dbStats[0].GIR)
+	require.NotNil(t, dbStats[0].Putts)
+	assert.Equal(t, 2, *dbStats[0].Putts)
+}
+
 // ─── GetScorecard ─────────────────────────────────────────────────────────────
 
 // TestScoreService_GetScorecard_Success verifies that the scorecard is assembled

@@ -88,9 +88,12 @@ jest.mock("@/components/HandicapSection", () => {
 });
 
 // Mock buildMyStats so tests control the returned stats shape without real scorecard data.
+// buildGirByBand is also mocked — returns an empty All-band so the Approach compass
+// renders without yardage chips (no approach_yds data in test scorecards).
 const mockBuildMyStats = jest.fn();
 jest.mock("@/utils/stats", () => ({
-  buildMyStats: (...args: unknown[]) => mockBuildMyStats(...args),
+  buildMyStats:   (...args: unknown[]) => mockBuildMyStats(...args),
+  buildGirByBand: () => [{ band: "All", girPercent: null, total: 0, miss: { left: 0, right: 0, short: 0, long: 0 } }],
 }));
 
 // ─── Imports (after mocks) ────────────────────────────────────────────────────

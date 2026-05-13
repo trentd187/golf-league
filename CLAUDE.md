@@ -1,34 +1,49 @@
 # CLAUDE.md — Instructions for AI Assistant
 
-This file provides instructions and context to ensure consistent, high-quality contributions to this project across sessions.
+Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobile/docs/) and [`backend/docs/`](backend/docs/) — read them when the task touches those areas.
+
+## When to read which doc
+
+| If the task touches… | Read |
+|---|---|
+| Theme tokens, NativeWind classes, dark/light mode | [`mobile/docs/themes.md`](mobile/docs/themes.md) |
+| Modal sheets, badges, date inputs, picker components | [`mobile/docs/components.md`](mobile/docs/components.md) |
+| `package.json`, expo install, dependency upgrade, OAuth/Supabase setup | [`mobile/docs/dependencies.md`](mobile/docs/dependencies.md) |
+| Keyboard handling, TextInput chaining, file uploads, KeyboardAvoidingView | [`mobile/docs/keyboard-and-platform.md`](mobile/docs/keyboard-and-platform.md) |
+| Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy | [`backend/docs/testing.md`](backend/docs/testing.md) |
+| Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated
 
-**This file must be kept current.** After every session where a meaningful decision is made, update this file before finishing. Do not wait to be asked.
+After every session where a meaningful decision is made, update this file or the relevant doc before finishing. Do not wait to be asked.
 
-Update CLAUDE.md when any of the following occur:
-- A new dependency is added to either the backend or mobile app
-- A new architectural pattern is introduced (new handler structure, new state management pattern, etc.)
-- A convention is changed or refined (e.g., switching libraries, changing naming rules)
-- A new directory or layer is added to the project structure
+Update CLAUDE.md (or a `docs/` file) when:
+- A new dependency is added
+- A new architectural pattern is introduced
+- A convention is changed or refined
+- A new directory or layer is added
 - A known quirk, workaround, or gotcha is discovered
 - A data model decision is revised
 - A new environment variable is added
 
-When updating, **edit the relevant existing section** rather than appending a new one — keep the file organized and non-redundant. Remove or replace outdated information rather than leaving both old and new side by side.
+Edit the relevant existing section rather than appending. Remove outdated info — don't leave old and new side by side. **If a topic has its own doc under `mobile/docs/` or `backend/docs/`, update that doc, not CLAUDE.md.**
+
+**Size threshold — keep CLAUDE.md tight.** If you'd add more than ~20 lines, a table with more than ~5 rows, or any code example longer than ~5 lines to CLAUDE.md, the topic deserves its own doc under `mobile/docs/` or `backend/docs/`. Create the doc, add a one-line pointer in CLAUDE.md (and in the "When to read which doc" table at the top), and put the detail there. The reason: CLAUDE.md is loaded into every session — every line costs context on every turn. Reference docs are loaded on demand only.
+
+---
 
 ## Project Overview
 
-**Golf Stuff In Here** is a mobile-first golf league and tournament management app.
+**Golf Stuff In Here** — mobile-first golf league and tournament management app.
 - **Backend:** Go + Fiber v2 API server with WebSockets, deployed on Railway (Docker-based)
 - **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
-- **Auth:** Supabase Auth (Google OAuth + Email OTP; sign-in and sign-up share one screen — Supabase handles both automatically with `signInWithOtp`)
+- **Auth:** Supabase Auth (Google OAuth + Email OTP; sign-in and sign-up share one screen — Supabase handles both via `signInWithOtp`)
 - **Module path:** `github.com/trentd187/golf-league`
 
 > **SDK 54 pinned** — Expo Go on the Play Store is SDK 54. Do not upgrade to SDK 55 without verifying Expo Go compatibility.
 
-> **Multi-profile Android installs** — `app.config.js` (dynamic config) replaces `app.json`. Each EAS build profile sets `APP_VARIANT` in its `env` block; `app.config.js` uses this to assign a unique Android package name and display name so all three profiles can coexist on one device:
+> **Multi-profile Android installs** — `app.config.js` (dynamic config) replaces `app.json`. Each EAS profile sets `APP_VARIANT` in its `env` block; `app.config.js` uses it for unique Android package names so all three coexist on one device:
 > - `development` → `com.trentd.golfstuffinhere.dev` / "Golf Stuff (Dev)"
 > - `preview` → `com.trentd.golfstuffinhere.preview` / "Golf Stuff (Preview)"
 > - `production` → `com.trentd.golfstuffinhere` / "Golf Stuff In Here"
@@ -39,71 +54,34 @@ When updating, **edit the relevant existing section** rather than appending a ne
 
 ### Cross-Platform (iOS + Android)
 
-**Every change must work on both iOS and Android.** Primary testing is on Android (Google Pixel). Never use an iOS-only API without an Android equivalent, and never leave Android with `undefined` where a behavior is needed.
-
-**`KeyboardAvoidingView` pattern — always handle both platforms:**
-```tsx
-// Correct — iOS gets "padding", Android gets "height"
-<KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"}>
-
-// Wrong — Android gets undefined (no keyboard avoidance at all)
-<KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
-```
-
-**`automaticallyAdjustKeyboardInsets` is iOS-only.** On Android, use `behavior="height"` on `KeyboardAvoidingView` plus a `scrollToEnd` ref call on `onFocus` for inputs near the bottom of the screen (see `scorecard/[roundId].tsx` for the pattern).
-
-**`paddingBottom` for scrollable forms with inputs near the bottom:** use at least 320 so `scrollToEnd` has room to move the focused input above the keyboard on both platforms.
-
-**Chaining keyboard focus between TextInputs without a reload:** `blurOnSubmit` defaults to `true`, which dismisses the keyboard on Enter before `.focus()` on the next field re-opens it — visible as a jarring reload. Use this pattern instead:
-```tsx
-const focusingRef = useRef(false);
-
-// On each TextInput that chains to a next field:
-blurOnSubmit={nextTarget === null}   // false = keep keyboard up when there's a next field
-returnKeyType={nextTarget !== null ? "next" : "done"}
-onSubmitEditing={() => {
-  if (nextTarget !== null) {
-    focusingRef.current = true;      // suppress onBlur's scroll-to-top
-    nextInputRef.current?.focus();
-  }
-}}
-onFocus={() => {
-  // scroll-to-end for bottom inputs (150 ms delay)
-  setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
-}}
-onBlur={() => {
-  if (!focusingRef.current) {
-    // keyboard actually dismissed — reset scroll
-    setTimeout(() => scrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
-  }
-  focusingRef.current = false;
-}}
-```
-See `scorecard/[roundId].tsx` numeric stat → score chaining for a full example.
-
-**Platform-split rendering** (e.g. Android dialog vs iOS modal sheet for date pickers) is intentional and correct — just ensure both branches are complete and tested.
-
----
+Every change must work on both. Primary testing is Android (Google Pixel). Never use an iOS-only API without an Android equivalent, and never leave Android with `undefined` where a behavior is needed. **Full keyboard/platform patterns: [`mobile/docs/keyboard-and-platform.md`](mobile/docs/keyboard-and-platform.md).**
 
 ### Comments
-Every file must have a file-level comment explaining its purpose. Beyond that, comment to explain *why*, not *what* — the code itself shows what it does.
 
-- **File-level comment** at the top of every file (required)
-- **Explain non-obvious decisions** — why a pattern was chosen, why something works a particular way
-- **Explain non-obvious language/library features** (e.g. `_` in Go, `??` in TypeScript, GORM struct tags, goroutines)
-- **Skip comments that restate the code** — if the code is clear, no comment is needed
-- For Go: `//`  |  For TypeScript/TSX: `//` and `{/* */}`  |  For SQL: `--`
+Every file must have a file-level comment explaining its purpose. Beyond that, comment to explain *why*, not *what*.
+
+- File-level comment at the top of every file (required)
+- Explain non-obvious decisions and non-obvious language/library features (e.g. `_` in Go, `??` in TypeScript, GORM struct tags, goroutines)
+- Skip comments that restate the code
+
+### Tests required in the same change
+
+Every new handler, utility, screen, or component ships with tests in the **same commit**. Bug fixes also ship with a test that covers the fixed path. The coverage ratchet (`.go-coverage-baseline`, `.mobile-coverage-baseline`) blocks regressions at commit time. Do not use `LEFTHOOK=0` to defer tests. See [Pre-commit Hooks](#pre-commit-hooks-lefthook) below.
+
+### Do not commit
+
+Committing is the user's responsibility. Complete the change, verify it works, then stop. Do not stage, commit, or offer to commit.
 
 ---
 
 ## Environment / Shell
 
 - Shell: **Git Bash** on Windows 11
-- Node.js is installed but **not on the Git Bash PATH** by default. Prefix Node commands with:
+- Node.js is installed but **not on the Git Bash PATH**. Prefix Node commands with:
   ```bash
   export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
   ```
-- Go is available in Git Bash without a PATH workaround
+- Go is available without a PATH workaround
 - Working directory: `/c/Users/trent/git-repos/golf-league`
 
 ---
@@ -117,70 +95,71 @@ backend/
 ├── cmd/server/main.go         # Entry point only — no business logic
 ├── internal/config/           # Config struct loaded from env vars
 ├── internal/database/         # DB connection + migration runner
-├── internal/handlers/         # HTTP handlers, one file per domain (e.g., events.go, users.go)
+├── internal/handlers/         # HTTP handlers, one file per domain (events.go, users.go, …)
 ├── internal/middleware/       # auth.go (JWT) and roles.go (RBAC)
 ├── internal/models/           # All GORM models in models.go
-├── internal/services/         # Business logic (to be added — keep handlers thin)
+├── internal/services/         # Business logic; handlers delegate here (thin HTTP layer)
 ├── internal/websocket/        # WebSocket hub
 └── migrations/                # SQL migration files
 ```
 
 ### Adding a New Handler
 
-1. Create the handler function in `internal/handlers/<domain>.go`
-2. Register the route in `cmd/server/main.go`
-3. Apply middleware as needed: `middleware.Auth(cfg)` then `middleware.RequireRole(...)`
+New handlers follow the layered pattern — every domain has a service in `internal/services/<domain>_service.go`.
 
-Handler signature always follows Fiber's pattern:
+1. Create or extend the service in `internal/services/<domain>_service.go` with the business logic
+2. Create the handler in `internal/handlers/<domain>.go` — parse HTTP, call the service, map errors via a `write<Domain>Error` helper
+3. Register the route in `cmd/server/main.go`, wiring the service into the handler constructor
+4. Apply middleware: `middleware.Auth(cfg)` then `middleware.RequireRole(...)` as needed
+5. **Write the `_test.go` files in the same commit** — Tier 1 in `handlers/`, Tier 2 in `services/`. See [`backend/docs/testing.md`](backend/docs/testing.md).
+
+Handler signature:
 ```go
-func HandlerName(c *fiber.Ctx) error {
-    // read from c.Params(), c.Body(), c.Locals()
-    // return c.JSON(...) or c.Status(...).JSON(...)
+func HandlerName(svc *services.DomainService) fiber.Handler {
+    return func(c *fiber.Ctx) error {
+        // parse from c.Params(), c.Body(), c.Locals()
+        // call svc.Method(ctx, ...)
+        // map errors via write<Domain>Error(c, err, ...)
+    }
 }
 ```
 
 ### Adding a New Model
 
-Add the struct to `internal/models/models.go`. Then create a new migration to add the table to the database — **never use GORM AutoMigrate** in production code.
+Add the struct to `internal/models/models.go`. Then create a migration — **never use GORM AutoMigrate** in production code.
 
 ### Migration Conventions
 
-- Files live in `backend/migrations/`
-- Naming: `000002_description.up.sql` and `000002_description.down.sql`
+- Files in `backend/migrations/`
+- Naming: `000002_description.up.sql` / `000002_description.down.sql`
 - Increment the sequence number from the last migration
-- Never edit a migration that has already been applied — create a new one instead
+- Never edit an applied migration — create a new one
 - The down migration must exactly reverse the up migration
 
-### Role Enforcement Pattern
+### Role Enforcement
 
-Apply middleware to routes in this order:
+Apply middleware in this order:
 ```go
-// 1. Parse and validate the Supabase JWT (RS256/JWKS)
-app.Use(middleware.Auth(cfg))
-
-// 2. Restrict by role (apply per-route or per-group)
+app.Use(middleware.Auth(cfg))                                                       // RS256/JWKS
 app.Post("/events", middleware.RequireRole("admin", "manager"), handlers.CreateEvent)
 ```
 
-The three roles are: `admin`, `manager`, `user`. See the permissions matrix in the data model documentation or `internal/models/models.go`.
+The three global roles: `admin`, `manager`, `user`. **Per-event organizer check** uses `EventService.IsOrganizer(ctx, callerID, eventID)`; **per-round** uses `RoundService.IsOrganizer(ctx, callerID, roundID)`. Both return `(bool, error)` and are called from the relevant service methods — not from handlers directly.
 
 ### Score Entry Permission Check
 
-Score mutation endpoints must check that the requesting user is a member of the same playing group as the target `round_player`. This is more granular than role checking — it must be done in the handler or a dedicated `RequireGroupMember()` middleware (stub is in `middleware/roles.go`).
+Score mutation endpoints must check the requesting user is a member of the same playing group as the target `round_player`. More granular than role-checking — done in the handler or a dedicated `RequireGroupMember()` middleware (stub in `middleware/roles.go`).
 
 ### Environment Variables
 
-All config is read in `internal/config/config.go`. To add a new variable:
-1. Add the field to the `Config` struct
-2. Read it with `os.Getenv("VAR_NAME")` in `Load()`
-3. Add it to `backend/.env.example` with a description comment
+Read in `internal/config/config.go`. Add new vars by: (1) field on `Config` struct, (2) `os.Getenv("VAR_NAME")` in `Load()`, (3) entry in `backend/.env.example`.
 
-Current required variables:
+Required:
 - `DATABASE_URL` — PostgreSQL connection string
-- `SUPABASE_JWKS_URL` — Supabase's JWKS endpoint for RS256 JWT verification. Format: `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` (project ref is in Supabase Dashboard → Project Settings → Data API → Project URL)
-- `PORT` — HTTP port (default: `8080`)
-- `ENV` — runtime environment (default: `development`)
-- `GOLF_COURSE_API_KEY` — Free API key from [golfcourseapi.com](https://golfcourseapi.com) (sign-up required). Enables `POST /courses/search-external`, `POST /courses/import-external`, and `POST /courses/:courseId/refresh`. Leave empty to disable external course import (manual course entry still works).
+- `SUPABASE_JWKS_URL` — Format: `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` (project ref from Supabase Dashboard → Project Settings → Data API → Project URL)
+- `PORT` — HTTP port (default `8080`)
+- `ENV` — runtime environment (default `development`)
+- `GOLF_COURSE_API_KEY` — Free key from [golfcourseapi.com](https://golfcourseapi.com). Enables `POST /courses/search-external`, `POST /courses/import-external`, `POST /courses/:courseId/refresh`. Empty disables external import (manual entry still works).
 
 ---
 
@@ -188,390 +167,108 @@ Current required variables:
 
 ### Package Manager
 
-**Always use `pnpm`** in the `mobile/` directory. Never use `npm install`.
+**Always `pnpm`** in `mobile/`. Never `npm install`.
 
 ```bash
-# Correct
 pnpm install
 pnpm add some-package
-
-# Wrong — do not use
-npm install
-npm install some-package
+npx expo install expo-camera   # for packages with native modules — picks SDK-compatible version
 ```
 
 ### Adding a New Screen
 
-Create a `.tsx` file in the `app/` directory. The file path determines the route:
+Create a `.tsx` file in `app/` — file path determines the route:
 
 ```
 app/events/[id].tsx        →  /events/:id  (stack screen, no tab bar)
 app/(tabs)/events.tsx      →  /events      (tab screen)
-app/(tabs)/scores.tsx      →  new tab screen
 ```
 
-Every new screen file needs:
-1. A file-level comment explaining what it does
-2. A default export of a React component
-3. NativeWind `className` for styling (no StyleSheet)
+Every new screen needs: file-level comment, default-export React component, NativeWind `className` for styling.
 
-### Styling with NativeWind
+### Styling — NativeWind only
 
-Always use NativeWind `className` — never use `StyleSheet.create()` or inline `style={{}}` objects:
+Always use NativeWind `className`. Never `StyleSheet.create()` or inline `style={{}}` (exception: dynamic theme hex on `<Text>` — see themes doc).
 
 ```tsx
-// Correct
 <View className="flex-1 items-center justify-center bg-white p-4">
-
-// Wrong — don't use StyleSheet or inline styles
-<View style={{ flex: 1, alignItems: 'center' }}>
 ```
 
-Primary brand color is **green-700** (`#15803d`). Secondary actions use gray. Errors use red-600.
+Primary brand: **green-700** (`#15803d`). Secondary: gray. Errors: red-600.
 
-### Theme System
+**Theme tokens are required for all surfaces, text, and borders.** See [`mobile/docs/themes.md`](mobile/docs/themes.md) for the slot table and JIT constraint.
 
-The app supports 3 switchable themes (Light, Dark, Grey/neutral) persisted across restarts in SecureStore. **All new screens and components must use theme tokens, not hardcoded color classes.**
-
-**Architecture — three layers:**
-
-| Layer | File | Role |
-|---|---|---|
-| Data | `themes/index.ts` | 4 static theme objects with all Tailwind class strings as literals |
-| State | `stores/themeStore.ts` | Zustand `persist` store; saves only `themeName`, derives full `Theme` object |
-| Consumption | `hooks/useTheme.ts` | `useTheme()` hook used in every screen/component |
-
-**Usage pattern in every screen and component:**
-```tsx
-import { useTheme } from "@/hooks/useTheme";
-
-function MyScreen() {
-  const t = useTheme();
-  return (
-    <View className={`flex-1 ${t.screen}`}>
-      <Text className={t.textPrimary}>Hello</Text>
-    </View>
-  );
-}
-```
-
-**Theme slots (use these, not hardcoded classes):**
-
-| Slot | Purpose |
-|---|---|
-| `t.screen` | Full-page `View` background |
-| `t.surface` | Cards, modals, bottom sheets |
-| `t.surfaceSunken` | `TextInput` background (inset feel) |
-| `t.border` | Card/container border |
-| `t.divider` | `border-b` between list rows |
-| `t.borderInput` | `TextInput` border |
-| `t.textPrimary` | Headings, important text |
-| `t.textSecondary` | Body/supporting text |
-| `t.textTertiary` | Muted hints, form labels, section labels |
-| `t.primaryBg` | Primary action button background |
-| `t.primaryBgDisabled` | Primary button while loading/pending |
-| `t.colors.tabBarActive` | Hex — for `Ionicons color`, `ActivityIndicator color`, inline styles |
-| `t.colors.tabBarInactive` | Hex — for secondary icons, `placeholderTextColor` |
-
-**Tailwind JIT constraint — critical rule:** All Tailwind class strings must exist as **literal text** in scanned source files. `themes/index.ts` holds all the literal class strings and is included in the `tailwind.config.js` content paths. Never construct class names dynamically (e.g., no `` `text-${color}-500` ``). At runtime, components simply pick which pre-scanned string to use.
-
-**`placeholderTextColor` on every `TextInput`:** NativeWind can't control placeholder color via `className`. Always add:
-```tsx
-<TextInput
-  className={`... ${t.textPrimary}`}
-  placeholderTextColor={t.colors.tabBarInactive}
-/>
-```
-
-**`Ionicons` and `ActivityIndicator` always need hex:** Use `color={t.colors.tabBarActive}` or `color={t.colors.tabBarInactive}`.
-
-**Inline style required for themed hex on `Text`:** When a `Text`'s color must be a dynamic hex (e.g., "Done" button in iOS date picker), use:
-```tsx
-// eslint-disable-next-line react-native/no-inline-styles
-<Text style={{ color: t.colors.tabBarActive }}>Done</Text>
-```
-
-**What is NEVER themed (always hardcoded categorical/brand colors):**
-- Event type badge colors (league=blue, tournament=amber, casual=gray)
-- Status chip colors (upcoming=sky, active=green, completed=gray, cancelled=red)
-- Role badge colors (organizer=green-100/green-700)
-- Round status chip colors
-- OAuth buttons (Google/Facebook/Apple brand colors)
-- Sign-out button (always `bg-red-50 border-red-200 text-red-600`)
-- Error text/borders (always `text-red-500` / `border-red-400`)
-- Member initials avatars (always `bg-green-100 text-green-700`)
-- App title "Golf Stuff In Here" (always `text-green-700`)
-- `bg-black/40` modal backdrop overlay
-
-**Theme switching UI** lives in `app/(tabs)/profile.tsx` — a "Theme" section with 4 pill buttons using `THEME_META` from `themes/index.ts` and `useThemeStore` from `stores/themeStore.ts`:
-```tsx
-import { useThemeStore } from "@/stores/themeStore";
-import { THEME_META } from "@/themes";
-
-// IMPORTANT: use two separate calls, not one selector returning an object.
-// A selector like (s) => ({ themeName: s.themeName, setTheme: s.setTheme }) creates
-// a new object on every render, which breaks React 19's useSyncExternalStore caching
-// and causes an infinite re-render loop.
-const themeName = useThemeStore((s) => s.themeName);
-const setTheme  = useThemeStore((s) => s.setTheme);
-```
-
-### API Calls
-
-Use TanStack Query (`useQuery` / `useMutation`) and the `API_URL` from `constants/api.ts`:
+### API Calls — TanStack Query
 
 ```tsx
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { API_URL } from "@/constants/api";
 
-// Fetching data
 const { data } = useQuery({
   queryKey: ["events"],
   queryFn: () => fetch(`${API_URL}/api/v1/events`).then(r => r.json()),
-});
-
-// Mutating data
-const mutation = useMutation({
-  mutationFn: (newEvent) =>
-    fetch(`${API_URL}/api/v1/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newEvent),
-    }).then(r => r.json()),
 });
 ```
 
 ### State Management
 
-- **Server state** (API data): TanStack Query
-- **Client/UI state** (modals open, form inputs, etc.): Zustand stores in `stores/`
-- **Theme state**: `stores/themeStore.ts` — persisted to SecureStore; access via `useTheme()` hook
-- **Auth state**: `hooks/useAuth.ts` (getToken, signOut) and `hooks/useUser.ts` (Supabase User object + loading state)
+- **Server state:** TanStack Query
+- **Client/UI state:** Zustand stores in `stores/`
+- **Theme state:** `stores/themeStore.ts` — persisted to SecureStore; access via `useTheme()` hook
+- **Auth state:** `hooks/useAuth.ts` (getToken, signOut) and `hooks/useUser.ts` (Supabase User + loading)
 
-### Adding a New Expo Package
+### Path Aliases
 
-Use `npx expo install` for packages with native modules (it picks the SDK-compatible version):
-```bash
-export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH"
-npx expo install expo-camera
-```
+`@/` resolves to `mobile/` root. Use it for all internal imports — no relative paths.
 
-Use `pnpm add` for pure JS packages:
-```bash
-pnpm add some-js-library
-```
-
-### File Upload from React Native (Profile Image Pattern)
-
-React Native's `BlobManager` has limitations, but they are mitigated when uploading to Supabase Storage. The `fetch(file://)` approach works because Supabase's storage client passes a separate `contentType` option rather than relying on the blob's `.type` property:
-
-```tsx
-// Read the file:// URI as a blob — React Native's native fetch streams it at the OS level.
-const fileResponse = await fetch(asset.uri);
-const blob = await fileResponse.blob();
-
-// contentType is passed explicitly so Supabase ignores the blob's (possibly empty) .type.
-const { error } = await supabase.storage
-  .from("avatars")
-  .upload(`${user.id}/avatar.jpg`, blob, { upsert: true, contentType: mimeType });
-
-// Save the public URL to user_metadata so it persists across sessions.
-const { data: { publicUrl } } = supabase.storage.from("avatars").getPublicUrl(`${user.id}/avatar.jpg`);
-await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
-```
-
-This pattern is used in `app/(tabs)/profile.tsx`. Profile images are uploaded directly to Supabase Storage (the `avatars` bucket) — no backend proxy needed.
-
----
-
-### Known Dependency Quirks (SDK 54)
-
-pnpm's strict resolution requires the following packages to be **direct dependencies** (not just transitive). Without them, either the bundler fails or the wrong version is loaded at runtime:
-
-| Package | Version | Why direct dep is needed |
-|---|---|---|
-| `@expo/metro-runtime` | `~6.1.2` | expo-router 6.0.23 imports it directly; without it: `Unable to resolve "@expo/metro-runtime/error-overlay"` |
-| `react-native-css-interop` | `latest` | NativeWind peer dep not auto-hoisted |
-| `expo-web-browser` | `~15.0.10` | Used for Supabase Google OAuth web flow (`WebBrowser.openAuthSessionAsync`) |
-| `expo-auth-session` | `~7.0.10` | Provides `makeRedirectUri()` for Supabase OAuth redirect URL; without it pnpm may resolve to SDK 55 version causing `Cannot find native module 'ExpoCryptoAES'` |
-| `expo-sqlite` | `~16.0.10` | Plugin registered in `app.config.js`; the `localStorage` polyfill (`expo-sqlite/localStorage/install`) is no longer used for Supabase auth — see below |
-| `@react-native-async-storage/async-storage` | `2.2.0` | Supabase auth session + PKCE code verifier storage. The expo-sqlite localStorage polyfill was replaced because its sync surface hides async SQLite I/O — the PKCE verifier write wasn't flushing before `openAuthSessionAsync` backgrounded the app, causing "both auth code and code verifier should be non-empty" on OAuth return |
-| `react-native-url-polyfill` | `3.x` | Required by `@supabase/supabase-js` — React Native's JS env doesn't include the URL API natively |
-| `@supabase/supabase-js` | `2.x` | Supabase Auth + Storage client; includes storage functionality (no separate `@supabase/storage-js` needed) |
-| `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |
-| `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
-| `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
-| `@expo/vector-icons` | `~15.1.1` | Transitive dep of expo; pnpm strict mode means TypeScript can't find its types unless it's a direct dep — causes `Cannot find module '@expo/vector-icons/Ionicons'` in CI |
-| `expo-font` | `~14.0.11` | Required peer dep of `@expo/vector-icons`; missing causes expo-doctor check failure and potential runtime crash outside Expo Go |
-
-**Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
-
-After any package.json change, run `pnpm start --clear` to flush Metro's cache.
-`npx expo install --fix` resolves correct SDK-54-compatible versions for all expo packages.
-
-### Reusable Components
-
-Shared UI components live in `mobile/components/`. Import them with the `@/` alias:
-```tsx
-import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
-```
-
-**`DateInput`** (`components/DateInput.tsx`) — date field with auto-formatting and native picker:
-- Displays and stores dates in `MM-DD-YY` format in form state
-- Auto-inserts dashes as the user types (no manual dash entry needed)
-- Calendar icon button opens the platform's native date picker (Android: dialog, iOS: bottom-sheet modal)
-- Inline red border + error message when a fully-typed date is invalid
-- Use `apiToDisplay("YYYY-MM-DD")` → `"MM-DD-YY"` when pre-filling from API data
-- Use `displayToApi("MM-DD-YY")` → `"YYYY-MM-DD"` when sending to the API
-
-**`ModalHeader`** (`components/ModalHeader.tsx`) — standard title + close (✕) row for all modal sheets:
-- Props: `title`, `onClose`, `disabled?` (disables close button while a mutation is pending)
-- Use this in every Modal — do not re-implement the header inline
-
-**`SectionHeader`** (`components/SectionHeader.tsx`) — bold section title with optional "+ Action" button:
-- Props: `title`, `actionLabel`, `onAction`, `showAction` (pass `false` to hide button for non-organizers)
-- Used for "Members", "Rounds", and future sections in detail screens
-
-**`UserSearchList`** (`components/UserSearchList.tsx`) — search box + user list for picking a user to add:
-- Props: `users` (pre-filtered, `undefined` = loading), `search`, `onSearchChange`, `onSelect`, `isPending`, `emptyMessage?`
-- Parent is responsible for fetching users and filtering out already-added IDs
-- Parent owns the `search` state so it can reset it when the modal closes
-- Also exports the `UserSummary` type for typing query data in parent screens
-
-**`badges.tsx`** (`components/badges.tsx`) — categorical badge and chip components (hardcoded colors):
-- `EventTypeBadge` — league (blue), tournament (amber), casual (gray)
-- `StatusChip` — event lifecycle: upcoming (sky), active (green), completed (gray), cancelled (red)
-- `RoleBadge` — "Organizer" pill; renders `null` for players (safe to always include)
-- `RoundStatusChip` — round lifecycle: scheduled (sky), active (green), completed (gray)
-
-**`CoursePickerModal`** (`components/CoursePickerModal.tsx`) — full-screen modal for searching and selecting a course:
-- Local-first search (GET /courses?name=...), external on-demand ("Search Online"), auto-import on select
-- Returns `PickedCourse` (id, name, city, state, has_holes, tees[]) via `onSelect` callback
-- `has_holes: bool` — true when at least one tee has complete hole data; parent uses this to show a warning
-
-**`HoleDataGrid`** (`components/HoleDataGrid.tsx`) — 18-hole scorecard grid for a single tee:
-- Props: `courseId`, `teeId`, `holes`, `editable`, `onSaved?`
-- Display mode: read-only table (hole #, par, SI, yards) with totals row
-- Edit mode (admin/manager): `TextInput` per cell; validates par (3–6), SI (1–18, unique), saves via `PUT /tees/:teeId/holes`
-- Types: `HoleRow` from `@/types/courses`
-
-**`TeeForm`** (`components/TeeForm.tsx`) — modal sheet for creating or editing a tee set:
-- Props: `courseId`, `existing?` (null = create mode), `onSaved`
-- Fields: name, course rating, slope rating, par — gender is omitted (backend defaults to "unisex")
-
-### TypeScript Shared Types
-
-Course-related interfaces live in `mobile/types/courses.ts` and are imported as:
-```tsx
-import type { CourseDetail, TeeDetail, HoleRow, CourseSummary } from "@/types/courses";
-```
-
-| Type | Used by |
-|---|---|
-| `CourseSummary` | Courses list tab (GET /courses response) |
-| `CourseDetail` | Course detail screen (GET /courses/:id response) |
-| `TeeDetail` | Course detail, HoleDataGrid, TeeForm |
-| `HoleRow` | HoleDataGrid |
-
-### TypeScript Path Aliases
-
-The `@/` alias resolves to the `mobile/` root. Use it for all internal imports:
 ```tsx
 import { tokenCache } from "@/utils/cache";   // correct
-import { tokenCache } from "../../utils/cache"; // avoid relative paths
 ```
+
+### Reusable components
+
+See [`mobile/docs/components.md`](mobile/docs/components.md) for the component catalog and the "always use a shared component" patterns table.
 
 ---
 
 ## Mobile Code Quality Rules
 
-These rules prevent recurring issues that make files large and hard to maintain.
-
 ### Use `globalThis` not `global` in test files
 
-`global` is a Node.js-specific identifier. TypeScript's `lib: ["DOM", "ESNext"]` (set by `expo/tsconfig.base`) does not include it, so `tsc --noEmit` will error with *Cannot find name 'global'*. Use `globalThis` with a cast instead — it is the ES2020 standard name for the same object and IS in the ESNext lib:
+`global` is Node-specific; `tsc` (with Expo's lib config) errors *Cannot find name 'global'*. Use `globalThis` with a cast:
 
 ```ts
-// Wrong — TS2304: Cannot find name 'global'
-global.fetch = jest.fn().mockResolvedValue({ ... });
-
-// Correct
 (globalThis as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({ ... });
 ```
 
-### Only destructure what you use from hooks
+### Only destructure what you use
 
-Unused destructured variables cause TypeScript warnings and mislead future readers.
-```tsx
-// Wrong — refetchRounds is declared but never called anywhere
-const { data: rounds, isLoading: roundsLoading, refetch: refetchRounds } = useQuery(...);
-
-// Correct — only destructure what the component actually uses
-const { data: rounds, isLoading: roundsLoading } = useQuery(...);
-```
+Unused destructured variables cause warnings and mislead readers.
 
 ### No copy-pasted JSX blocks
 
-If the same JSX block appears more than once in a file, extract it. Two options:
-
-**If it renders independently → extract a component:**
-```tsx
-// Wrong — same pill JSX copy-pasted twice in the same render
-<View className="flex-row gap-2">{FORMATS.slice(0, 2).map(...)}</View>
-<View className="flex-row gap-2">{FORMATS.slice(2).map(...)}</View>
-
-// Correct — single loop using a chunk() helper to create rows
-{chunk(FORMATS, 2).map((row, i) => (
-  <View key={i} className="flex-row gap-2">{row.map(renderPill)}</View>
-))}
-```
-
-**If it's a repeated structural pattern → extract to `components/`** (see below).
-
-### Sub-components that could be needed elsewhere go in `components/`
-
-Do not define UI sub-components at the top of a screen file if they will be (or might be) needed by another screen. File-local components that belong in `components/`:
-- Display atoms used on multiple screens (badges, chips, status labels)
-- Structural patterns repeated across screens (`ModalHeader`, `SectionHeader`)
-- Picker/search patterns that will be reused (`UserSearchList`)
-
-Rule of thumb: if you'd have to copy-paste it when building the next screen, extract it now.
+Same JSX twice → extract. Either a component (if reusable) or a loop/helper inline. If a sub-component might be used by another screen, put it in `components/` from day one.
 
 ### Cards that lead somewhere must be `TouchableOpacity`
 
-Any card that will eventually navigate to a detail or edit screen must be a `TouchableOpacity` from the start, even if the destination screen doesn't exist yet. Use `router.push()` with the future route so the navigation intention is clear:
+Even if the destination doesn't exist yet — Expo Router's "Unmatched Route" page in dev is harmless.
+
 ```tsx
-// Correct — tappable with forward-looking route, even before the screen is built
-<TouchableOpacity
-  onPress={() => router.push(`/rounds/${round.id}`)}
-  activeOpacity={0.7}
->
-  ...round card content...
-</TouchableOpacity>
+<TouchableOpacity onPress={() => router.push(`/rounds/${round.id}`)} activeOpacity={0.7}>
 ```
-Expo Router shows an "Unmatched Route" page in development for routes that don't have a file yet — this is expected and harmless.
 
-### Always use shared components for common patterns
+### Extract-first rule (coverage protection)
 
-| Pattern | Use |
-|---|---|
-| Modal title + close button | `ModalHeader` from `@/components/ModalHeader` |
-| Section heading + "+ Action" button | `SectionHeader` from `@/components/SectionHeader` |
-| User search + add list | `UserSearchList` from `@/components/UserSearchList` |
-| Status/type/role pills | Named exports from `@/components/badges` |
-| Date input with picker | `DateInput` from `@/components/DateInput` |
+**Any non-trivial logic added to a screen component MUST be extracted to `utils/` first as a pure function with its own test.** Then the component calls the utility. This is the only way coverage stays stable when screen files (which are excluded from coverage) get modified. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
 
 ---
 
 ## Data Model
 
-The full data model is documented in `DATA_MODEL.md` (repo root), `backend/internal/models/models.go`,
-and `backend/migrations/000001_initial_schema.up.sql`.
+Full model in [`DATA_MODEL.md`](DATA_MODEL.md), `backend/internal/models/models.go`, and `backend/migrations/000001_initial_schema.up.sql`.
 
-There is **no separate `leagues` table**. An `event` with `event_type = 'league'` IS the league.
-This keeps the hierarchy simple — event → rounds → scores, regardless of competition type.
+There is **no separate `leagues` table.** An `event` with `event_type = 'league'` IS the league. Hierarchy:
 
-Key hierarchy:
 ```
 users
 events (type: "league" | "tournament" | "casual")
@@ -584,282 +281,124 @@ events (type: "league" | "tournament" | "casual")
 courses → tees → holes
 ```
 
-**Tee gender** — `tees.gender` (DB enum: `mens`/`womens`/`unisex`) is NOT exposed in the mobile UI. Tee names (Blue, White, Red) are the identifier; par is the meaningful association, not gender. The backend `CreateTee` handler defaults `gender` to `"unisex"` when the field is omitted from the request. External API imports retain the gender split from GolfCourseAPI's male/female arrays. Do not add a gender picker to the mobile tee forms.
+**Tee gender** — `tees.gender` (`mens`/`womens`/`unisex`) is NOT exposed in mobile UI. Tee names (Blue, White, Red) are the identifier. The backend `CreateTee` defaults `gender` to `"unisex"` when omitted. External imports retain GolfCourseAPI's male/female split. Do not add a gender picker.
 
-**Who can manage a specific event** (edit, invite members, schedule rounds) — two-tier check:
-- `admin` global role → can manage any event (full platform bypass)
-- `manager` global role → only events where `event_players.role = 'organizer'` for that event (i.e., events they created, or where another organizer has explicitly granted them the organizer role)
-- `user` global role → same rule as manager
+**Per-event manager check** — two-tier:
+- `admin` global → can manage any event
+- `manager` or `user` global → only events where `event_players.role = 'organizer'` for that event
 
-The creator is auto-added as organizer in the `POST /api/v1/events` transaction.
-This check is implemented in `isEventOrganizer()` in `handlers/events.go` — use it in every handler that modifies an event.
-A mirrored helper `isRoundOrganizer()` in `handlers/rounds.go` does the same check starting from a round ID.
+The creator is auto-added as organizer in the `POST /api/v1/events` transaction. Use `isEventOrganizer()` in every handler that modifies an event.
 
-**Round permissions**: `isRoundOrganizer` returns `(bool, uuid.UUID)` — the UUID is the event ID, used by callers that need it for subsequent queries. Always check for `uuid.Nil` after calling it to detect a missing round.
+**Round detail response** includes `is_organizer: bool` computed server-side. The mobile `rounds/[id].tsx` uses this directly — no separate query.
 
-**`is_organizer` in round detail response**: `GET /api/v1/rounds/:roundId` includes `is_organizer: bool` computed server-side. The mobile `rounds/[id].tsx` screen uses this directly (no separate query needed) to show/hide edit controls.
-
-**Organizer event actions**: Event organizers can cancel (`PATCH /events/:id` with `{ status: "cancelled" }`) or permanently delete (`DELETE /events/:id`) an event. Both routes go through `isEventOrganizer`. Deletion cascades to all rounds, members, and scores via DB constraints.
+**Organizer event actions** — cancel (`PATCH /events/:id` with `{status:"cancelled"}`) or delete (`DELETE /events/:id`). Both go through `isEventOrganizer`. Deletion cascades via DB constraints.
 
 ### Handicap Rule
 
-Handicap is **player-entered per round** — there is no automatic WHS calculation.
+Player-entered per round — **no automatic WHS calculation.**
 
-- Before scoring begins, the player (or organizer) enters a single integer handicap for that round
-- This is stored in `round_players.course_handicap` (int) — the playing handicap for this specific round
-- `round_players.handicap_index` (decimal) exists in the schema but is optional; it can hold the player's self-reported WHS index for historical reference but is never used in any calculation
-- `rounds.requires_handicap = true` → score entry is blocked until `round_players.course_handicap` is set for that player
-- Enforced at the API layer (not at the database level) on score mutation routes
-- Do **not** implement the WHS formula (`handicap_index × slope / 113 + rating - par`) — this was a previous design that has been replaced
+- Stored in `round_players.course_handicap` (int) — playing handicap for that round
+- `round_players.handicap_index` (decimal) is optional and unused in any calculation
+- `rounds.requires_handicap = true` → score entry is blocked until `course_handicap` is set
+- Enforced at the API layer on score mutation routes
+- Do **not** implement the WHS formula (`handicap_index × slope / 113 + rating - par`) — replaced
 
 ### Finish Position
 
-Tracked at two levels:
-- `round_players.finish_position` — within a single round
-- `event_players.finish_position` — across the whole event
-
-Both are `nullable INT`, set programmatically when a round or event is marked `completed`.
+`round_players.finish_position` (within a round) and `event_players.finish_position` (across the event). Both `nullable INT`, set programmatically when status flips to `completed`.
 
 ---
 
 ## Backend Testing
 
-### Setup
+Full strategy, tier patterns, coverage commands, and what to test: [`backend/docs/testing.md`](backend/docs/testing.md).
 
-- Test runner: `go test` (built into Go — no install needed)
-- Assertion library: `github.com/stretchr/testify` (already in `go.mod`)
-- Shared helpers: `backend/internal/testutil/testutil.go`
+**Required for every new handler:** a `_test.go` covering all Tier 1 paths (validation, bad UUIDs, missing fields) in the same commit.
 
-Run all tests from the `backend/` directory:
-```bash
-go test ./...
-```
-
-Run tests for a specific package with verbose output:
-```bash
-go test ./internal/handlers/ -v
-```
-
-Run a single test by name:
-```bash
-go test ./internal/handlers/ -run TestHealthCheck -v
-```
-
-### File Conventions
-
-- Test files end in `_test.go` (excluded from production builds automatically)
-- Package name is `<package>_test` (black-box style — only exported symbols accessible)
-- Test function signature: `func TestSubject_Scenario(t *testing.T)`
-- Test files live alongside the code they test (e.g., `health_test.go` next to `health.go`)
-
-### Tests Are Required for Every New Handler
-
-**Every new handler file must ship with a `_test.go` file in the same commit.** The coverage ratchet in `scripts/check-go-coverage.sh` blocks any commit that lowers the total coverage percentage — adding untested code will fail the pre-commit hook. Do not use `LEFTHOOK=0` to bypass this; write the tests instead.
-
-The minimum bar for a new handler: cover every validation path that can be reached without a real database (invalid UUIDs, missing required fields, out-of-range values). This alone is enough to hold coverage because those paths are the first code executed on any bad request.
-
-### Checklist When Modifying Existing Handlers or Models
-
-When changing existing code (not adding new handlers), always verify all three of these before committing:
-
-1. **Do existing tests still pass?** Run `go test ./...` and confirm no regressions.
-2. **Does the change add new Tier 1 testable paths?** For example, adding a new validation branch (new required field, new UUID param, new enum check) that returns before a DB call — add a test for it.
-3. **Is the validation DB-level only?** Some constraints (e.g. PostgreSQL enum values, FK constraints) are enforced by the database, not by Go code. No Tier 1 test exists for these — they require a real DB (Tier 2). Document this with a comment in the handler rather than leaving a test gap unexplained.
-
-**Scoring format validation** is the canonical example of case 3: the handler casts the raw string directly to `models.ScoringFormat` and GORM sends it to Postgres, which rejects unknown values via the enum constraint. There is no Go-level check to test without a DB.
-
-### Two-Tier Test Strategy
-
-**Tier 1 — No database (fast, always runnable):**
-Most validation branches return before any DB call, so `nil` can be passed as `*gorm.DB` safely. Build the Fiber app inline (see pattern below) and fire requests with `httptest.NewRequest`. For POST/PATCH/PUT, set `Content-Type: application/json` — Fiber's `BodyParser` requires it.
-
-```go
-// Minimal Fiber app for one route (no auth, no DB):
-app := fiber.New(fiber.Config{DisableStartupMessage: true})
-app.Get("/courses/:courseId", handlers.GetCourse(nil)) // nil DB — UUID check returns first
-
-req := httptest.NewRequest(http.MethodGet, "/courses/not-a-uuid", nil)
-resp, err := app.Test(req, -1)
-require.NoError(t, err)
-assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-```
-
-For JSON bodies (POST/PATCH/PUT), always set the Content-Type header:
-```go
-buf := bytes.NewBufferString(`{"name":""}`)
-req := httptest.NewRequest(http.MethodPost, "/courses", buf)
-req.Header.Set("Content-Type", "application/json")
-resp, err := app.Test(req, -1)
-```
-
-Or use the `doJSON` helper pattern from `courses_test.go` — copy it into any new `_test.go` file rather than depending on it as a shared util (each test file is self-contained).
-
-`testutil.NewTestApp` + `testutil.DoRequest` still work for simple GET handlers (see `health_test.go`).
-
-**Tier 2 — With database (integration tests, requires `TEST_DATABASE_URL`):**
-Not yet implemented. When needed, `testutil.NewTestDB(t)` will connect to a test PostgreSQL instance, run migrations, and return a `*gorm.DB`. Each test that needs the DB calls this and defers cleanup. Tests in this tier should be in files named `*_integration_test.go` and skipped when `TEST_DATABASE_URL` is not set.
-
-### What to Test (ordered by impact on coverage ratchet)
-
-| Priority | Target | Tier |
-|---|---|---|
-| **Required** | Every validation branch reachable without a DB (invalid UUID, missing required field, bad enum value) | 1 |
-| High | Permission helpers (`isEventOrganizer`, `isRoundOrganizer`) — bugs here break all event/round mutations | 1 |
-| High | Score entry validation (handicap gate, group membership) — add when score handlers are built | 1 |
-| Medium | Handler happy paths (correct status + response shape) | 2 |
-| Low | Additional error paths (404, 403) | 2 |
-
-### Coverage Ratchet
-
-The baseline is stored in `.go-coverage-baseline` (repo root, committed). The hook auto-updates it upward when coverage improves — it can never go down. Measured packages: `internal/handlers`, `internal/middleware`.
-
-**When adding new handler code:** any new uncovered statements lower the percentage. Before committing, always run:
+**Run before declaring done:**
 ```bash
 go test -count=1 -coverpkg=github.com/trentd187/golf-league/internal/handlers,github.com/trentd187/golf-league/internal/middleware -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | grep "^total:"
 ```
-Compare the result against `.go-coverage-baseline`. If it drops, add Tier 1 tests to compensate **in the same commit** — do not rely on the auto-update to paper over the regression.
-
-**`-count=1` is required — do not omit it.** Go's test cache replays the coverage profile from the last run. If any instrumented file changed since the cached run, the merged `coverage.out` miscounts total statements and produces a wrong percentage (observed: 19.4% reported instead of actual 24.9%). `-count=1` disables the cache and forces a fresh measurement every time.
-
-**Common Tier 1 test patterns (no DB needed):**
-- `uuid.Parse(c.Locals("userID"))` fails when no auth middleware is in the test → returns **401**. Handlers: `GetRound`, `UpdateRound`, `DeleteRound`, `AddGroupMember`, `RemoveGroupMember`, and any new handler that reads `c.Locals("userID")` first.
-- `parseCourseID` / `parseTeeID` reject bad UUIDs → returns **400** before the first DB call.
-- `IsConfigured()` check on `GolfCourseAPIClient` with an empty key → returns **503** before parsing the request body.
-- `BodyParser` with `Content-Type: text/plain` → returns **400** when the handler validates the body before any DB call.
-
-**When these patterns do NOT apply (require Tier 2/real DB):**
-- Any handler that calls `findCourse(c, db, ...)`, `findTee(c, db, ...)`, or `db.First(...)` before body or UUID validation — passing `nil` DB will panic. Document these gaps with a comment in the handler.
+`-count=1` is required — without it the test cache replays a stale coverage profile.
 
 ---
 
 ## Docker / Railway Deployment
 
-- `docker-compose.yml` at the repo root is for **local development only** — starts PostgreSQL and the backend together
-- The backend waits for the database healthcheck before starting (`depends_on: condition: service_healthy`)
+- `docker-compose.yml` at repo root is local-dev only
+- Backend waits for DB healthcheck before starting (`depends_on: condition: service_healthy`)
 - Migrations run automatically on every server startup via `database.RunMigrations()`
-- The Dockerfile uses a multi-stage build: `golang:1.24-alpine` to build, `alpine:3.21` to run
+- Dockerfile is multi-stage: `golang:1.24-alpine` build, `alpine:3.21` run
 
-**Production deployment is Railway:**
-- Railway detects the `Dockerfile` in `backend/` and builds + deploys it automatically on push to `main`
-- PostgreSQL is provisioned as a Railway managed database service (no self-managed RDS)
-- Environment variables (`DATABASE_URL`, `SUPABASE_JWKS_URL`, etc.) are configured in the Railway project settings
+**Production: Railway.** Builds and deploys the `Dockerfile` in `backend/` on push to `main`. PostgreSQL is a Railway managed service. Env vars configured in Railway project settings.
 
 ---
 
 ## Pre-commit Hooks (lefthook)
 
-Git hooks are managed by **lefthook** (`lefthook.yml` at repo root).
+Hooks managed by **lefthook** (`lefthook.yml`). Installed automatically when running `pnpm install` in `mobile/` (the `postinstall` runs `lefthook install`).
 
-### Setup after cloning
-
-Hooks are installed automatically when you run `pnpm install` inside `mobile/` (the `postinstall` script runs `lefthook install`). No separate install step needed.
-
-### What the hooks enforce
-
-**`pre-commit` — runs on every `git commit` (parallel):**
-
-| Hook | Trigger | What it does |
+| Hook | Trigger | Action |
 |---|---|---|
-| `backend-lint` | `backend/**/*.go` staged | Runs golangci-lint; blocks on errors. Config: `backend/.golangci.yml` |
-| `backend-coverage` | `backend/**/*.go` staged | Runs `go test ./...` (all packages) with coverage measured for handlers/middleware; blocks if coverage dropped below `.go-coverage-baseline` |
-| `backend-docker-build` | `backend/**` or `Dockerfile` changed vs origin/main | Builds the Railway Dockerfile; skipped if Docker is not running |
-| `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | Runs `tsc --noEmit`; blocks on TypeScript errors |
-| `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | Runs ESLint via `expo lint`; blocks on errors. Config: `mobile/eslint.config.js` |
-| `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | Runs `expo-doctor`; blocks if any of the 17 SDK/dependency checks fail |
-| `mobile-coverage` | `mobile/**/*.{ts,tsx}` staged | Runs Jest with coverage; blocks if coverage dropped below `.mobile-coverage-baseline` |
+| `backend-lint` | `backend/**/*.go` staged | golangci-lint; blocks on errors |
+| `backend-coverage` | `backend/**/*.go` staged | `go test ./...` with coverage (Tier 1 + Tier 2); blocks if below `.go-coverage-baseline`. **Requires Docker running** — Tier 2 uses testcontainers-go to spin up an ephemeral Postgres |
+| `backend-docker-build` | `backend/**` or `Dockerfile` changed vs origin/main | Builds Railway Dockerfile; skipped if Docker not running |
+| `mobile-typecheck` | `mobile/**/*.{ts,tsx}` staged | `tsc --noEmit` |
+| `mobile-lint` | `mobile/**/*.{ts,tsx,js}` staged | ESLint via `expo lint` |
+| `mobile-expo-doctor` | `mobile/**/*.{ts,tsx,js,json}` staged | `expo-doctor` (17 checks) |
+| `mobile-coverage` | `mobile/**/*.{ts,tsx}` staged | Jest with coverage; blocks if below `.mobile-coverage-baseline` |
 
-There is no `pre-push` hook — all checks run at commit time.
+No `pre-push` hook — all checks run at commit.
 
-**Coverage ratchet rule:**
-- Baseline stored in `.go-coverage-baseline` at repo root (committed to git)
-- Coverage cannot decrease; auto-updates when coverage improves
-- Measured packages: `internal/handlers`, `internal/middleware`
+**Coverage ratchet** — baselines (`.go-coverage-baseline`, `.mobile-coverage-baseline`) auto-update upward, never decrease. Mobile measured: `utils/**/*.ts`, `app/sign-in.tsx`, `app/index.tsx`, `app/(tabs)/profile.tsx`, `app/users/**/*.tsx`. Large screen files (scorecard, events, rounds, courses) are excluded — they belong to a future E2E suite. **This is why the extract-first rule matters: logic added inline to those files is invisible to coverage, but new utility functions count.**
 
-### One-time developer setup
+**Bypass** — `LEFTHOOK=0 git commit` is only for pure layout/styling/wiring changes where all logic is already in `utils/` with tests. Never to defer tests.
 
+**One-time setup:**
 ```bash
-# After cloning — installs hooks automatically via postinstall script:
-cd mobile && pnpm install
-
-# golangci-lint must be installed globally (not via pnpm):
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+cd mobile && pnpm install                                                  # installs hooks
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8     # global
 ```
-
-### Bypass (escape hatch)
-
-```bash
-LEFTHOOK=0 git commit -m "layout/style change — logic already in utils with tests"
-```
-
-**The escape hatch is only for layout, styling, or wiring changes where all non-trivial logic has already been extracted to `utils/` and tested.** It is NOT for deferring tests to a later commit — if logic was added without tests, write the tests first.
-
-### Mobile coverage ratchet
-
-`mobile-coverage` runs on `pre-commit`. It runs Jest with `--coverage`, parses the Statements percentage, and blocks commits that lower it below `.mobile-coverage-baseline`. The baseline auto-updates when coverage improves. Script: `scripts/check-mobile-coverage.sh`.
-
-**What is measured:** `utils/**/*.ts`, `app/sign-in.tsx`, `app/index.tsx`, `app/(tabs)/profile.tsx`, `app/users/**/*.tsx`. Large screen files that can only be integration-tested (scorecard, events, rounds, courses) are excluded — they belong to a future E2E suite, not unit coverage.
-
-**Extract-first rule — mandatory:** Any non-trivial logic added to a screen component MUST be extracted to `utils/` before the component calls it. Write the `utils/` function and its test first (TDD), then write the component code that calls it. This prevents coverage from dropping on every feature addition. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
 
 ---
 
 ## Linting
 
-### Backend (Go) — golangci-lint
+### Backend — golangci-lint
 
-Config: `backend/.golangci.yml`. Enabled linters: `errcheck`, `govet`, `staticcheck`, `ineffassign`, `gosimple`, `unused`, `misspell`, `gosec`, `gofmt`, `goimports`.
+Config: `backend/.golangci.yml`. Linters: `errcheck`, `govet`, `staticcheck`, `ineffassign`, `gosimple`, `unused`, `misspell`, `gosec`, `gofmt`, `goimports`.
 
-Run manually from `backend/`:
 ```bash
 golangci-lint run ./...
-golangci-lint run --fix ./...   # auto-fix formatting
+golangci-lint run --fix ./...        # auto-fix formatting
+cd backend && gofmt -w . && goimports -w .   # if hook fails on formatting
 ```
 
-If the hook fails with formatting errors, auto-fix with:
-```bash
-cd backend && gofmt -w . && goimports -w .
-```
-
-### Mobile (TypeScript) — ESLint
+### Mobile — ESLint
 
 Config: `mobile/eslint.config.js` (ESLint 9 flat config). Uses `eslint-config-expo` + `eslint-plugin-react-native`.
 
-Key rules:
-- `react-native/no-inline-styles`: **warn** — inline styles are intentional only for dynamic theme hex colors; suppress with `// eslint-disable-next-line react-native/no-inline-styles`
-- `import/no-unresolved`: **off** — pnpm's layout confuses the resolver; TypeScript's `tsc` catches real missing imports
+Notable:
+- `react-native/no-inline-styles`: **warn** — inline styles are intentional only for dynamic theme hex; suppress with `// eslint-disable-next-line react-native/no-inline-styles`
+- `import/no-unresolved`: **off** — pnpm's layout confuses the resolver; `tsc` catches real missing imports
 
-Run manually from `mobile/`:
 ```bash
-pnpm lint             # check
-pnpm lint --fix       # auto-fix where possible (or: npx expo lint --fix)
+pnpm lint
+pnpm lint --fix
 ```
 
 ---
 
-## SonarCloud Integration
+## SonarCloud
 
-Config: `sonar-project.properties` at repo root.
+Config: `sonar-project.properties`. Quality chain: pre-commit (local) → SonarCloud Scanner CI (workflow TBD) → SonarLint VS Code extension in connected mode.
 
-**Quality chain:**
-1. Pre-commit (local): ESLint + golangci-lint + tsc + coverage ratchet
-2. CI (on push/PR): SonarCloud Scanner → sonarcloud.io quality gate *(GitHub Actions workflow — to be added)*
-3. IDE (real-time): SonarLint VS Code extension in connected mode
-
-**SonarLint IDE setup (one-time per developer):**
-1. Install "SonarQube for IDE" extension in VS Code
-2. Command Palette → "SonarLint: Connect to SonarCloud"
-3. Enter your `SONAR_TOKEN` and select the project
-4. SonarLint will sync SonarCloud's rule set for real-time feedback in the editor
-
-**Completing SonarCloud CI setup:**
-- Fill in `sonar.projectKey` and `sonar.organization` in `sonar-project.properties`
-- Add `SONAR_TOKEN` as a GitHub Actions secret
-- Add a GitHub Actions workflow that runs SonarScanner on push to `main` and on PRs
+To complete CI setup: fill `sonar.projectKey`/`sonar.organization`, add `SONAR_TOKEN` GitHub secret, add a workflow that runs SonarScanner on push to `main` and PRs.
 
 ---
 
 ## Git Conventions
 
 - Branch from `main` for new features
-- Commit messages should be concise and describe the "why" not just the "what"
-- Do not commit `.env` files — they are in `.gitignore`
+- Commit messages: concise, "why" over "what"
+- Never commit `.env` files (in `.gitignore`)

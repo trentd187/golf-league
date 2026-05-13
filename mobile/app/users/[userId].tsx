@@ -30,7 +30,7 @@ import { apiFetch } from "@/utils/api";
 import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 import HandicapSection from "@/components/HandicapSection";
-import { buildMyStats } from "@/utils/stats";
+import { buildMyStats, buildGirByBand } from "@/utils/stats";
 import type { Scorecard, UserHandicapStats } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -125,9 +125,13 @@ export default function UserProfileScreen() {
 
   // Compute stats using the same function as the personal stats screen, passing
   // userId so buildMyStats finds this player instead of the caller.
-  const stats = useMemo(
+  const stats    = useMemo(
     () => buildMyStats(scorecards, roundRefs ?? [], userId),
     [scorecards, roundRefs, userId]
+  );
+  const girBands = useMemo(
+    () => buildGirByBand(scorecards, userId),
+    [scorecards, userId]
   );
 
   const followMutation = useMutation({
@@ -312,6 +316,7 @@ export default function UserProfileScreen() {
               denominator={stats.girTotal}
               naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
               extraRows={stats.proximityRows}
+              bands={girBands}
             />
             <PuttingCard
               avgPuttsPerRound={stats.avgPuttsPerRound}

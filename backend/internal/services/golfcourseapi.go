@@ -19,23 +19,31 @@ import (
 	"time"
 )
 
-const golfCourseAPIBase = "https://api.golfcourseapi.com/v1"
+// DefaultGolfCourseAPIBase is the production GolfCourseAPI base URL.
+// Tests override it via SetBaseURL to point at an httptest server.
+const DefaultGolfCourseAPIBase = "https://api.golfcourseapi.com/v1"
 
 // GolfCourseAPIClient is a thin HTTP client for GolfCourseAPI.com.
 // Create one at startup via NewGolfCourseAPIClient and inject it into handlers.
 type GolfCourseAPIClient struct {
-	apiKey string
-	http   *http.Client // explicit timeout — never use http.DefaultClient for external calls
+	apiKey  string
+	baseURL string
+	http    *http.Client // explicit timeout — never use http.DefaultClient for external calls
 }
 
 // NewGolfCourseAPIClient returns a configured client ready to use.
 // apiKey is your GolfCourseAPI.com key (set in GOLF_COURSE_API_KEY env var).
 func NewGolfCourseAPIClient(apiKey string) *GolfCourseAPIClient {
 	return &GolfCourseAPIClient{
-		apiKey: apiKey,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		apiKey:  apiKey,
+		baseURL: DefaultGolfCourseAPIBase,
+		http:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
+
+// SetBaseURL overrides the API base URL — used by tests to point the client at
+// an httptest server. No-op for production code.
+func (c *GolfCourseAPIClient) SetBaseURL(url string) { c.baseURL = url }
 
 // ─── External data types ───────────────────────────────────────────────────────
 // These structs exactly match GolfCourseAPI.com's JSON response shapes.
@@ -99,7 +107,7 @@ func (c *GolfCourseAPIClient) IsConfigured() bool {
 func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourse, error) {
 	// The search endpoint is /v1/search, distinct from /v1/courses/{id}.
 	// The query param is "search_query" (not "search") per the OpenAPI spec.
-	endpoint := fmt.Sprintf("%s/search?search_query=%s", golfCourseAPIBase, url.QueryEscape(searchTerm))
+	endpoint := fmt.Sprintf("%s/search?search_query=%s", c.baseURL, url.QueryEscape(searchTerm))
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -132,7 +140,7 @@ func (c *GolfCourseAPIClient) Search(searchTerm string) ([]ExternalCourse, error
 // FetchByID retrieves the full course detail (all tees and holes) for the given external ID.
 // Endpoint: GET /v1/courses/{id}
 func (c *GolfCourseAPIClient) FetchByID(externalID string) (*ExternalCourse, error) {
-	endpoint := fmt.Sprintf("%s/courses/%s", golfCourseAPIBase, url.PathEscape(externalID))
+	endpoint := fmt.Sprintf("%s/courses/%s", c.baseURL, url.PathEscape(externalID))
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {

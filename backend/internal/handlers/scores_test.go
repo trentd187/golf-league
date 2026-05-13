@@ -1,13 +1,21 @@
 // scores_test.go
-// Unit tests for the score and handicap handlers in scores.go.
+// Unit tests for the score handlers in scores.go.
 //
-// Strategy: Tier 1 only — all tests exercise validation paths that return before
-// any DB call, so nil can be safely passed as *gorm.DB.
+// Strategy: Tier 1 only — tests cover validation paths that return before any
+// DB call, so nil or nilScoreSvc() can be safely passed as the service.
+//
+// Tier 1 paths covered:
+//   - Invalid UUID in URL params → 400 (uuid.Parse fails before service call)
+//   - Empty/missing request body → 400 (handler checks before service call)
+//   - Invalid enum fields (GIR, direction, club) → 400 via nilScoreSvc() with auth injected
+//   - Missing auth context → 401 (uuid.Parse on empty userID local)
+//
+// Handicap unit tests (HandicapStrokes, EffectiveCourseHandicap) moved to
+// services/handicap_test.go — they have no dependency on handlers or HTTP.
 //
 // Run:
 //
 //	go test ./internal/handlers/ -run TestScore -v
-//	go test ./internal/handlers/ -run TestHandicap -v
 package handlers_test
 
 import (
@@ -19,17 +27,22 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/trentd187/golf-league/internal/handlers"
+	"github.com/trentd187/golf-league/internal/services"
 )
 
 // validUUID is a well-formed UUID used as a placeholder in route parameters.
-// The handlers parse UUIDs before any DB work, so a valid UUID bypasses the
-// UUID-parse check and lets the test reach the next validation layer.
+// Defined here because scores_test.go is the first file in the package alphabetically;
+// rounds_test.go and events_test.go reference it from the same handlers_test package.
 const validUUID = "00000000-0000-0000-0000-000000000001"
 
-// ─── GetRoundScorecard ─────────────────────────────────────────────────────────
+// nilScoreSvc returns a ScoreService with nil DB and nil EventService.
+// Safe for Tier 1 tests where the handler or service returns before any DB access.
+func nilScoreSvc() *services.ScoreService {
+	return services.NewScoreService(nil, nil)
+}
 
-// TestGetRoundScorecard_InvalidUUID verifies that a malformed round ID
-// returns 400 before any DB call.
+// ─── GetRoundScorecard ────────────────────────────────────────────────────────
+
 func TestGetRoundScorecard_InvalidUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodGet,
 		"/rounds/:roundId/scorecard",
@@ -41,10 +54,8 @@ func TestGetRoundScorecard_InvalidUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// ─── SetPlayerHandicap ─────────────────────────────────────────────────────────
+// ─── SetPlayerHandicap ────────────────────────────────────────────────────────
 
-// TestSetPlayerHandicap_InvalidRoundUUID verifies that a malformed round ID
-// returns 400 before any DB call.
 func TestSetPlayerHandicap_InvalidRoundUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/handicap",
@@ -56,8 +67,6 @@ func TestSetPlayerHandicap_InvalidRoundUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestSetPlayerHandicap_InvalidPlayerUUID verifies that a malformed round_player ID
-// returns 400 before any DB call.
 func TestSetPlayerHandicap_InvalidPlayerUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/handicap",
@@ -69,27 +78,22 @@ func TestSetPlayerHandicap_InvalidPlayerUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestSetPlayerHandicap_InvalidBody verifies that a non-JSON body returns 400.
 func TestSetPlayerHandicap_InvalidBody(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/handicap",
 		handlers.SetPlayerHandicap(nil))
 
-	// Send plain text instead of JSON — BodyParser will fail.
 	req := httptest.NewRequest(http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/handicap",
 		nil)
 	req.Header.Set("Content-Type", "text/plain")
 	resp, err := app.Test(req, -1)
 	require.NoError(t, err)
-	// Fiber returns 400 when BodyParser fails — validation fires before any DB or permission check.
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// ─── UpsertPlayerScores ────────────────────────────────────────────────────────
+// ─── UpsertPlayerScores ───────────────────────────────────────────────────────
 
-// TestUpsertPlayerScores_InvalidRoundUUID verifies that a malformed round ID
-// returns 400 before any DB call.
 func TestUpsertPlayerScores_InvalidRoundUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
@@ -101,8 +105,6 @@ func TestUpsertPlayerScores_InvalidRoundUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertPlayerScores_InvalidPlayerUUID verifies that a malformed round_player ID
-// returns 400 before any DB call.
 func TestUpsertPlayerScores_InvalidPlayerUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
@@ -114,7 +116,6 @@ func TestUpsertPlayerScores_InvalidPlayerUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertPlayerScores_EmptyScores verifies that an empty scores array returns 400.
 func TestUpsertPlayerScores_EmptyScores(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
@@ -126,7 +127,6 @@ func TestUpsertPlayerScores_EmptyScores(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertPlayerScores_MissingScoresField verifies that a missing scores field returns 400.
 func TestUpsertPlayerScores_MissingScoresField(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
@@ -138,22 +138,19 @@ func TestUpsertPlayerScores_MissingScoresField(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// ─── UpsertHoleStats ──────────────────────────────────────────────────────────
+// ─── UpsertHoleStats — UUID and body validation ───────────────────────────────
 
-// TestUpsertHoleStats_InvalidRoundUUID verifies that a malformed round ID returns 400.
 func TestUpsertHoleStats_InvalidRoundUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
 		handlers.UpsertHoleStats(nil))
 
-	gir := "hit"
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/not-a-uuid/players/"+validUUID+"/hole-stats",
-		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": gir}}})
+		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "hit"}}})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_InvalidPlayerUUID verifies that a malformed round_player ID returns 400.
 func TestUpsertHoleStats_InvalidPlayerUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
@@ -165,7 +162,6 @@ func TestUpsertHoleStats_InvalidPlayerUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_EmptyStats verifies that an empty stats array returns 400.
 func TestUpsertHoleStats_EmptyStats(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
@@ -177,7 +173,6 @@ func TestUpsertHoleStats_EmptyStats(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_MissingBody verifies that a non-JSON body returns 400.
 func TestUpsertHoleStats_MissingBody(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
@@ -191,11 +186,16 @@ func TestUpsertHoleStats_MissingBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_InvalidGIRValue verifies that an unrecognised GIR value returns 400.
+// ─── UpsertHoleStats — enum validation (auth injected; nilScoreSvc used) ──────
+//
+// Enum validation runs as the first step in ScoreService.UpsertHoleStats, before
+// any DB access. Auth is injected so the handler reaches the service call; the
+// nil DB inside nilScoreSvc() is never touched because the service returns early.
+
 func TestUpsertHoleStats_InvalidGIRValue(t *testing.T) {
-	app := newSingleRouteApp(http.MethodPut,
+	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
@@ -203,11 +203,10 @@ func TestUpsertHoleStats_InvalidGIRValue(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_InvalidGIRMissDirection verifies that an unrecognised miss direction returns 400.
 func TestUpsertHoleStats_InvalidGIRMissDirection(t *testing.T) {
-	app := newSingleRouteApp(http.MethodPut,
+	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
@@ -215,11 +214,10 @@ func TestUpsertHoleStats_InvalidGIRMissDirection(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_InvalidFIRMissDirection verifies that a bad FIR direction returns 400.
 func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
-	app := newSingleRouteApp(http.MethodPut,
+	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	fir := false
 	resp := doJSON(t, app, http.MethodPut,
@@ -228,11 +226,10 @@ func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// TestUpsertHoleStats_InvalidTeeShotClub verifies that an unrecognised club value returns 400.
 func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
-	app := newSingleRouteApp(http.MethodPut,
+	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	club := "PW"
 	resp := doJSON(t, app, http.MethodPut,
@@ -242,8 +239,8 @@ func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
 }
 
 // TestUpsertHoleStats_NoUserID verifies that a missing auth context returns 401.
-// UUID validation and body validation both pass; the handler then tries to parse
-// c.Locals("userID") which is absent, so uuid.Parse returns an error → 401.
+// UUID and body validation both pass; the handler then parses c.Locals("userID")
+// which is absent, so uuid.Parse("") fails → 401 before reaching the service.
 func TestUpsertHoleStats_NoUserID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
@@ -253,68 +250,4 @@ func TestUpsertHoleStats_NoUserID(t *testing.T) {
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
 		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "hit"}}})
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-// ─── HandicapStrokes unit tests ───────────────────────────────────────────────
-
-// TestHandicapStrokes_ZeroHandicap verifies that a scratch golfer receives no
-// extra strokes on any hole.
-func TestHandicapStrokes_ZeroHandicap(t *testing.T) {
-	assert.Equal(t, 0, handlers.HandicapStrokes(0, 1))
-	assert.Equal(t, 0, handlers.HandicapStrokes(0, 18))
-}
-
-// TestHandicapStrokes_FiveHandicap verifies that a 5-handicap player gets one
-// stroke on holes with SI ≤ 5 and none on SI 6–18.
-func TestHandicapStrokes_FiveHandicap(t *testing.T) {
-	assert.Equal(t, 1, handlers.HandicapStrokes(5, 1))
-	assert.Equal(t, 1, handlers.HandicapStrokes(5, 5))
-	assert.Equal(t, 0, handlers.HandicapStrokes(5, 6))
-	assert.Equal(t, 0, handlers.HandicapStrokes(5, 18))
-}
-
-// TestHandicapStrokes_EighteenHandicap verifies that a bogey golfer (18-handicap)
-// gets exactly one stroke on every hole.
-func TestHandicapStrokes_EighteenHandicap(t *testing.T) {
-	for si := 1; si <= 18; si++ {
-		assert.Equal(t, 1, handlers.HandicapStrokes(18, si),
-			"expected 1 stroke on hole SI=%d", si)
-	}
-}
-
-// TestHandicapStrokes_TwentyHandicap verifies that handicap 20 gives two strokes
-// on the two hardest holes (SI 1–2) and one stroke on the remaining 16.
-func TestHandicapStrokes_TwentyHandicap(t *testing.T) {
-	assert.Equal(t, 2, handlers.HandicapStrokes(20, 1))
-	assert.Equal(t, 2, handlers.HandicapStrokes(20, 2))
-	assert.Equal(t, 1, handlers.HandicapStrokes(20, 3))
-	assert.Equal(t, 1, handlers.HandicapStrokes(20, 18))
-}
-
-// ─── EffectiveCourseHandicap unit tests ───────────────────────────────────────
-
-func ptrFloat(v float64) *float64 { return &v }
-
-// TestEffectiveCourseHandicap_NilAllowance verifies that nil allowance returns
-// the full course handicap unchanged.
-func TestEffectiveCourseHandicap_NilAllowance(t *testing.T) {
-	assert.Equal(t, 18, handlers.EffectiveCourseHandicap(18, nil))
-	assert.Equal(t, 0, handlers.EffectiveCourseHandicap(0, nil))
-}
-
-// TestEffectiveCourseHandicap_100Percent verifies that 100% allowance is a no-op.
-func TestEffectiveCourseHandicap_100Percent(t *testing.T) {
-	assert.Equal(t, 18, handlers.EffectiveCourseHandicap(18, ptrFloat(100)))
-}
-
-// TestEffectiveCourseHandicap_90Percent verifies that 90% allowance floors correctly.
-// 18 * 0.90 = 16.2 → floor = 16.
-func TestEffectiveCourseHandicap_90Percent(t *testing.T) {
-	assert.Equal(t, 16, handlers.EffectiveCourseHandicap(18, ptrFloat(90)))
-}
-
-// TestEffectiveCourseHandicap_75Percent verifies a common tournament allowance.
-// 20 * 0.75 = 15.0 → floor = 15.
-func TestEffectiveCourseHandicap_75Percent(t *testing.T) {
-	assert.Equal(t, 15, handlers.EffectiveCourseHandicap(20, ptrFloat(75)))
 }

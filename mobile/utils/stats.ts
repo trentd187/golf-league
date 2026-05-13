@@ -428,6 +428,74 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
   };
 }
 
+// ─── GIR by approach yardage band ────────────────────────────────────────────
+
+// GirBandData holds aggregated GIR stats for one approach yardage band.
+// "All" is a synthetic band that spans the full range.
+export type GirBandData = {
+  band: string;
+  girPercent: number | null; // null when total === 0
+  total: number;             // hit + miss (excludes "na")
+  miss: { left: number; right: number; short: number; long: number };
+};
+
+// buildGirByBand groups approach holes into 20-yd bands (matching the proximity
+// section's bucketing: Math.floor(yds/20)*20) and computes GIR% and miss-direction
+// counts per band. Only holes with both approach_yds and a non-null, non-"na" gir
+// value are counted. The first element is always the "All" aggregate; subsequent
+// elements are bands that have at least one hole, sorted ascending by yardage.
+export function buildGirByBand(scorecards: Scorecard[], userId?: string): GirBandData[] {
+  const findPlayer = userId ? (sc: Scorecard) => findPlayerById(sc, userId) : findMyPlayer;
+
+  type BandAcc = { hit: number; miss: { left: number; right: number; short: number; long: number }; total: number };
+  const emptyAcc = (): BandAcc => ({ hit: 0, miss: { left: 0, right: 0, short: 0, long: 0 }, total: 0 });
+  const bandAccs = new Map<number, BandAcc>();
+  const allAcc   = emptyAcc();
+
+  const addTo = (acc: BandAcc, isHit: boolean, dir: string | null) => {
+    acc.total++;
+    if (isHit) {
+      acc.hit++;
+    } else {
+      if (dir === "left")       acc.miss.left++;
+      else if (dir === "right") acc.miss.right++;
+      else if (dir === "short") acc.miss.short++;
+      else if (dir === "long")  acc.miss.long++;
+    }
+  };
+
+  for (const sc of scorecards) {
+    const player = findPlayer(sc);
+    if (!player) continue;
+    for (const hs of player.hole_stats) {
+      if (hs.approach_yds === null || hs.gir === null || hs.gir === "na") continue;
+      const isHit = hs.gir === "hit";
+      const dir   = hs.gir_miss_direction;
+      const band  = Math.floor(hs.approach_yds / 20) * 20;
+
+      addTo(allAcc, isHit, dir);
+      const acc = bandAccs.get(band) ?? emptyAcc();
+      addTo(acc, isHit, dir);
+      bandAccs.set(band, acc);
+    }
+  }
+
+  const toData = (band: string, acc: BandAcc): GirBandData => ({
+    band,
+    girPercent: acc.total > 0 ? (acc.hit / acc.total) * 100 : null,
+    total: acc.total,
+    miss: { ...acc.miss },
+  });
+
+  const result: GirBandData[] = [toData("All", allAcc)];
+  [...bandAccs.entries()]
+    .sort(([a], [b]) => a - b)
+    .forEach(([bandStart, acc]) => {
+      result.push(toData(`${bandStart}–${bandStart + 19} yds`, acc));
+    });
+  return result;
+}
+
 // handicapConsistencyLabel categorises the spread between anti-handicap and
 // handicap index into a human-readable tier. A small spread means the player
 // scores consistently; a large spread means boom-or-bust tendencies.

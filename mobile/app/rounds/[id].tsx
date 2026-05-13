@@ -960,23 +960,20 @@ export default function RoundDetailScreen() {
                 </TouchableOpacity>
               )}
 
-              {/* Scorecard — shown when the group has at least one player */}
+              {/* Scorecard / Enter Scores — primary CTA; prominent so players know this is where scoring happens */}
               {group.players.length > 0 && (
                 <TouchableOpacity
-                  className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
+                  className="mx-4 mb-4 mt-3 bg-green-700 rounded-xl py-3 flex-row items-center justify-center gap-2"
                   onPress={() =>
                     router.push(
                       `/scorecard/${id}?groupId=${group.id}&groupNumber=${group.group_number}`
                     )
                   }
-                  activeOpacity={0.7}
+                  activeOpacity={0.8}
                 >
-                  <Ionicons name="list-outline" size={16} color={t.colors.tabBarActive} />
-                  <Text
-                    style={{ color: t.colors.tabBarActive }}
-                    className="text-sm font-semibold"
-                  >
-                    Scorecard
+                  <Ionicons name="clipboard-outline" size={18} color="white" />
+                  <Text className="text-white font-bold text-base">
+                    Scorecard / Enter Scores
                   </Text>
                 </TouchableOpacity>
               )}

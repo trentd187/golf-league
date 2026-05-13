@@ -34,7 +34,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { findMyPlayer, buildRoundStats, buildMyStats, scoreTextColor } from "@/utils/stats";
+import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, scoreTextColor } from "@/utils/stats";
 import ModalHeader from "@/components/ModalHeader";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 // import HandicapSection from "@/components/HandicapSection"; // hidden pending GHIN review
@@ -168,8 +168,9 @@ function RoundStatsModal({
 }>) {
   const t = useTheme();
 
-  const player     = scorecard ? findMyPlayer(scorecard) : undefined;
-  const roundStats = player && scorecard ? buildRoundStats(player, scorecard.holes) : null;
+  const player        = scorecard ? findMyPlayer(scorecard) : undefined;
+  const roundStats    = player && scorecard ? buildRoundStats(player, scorecard.holes) : null;
+  const roundGirBands = scorecard ? buildGirByBand([scorecard]) : [];
 
   const [year, month, day] = round.scheduled_date.split("-").map(Number);
   const date = new Date(year, month - 1, day).toLocaleDateString("en-US", {
@@ -238,6 +239,7 @@ function RoundStatsModal({
                 denominator={roundStats.girTotal}
                 naValue={roundStats.girNaPercent === null ? "—" : `${roundStats.girNaPercent.toFixed(0)}%`}
                 extraRows={roundStats.proximityRows}
+                bands={roundGirBands}
               />
               <PuttingCard
                 avgPuttsPerRound={roundStats.avgPuttsPerRound}
@@ -602,7 +604,8 @@ export default function StatsScreen() {
     .map((q) => q.data)
     .filter((sc): sc is Scorecard => sc !== undefined);
 
-  const stats = useMemo(() => buildMyStats(scorecards, filteredRounds), [scorecards, filteredRounds]);
+  const stats    = useMemo(() => buildMyStats(scorecards, filteredRounds),  [scorecards, filteredRounds]);
+  const girBands = useMemo(() => buildGirByBand(scorecards),                [scorecards]);
 
   // Scoring summary for the Scores tab: avg, high, and low from the same
   // 18-hole-equivalent gross scores that buildMyStats computed (paired 9s included).
@@ -790,6 +793,7 @@ export default function StatsScreen() {
                 denominator={stats.girTotal}
                 naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
                 extraRows={stats.proximityRows}
+                bands={girBands}
               />
               <PuttingCard
                 avgPuttsPerRound={stats.avgPuttsPerRound}

@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -37,7 +38,7 @@ func main() {
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
 		log.Fatal("Failed to run migrations:", err)
 	}
-	log.Println("Migrations applied successfully")
+	fmt.Println("Migrations applied successfully")
 
 	// NewHub + go hub.Run() starts the WebSocket broadcast loop as a background goroutine
 	// so it doesn't block the rest of startup.
@@ -58,8 +59,28 @@ func main() {
 	observability.SetDefault(obs.Handler())
 
 	// GolfCourseAPIClient is created once and shared across requests.
-	// GOLF_COURSE_API_KEY may be empty — handlers check and return 503 if called without a key.
+	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
+	// (mapped to 503) if any external-API method is called without a key.
 	golfAPI := services.NewGolfCourseAPIClient(cfg.GolfCourseAPIKey)
+
+	// CourseService bundles the DB and external-API client behind one dependency
+	// for every course/tee/hole handler.
+	courseService := services.NewCourseService(db, golfAPI)
+
+	// EventService owns event/member/event-round-list business logic.
+	// IsOrganizer is exposed for cross-service use by RoundService and ScoreService.
+	eventService := services.NewEventService(db)
+
+	// RoundService owns round scheduling, group management, and member assignment.
+	// Depends on EventService for the shared IsOrganizer permission check.
+	roundService := services.NewRoundService(db, eventService)
+
+	// ScoreService owns scorecard assembly, score entry, handicap, and hole stats.
+	// Depends on EventService for the organizer-bypass permission path in canModifyScores.
+	scoreService := services.NewScoreService(db, eventService)
+
+	// UserService owns profile lookup, follow/unfollow, career stats, and scorecard settings.
+	userService := services.NewUserService(db)
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
@@ -106,69 +127,69 @@ func main() {
 	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
 	// Event routes — any authenticated user can create events (they become the organizer)
-	api.Get("/events", handlers.GetEvents(db))
-	api.Post("/events", handlers.CreateEvent(db))
+	api.Get("/events", handlers.GetEvents(eventService))
+	api.Post("/events", handlers.CreateEvent(eventService))
 
-	api.Get("/events/:id", handlers.GetEvent(db))
-	api.Patch("/events/:id", handlers.UpdateEvent(db))
-	api.Delete("/events/:id", handlers.DeleteEvent(db))
+	api.Get("/events/:id", handlers.GetEvent(eventService))
+	api.Patch("/events/:id", handlers.UpdateEvent(eventService))
+	api.Delete("/events/:id", handlers.DeleteEvent(eventService))
 
-	api.Get("/events/:id/members", handlers.GetEventMembers(db))
-	api.Post("/events/:id/members", handlers.AddEventMember(db))
-	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(db))
+	api.Get("/events/:id/members", handlers.GetEventMembers(eventService))
+	api.Post("/events/:id/members", handlers.AddEventMember(eventService))
+	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(eventService))
 
-	api.Get("/events/:id/rounds", handlers.GetEventRounds(db))
-	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(db))
+	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
+	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(roundService))
 
-	// Round routes — round IDs are globally unique, so these are top-level
+	// Round routes — round IDs are globally unique, so these are top-level.
 	// GET /rounds must be registered before /rounds/:roundId so Fiber's router
 	// doesn't treat "rounds" as a roundId parameter.
-	api.Get("/rounds", handlers.GetMyRounds(db))
-	api.Get("/rounds/:roundId", handlers.GetRound(db))
-	api.Patch("/rounds/:roundId", handlers.UpdateRound(db))
-	api.Delete("/rounds/:roundId", handlers.DeleteRound(db))
-	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(db))
-	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(db))
-	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(db))
-	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(db))
-	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(db))
+	api.Get("/rounds", handlers.GetMyRounds(roundService))
+	api.Get("/rounds/:roundId", handlers.GetRound(roundService))
+	api.Patch("/rounds/:roundId", handlers.UpdateRound(roundService))
+	api.Delete("/rounds/:roundId", handlers.DeleteRound(roundService))
+	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(roundService))
+	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(roundService))
+	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(roundService))
+	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
+	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
-	// Score routes — permission enforced per-handler (group member, organizer, or admin)
-	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(db))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(db))
+	// Score routes — permission enforced inside ScoreService.canModifyScores
+	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(scoreService))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
-	api.Get("/courses", handlers.GetCourses(db))
-	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(db))
-	api.Get("/courses/:courseId", handlers.GetCourse(db))
-	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(db))
+	api.Get("/courses", handlers.GetCourses(courseService))
+	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(courseService))
+	api.Get("/courses/:courseId", handlers.GetCourse(courseService))
+	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(courseService))
 
-	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(db))
-	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(db))
-	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(db))
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(courseService))
+	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(courseService))
+	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(courseService))
 
-	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(db))
-	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(db))
+	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(courseService))
+	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(courseService))
 
 	// External course import — search returns results without writing; import/refresh write to DB
-	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(golfAPI))
-	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(db, golfAPI))
-	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(db, golfAPI))
+	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(courseService))
+	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(courseService))
+	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(courseService))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
 	// doesn't treat "following" or "me" as a userId value.
-	api.Get("/me", handlers.GetMe(db))
-	api.Get("/users/following", handlers.GetFollowing(db))
-	api.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(db))
-	api.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(db))
-	api.Get("/users/:userId", handlers.GetUserProfile(db))
-	api.Get("/users/:userId/stats", handlers.GetUserStats(db))
-	api.Get("/users/:userId/rounds", handlers.GetUserRounds(db))
-	api.Post("/users/:userId/follow", handlers.FollowUser(db))
-	api.Delete("/users/:userId/follow", handlers.UnfollowUser(db))
-	api.Get("/users", handlers.SearchUsers(db))
+	api.Get("/me", handlers.GetMe(userService))
+	api.Get("/users/following", handlers.GetFollowing(userService))
+	api.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(userService))
+	api.Patch("/users/me/scorecard-settings", handlers.UpsertScorecardSettings(userService))
+	api.Get("/users/:userId", handlers.GetUserProfile(userService))
+	api.Get("/users/:userId/stats", handlers.GetUserStats(userService))
+	api.Get("/users/:userId/rounds", handlers.GetUserRounds(userService))
+	api.Post("/users/:userId/follow", handlers.FollowUser(userService))
+	api.Delete("/users/:userId/follow", handlers.UnfollowUser(userService))
+	api.Get("/users", handlers.SearchUsers(userService))
 
 	// Start the server in a goroutine so we can listen for OS signals below.
 	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;

@@ -404,10 +404,6 @@ export default function ScorecardScreen() {
     refetch();
   }, [currentHole, refetch]);
 
-  // userIdRef lets the init effect read user.id without listing it as a dep,
-  // avoiding re-runs when the auth state refreshes mid-session.
-  const userIdRef  = useRef(user?.id);
-  useEffect(() => { userIdRef.current = user?.id; }, [user?.id]);
 
   // ── Auto-save ───────────────────────────────────────────────────────────────
 
@@ -559,8 +555,8 @@ export default function ScorecardScreen() {
       // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
       setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
       // Default individual view to the current user's player, then first player.
-      // user.id is the Supabase auth UUID; matches ScorecardPlayer.user_id.
-      const myPlayer = group.players.find((p) => p.user_id === userIdRef.current);
+      // Use scorecard.caller_user_id (DB UUID) — it differs from the Supabase auth UUID.
+      const myPlayer = group.players.find((p) => p.user_id === scorecard?.caller_user_id);
       setSelectedPlayerId(
         myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""
       );
@@ -601,7 +597,7 @@ export default function ScorecardScreen() {
   // ── My handicap edit (post-entry correction for current user) ──────────────
 
   const handleSaveMyHandicap = async () => {
-    const myPlayer = group?.players.find((p) => p.user_id === user?.id);
+    const myPlayer = group?.players.find((p) => p.user_id === scorecard?.caller_user_id);
     if (!myPlayer) return;
     const hNum = Number.parseInt(myHandicapDraft, 10);
     if (Number.isNaN(hNum) || hNum < 0) {
@@ -687,7 +683,15 @@ export default function ScorecardScreen() {
     !handicapDismissed && group.players.some((p) => p.course_handicap == null);
 
   // The current user's player entry in this group (undefined if they're not in this group).
-  const myPlayer = group.players.find((p) => p.user_id === user?.id);
+  // Use scorecard.caller_user_id (DB UUID) — differs from the Supabase auth UUID in user?.id.
+  const myPlayer = group.players.find((p) => p.user_id === scorecard.caller_user_id);
+
+  // sortedPlayers puts the current user first so their column/pill always leads.
+  const sortedPlayers = [...group.players].sort((a, b) => {
+    if (a.user_id === scorecard.caller_user_id) return -1;
+    if (b.user_id === scorecard.caller_user_id) return 1;
+    return 0;
+  });
   // Show edit affordance when the round is active and the user already has a handicap set.
   // Hidden while the initial entry section is visible (showHandicapSection covers that case).
   const canEditMyHandicap =
@@ -944,9 +948,9 @@ export default function ScorecardScreen() {
         {/* ── Individual view: player selector pills ─────────────────────────── */}
         {effectiveViewMode === "individual" && (
           <View className="flex-row gap-2 px-4 mt-4 flex-wrap">
-            {group.players.map((p) => {
+            {sortedPlayers.map((p) => {
               const isSelected = selectedPlayerId === p.round_player_id;
-              const isMe = p.user_id === user?.id;
+              const isMe = p.user_id === scorecard.caller_user_id;
               return (
                 <TouchableOpacity
                   key={p.round_player_id}
@@ -995,9 +999,9 @@ export default function ScorecardScreen() {
                 <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>H</Text>
                 <Text style={{ width: parColW }}  className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
                 <Text style={{ width: siColW }}   className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
-                {group.players.map((p) => {
+                {sortedPlayers.map((p) => {
                   const status = saveStatus[p.round_player_id] ?? "idle";
-                  const isMe = p.user_id === user?.id;
+                  const isMe = p.user_id === scorecard.caller_user_id;
                   return (
                     <View
                       key={p.round_player_id}
@@ -1047,7 +1051,7 @@ export default function ScorecardScreen() {
                     <Text style={{ width: siColW }} className={`text-xs text-center ${t.textTertiary}`}>
                       {hole.stroke_index || "—"}
                     </Text>
-                    {group.players.map((player, playerIdx) => {
+                    {sortedPlayers.map((player, playerIdx) => {
                       const val   = scores[player.round_player_id]?.[hole.hole_number] ?? "";
                       const gross = parseInt(val, 10);
                       const color = (hole.par && !isNaN(gross))
@@ -1097,7 +1101,7 @@ export default function ScorecardScreen() {
                       {holeRangeTotal(holeRows, {}, 1, 9).par || "—"}
                     </Text>
                     <View style={{ width: siColW }} />
-                    {group.players.map((player) => {
+                    {sortedPlayers.map((player) => {
                       const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 1, 9);
                       return (
                         <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
@@ -1118,7 +1122,7 @@ export default function ScorecardScreen() {
                     {holeRangeTotal(holeRows, {}, 10, 18).par || "—"}
                   </Text>
                   <View style={{ width: siColW }} />
-                  {group.players.map((player) => {
+                  {sortedPlayers.map((player) => {
                     const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 10, 18);
                     return (
                       <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
@@ -1136,7 +1140,7 @@ export default function ScorecardScreen() {
                   {scorecard.holes.reduce((sum, h) => sum + h.par, 0) || "—"}
                 </Text>
                 <View style={{ width: siColW }} />
-                {group.players.map((player) => {
+                {sortedPlayers.map((player) => {
                   const playerInputs = scores[player.round_player_id] ?? {};
                   let total = 0, count = 0;
                   for (const v of Object.values(playerInputs)) {
@@ -1400,25 +1404,6 @@ export default function ScorecardScreen() {
 
               return (
                 <View className={`rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
-
-                  {/* Player context bar — shows whose card is displayed and read-only status */}
-                  <View className={`flex-row items-center gap-2 px-4 py-2 border-b ${t.divider} ${selectedPlayer.user_id === user?.id ? "bg-green-700/5" : t.surfaceSunken}`}>
-                    <Ionicons
-                      name={selectedPlayer.user_id === user?.id ? "person" : "person-outline"}
-                      size={13}
-                      color={selectedPlayer.user_id === user?.id ? "#15803d" : t.colors.tabBarInactive}
-                    />
-                    <Text className={`text-xs font-semibold flex-1 ${selectedPlayer.user_id === user?.id ? "text-green-700" : t.textSecondary}`}>
-                      {selectedPlayer.user_id === user?.id ? "Your scorecard" : `${selectedPlayer.display_name}'s scorecard`}
-                    </Text>
-                    {/* Read-only notice when viewing another player's card without organizer rights */}
-                    {!canEditSelected && !isRoundLocked && (
-                      <View className="flex-row items-center gap-1">
-                        <Ionicons name="eye-outline" size={12} color={t.colors.tabBarInactive} />
-                        <Text className={`text-xs ${t.textTertiary}`}>View only</Text>
-                      </View>
-                    )}
-                  </View>
 
                   {/* Hole info bar */}
                   <View className={`flex-row border-b ${t.divider} ${t.surfaceSunken}`}>

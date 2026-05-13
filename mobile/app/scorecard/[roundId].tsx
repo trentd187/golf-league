@@ -699,6 +699,14 @@ export default function ScorecardScreen() {
   // so they can make corrections after the fact.
   const isRoundLocked = scorecard.status === "completed" && !scorecard.is_organizer;
 
+  // canEditPlayer returns true when the current user is allowed to mutate scores/stats
+  // for a given round_player_id. Organizers can edit anyone; regular players only themselves.
+  const canEditPlayer = (roundPlayerId: string): boolean => {
+    if (isRoundLocked) return false;
+    if (scorecard.is_organizer) return true;
+    return roundPlayerId === myPlayer?.round_player_id;
+  };
+
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
 
@@ -943,21 +951,26 @@ export default function ScorecardScreen() {
                 <TouchableOpacity
                   key={p.round_player_id}
                   onPress={() => setSelectedPlayerId(p.round_player_id)}
-                  className={`px-3 py-1.5 rounded-full border ${
+                  className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
                     isSelected
                       ? "bg-green-700 border-green-700"
                       : isMe
-                      ? `${t.surface} border-green-700`
+                      ? `bg-green-700/10 border-green-700`
                       : `${t.surface} ${t.border}`
                   }`}
                 >
+                  <Ionicons
+                    name="person"
+                    size={10}
+                    color={isSelected ? "white" : isMe ? "#15803d" : "transparent"}
+                    style={{ display: isMe ? "flex" : "none" }}
+                  />
                   <Text
                     className={`text-sm font-semibold ${
                       isSelected ? "text-white" : isMe ? "text-green-700" : t.textPrimary
                     }`}
                     numberOfLines={1}
                   >
-                    {/* Score to par shown in parens; green border on my pill so I know whose scores to edit */}
                     {(() => {
                       const diff = scoreToPar(p.round_player_id, holeRows, scores);
                       return `${p.display_name.split(" ")[0]} (${diff != null ? formatToPar(diff) : "-"})`;
@@ -989,13 +1002,13 @@ export default function ScorecardScreen() {
                     <View
                       key={p.round_player_id}
                       style={{ width: playerColW }}
-                      className={`items-center rounded-t-lg pb-0.5 ${isMe ? "bg-green-700/10" : ""}`}
+                      className={`items-center rounded-t-lg pb-0.5 ${isMe ? "bg-green-700/15 border-b-2 border-green-700" : ""}`}
                     >
                       <Text
                         className={`text-xs font-bold text-center ${isMe ? "text-green-700" : t.textPrimary}`}
                         numberOfLines={1}
                       >
-                        {p.display_name.split(" ")[0]}
+                        {isMe ? `${p.display_name.split(" ")[0]} ★` : p.display_name.split(" ")[0]}
                       </Text>
                       {/* Score to par for this round; (-) when no holes played yet */}
                       {(() => {
@@ -1065,7 +1078,7 @@ export default function ScorecardScreen() {
                               focusNext(idx, playerIdx, group.players.length, holeRows.length)
                             }
                             onBlur={() => autoSavePlayer(player.round_player_id)}
-                            editable={!savingHandicaps && !needsHandicap && !isRoundLocked}
+                            editable={canEditPlayer(player.round_player_id) && !savingHandicaps && !needsHandicap}
                             placeholder="–"
                             placeholderTextColor={t.colors.tabBarInactive}
                           />
@@ -1351,7 +1364,7 @@ export default function ScorecardScreen() {
                         }
                       }}
                       onBlur={() => autoSavePlayer(rpId)}
-                      editable={!savingHandicaps && !needsHandicap && !isRoundLocked}
+                      editable={canEditSelected && !savingHandicaps && !needsHandicap}
                       placeholder="—"
                       placeholderTextColor={t.colors.tabBarInactive}
                     />
@@ -1382,8 +1395,30 @@ export default function ScorecardScreen() {
                 );
               };
 
+              // Whether the current user can edit the displayed player's data.
+              const canEditSelected = canEditPlayer(rpId);
+
               return (
                 <View className={`rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
+
+                  {/* Player context bar — shows whose card is displayed and read-only status */}
+                  <View className={`flex-row items-center gap-2 px-4 py-2 border-b ${t.divider} ${selectedPlayer.user_id === user?.id ? "bg-green-700/5" : t.surfaceSunken}`}>
+                    <Ionicons
+                      name={selectedPlayer.user_id === user?.id ? "person" : "person-outline"}
+                      size={13}
+                      color={selectedPlayer.user_id === user?.id ? "#15803d" : t.colors.tabBarInactive}
+                    />
+                    <Text className={`text-xs font-semibold flex-1 ${selectedPlayer.user_id === user?.id ? "text-green-700" : t.textSecondary}`}>
+                      {selectedPlayer.user_id === user?.id ? "Your scorecard" : `${selectedPlayer.display_name}'s scorecard`}
+                    </Text>
+                    {/* Read-only notice when viewing another player's card without organizer rights */}
+                    {!canEditSelected && !isRoundLocked && (
+                      <View className="flex-row items-center gap-1">
+                        <Ionicons name="eye-outline" size={12} color={t.colors.tabBarInactive} />
+                        <Text className={`text-xs ${t.textTertiary}`}>View only</Text>
+                      </View>
+                    )}
+                  </View>
 
                   {/* Hole info bar */}
                   <View className={`flex-row border-b ${t.divider} ${t.surfaceSunken}`}>
@@ -1425,11 +1460,11 @@ export default function ScorecardScreen() {
                                 return (
                                   <TouchableOpacity
                                     key={key}
-                                    onPress={() => { if (holeData.par !== 3 && !isRoundLocked) handleFIRTap(key); }}
+                                    onPress={() => { if (holeData.par !== 3 && canEditSelected) handleFIRTap(key); }}
                                     className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
                                       active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${isRoundLocked ? "opacity-50" : ""}`}
-                                    activeOpacity={holeData.par === 3 || isRoundLocked ? 1 : 0.7}
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={holeData.par === 3 || !canEditSelected ? 1 : 0.7}
                                   >
                                     {icon && (
                                       <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
@@ -1454,11 +1489,11 @@ export default function ScorecardScreen() {
                                 return (
                                   <TouchableOpacity
                                     key={key}
-                                    onPress={() => { if (!isRoundLocked) handleGIRTap(key); }}
+                                    onPress={() => { if (canEditSelected) handleGIRTap(key); }}
                                     className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
                                       active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${isRoundLocked ? "opacity-50" : ""}`}
-                                    activeOpacity={isRoundLocked ? 1 : 0.7}
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={!canEditSelected ? 1 : 0.7}
                                   >
                                     {icon && (
                                       <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
@@ -1483,11 +1518,11 @@ export default function ScorecardScreen() {
                                 return (
                                   <TouchableOpacity
                                     key={club}
-                                    onPress={() => { if (!isRoundLocked) handleTeeShotClubTap(club); }}
+                                    onPress={() => { if (canEditSelected) handleTeeShotClubTap(club); }}
                                     className={`px-3 py-1.5 rounded-full border ${
                                       active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${isRoundLocked ? "opacity-50" : ""}`}
-                                    activeOpacity={isRoundLocked ? 1 : 0.7}
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={!canEditSelected ? 1 : 0.7}
                                   >
                                     <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{club}</Text>
                                   </TouchableOpacity>
@@ -1533,7 +1568,7 @@ export default function ScorecardScreen() {
                                     scoreInputRef.current?.focus();
                                   }
                                 }}
-                                editable={!isRoundLocked}
+                                editable={canEditSelected}
                                 value={holeStat[field] as string}
                                 onChangeText={(v) => {
                                   setStats((prev) => {

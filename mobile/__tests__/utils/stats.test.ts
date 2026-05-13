@@ -420,19 +420,19 @@ describe("buildMyStats", () => {
           hole_number: 1, putts: null, gir: "hit", fir: null,
           approach_yds: 120, first_putt_distance: 10,
           fir_miss_direction: null, gir_miss_direction: null,
-          tee_shot_distance: null, putt_distance_made: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
         },
         {
           hole_number: 2, putts: null, gir: "hit", fir: null,
           approach_yds: 80, first_putt_distance: 20,
           fir_miss_direction: null, gir_miss_direction: null,
-          tee_shot_distance: null, putt_distance_made: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
         },
         {
           hole_number: 3, putts: null, gir: "miss", fir: null,
           approach_yds: 100, first_putt_distance: null, // miss — not counted
           fir_miss_direction: null, gir_miss_direction: "short",
-          tee_shot_distance: null, putt_distance_made: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
         },
       ],
     });

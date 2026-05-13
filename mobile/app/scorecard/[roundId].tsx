@@ -586,7 +586,11 @@ export default function ScorecardScreen() {
           );
         })
       );
-      queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
+      // Refetch directly so the scorecard data is fresh before the component re-renders —
+      // invalidateQueries alone triggers a background refetch that may race with the
+      // conditional display logic that depends on course_handicap being non-null.
+      await refetch();
+      queryClient.invalidateQueries({ queryKey: ["round", roundId] });
     } catch {
       Alert.alert("Error", "Could not save handicaps. Check your connection and try again.");
     } finally {
@@ -617,7 +621,10 @@ export default function ScorecardScreen() {
       );
       if (!res.ok) throw new Error("save failed");
       setEditingMyHandicap(false);
-      queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
+      // Refetch scorecard directly so net scores recalculate immediately.
+      // Invalidate the round so the leaderboard reflects the updated handicap.
+      await refetch();
+      queryClient.invalidateQueries({ queryKey: ["round", roundId] });
     } catch {
       Alert.alert("Error", "Could not update handicap. Please try again.");
     } finally {
@@ -885,64 +892,53 @@ export default function ScorecardScreen() {
         )}
 
         {/* ── My course handicap edit (post-entry correction) ────────────────── */}
-        {/* Visible when the round is active and the user already has a handicap  */}
-        {/* set — lets them fix an incorrect entry without organizer intervention. */}
+        {/* Compact single row — visible when active and handicap already set.    */}
+        {/* Expanding inline edit avoids a large card for an infrequent action.   */}
         {canEditMyHandicap && (
-          <View className={`mx-4 mt-4 rounded-2xl border ${t.border} ${t.surface} overflow-hidden`}>
-            <View className={`px-4 py-3 border-b ${t.divider} flex-row items-center gap-2`}>
-              <Ionicons name="golf-outline" size={16} color={t.colors.tabBarInactive} />
-              <Text className={`flex-1 text-sm font-semibold ${t.textSecondary}`}>My Course Handicap</Text>
-            </View>
-            {editingMyHandicap ? (
-              <View className="px-4 py-3 gap-3">
-                <View className="flex-row items-center gap-3">
-                  <Text className={`flex-1 text-sm ${t.textPrimary}`}>{myPlayer!.display_name}</Text>
-                  <TextInput
-                    className={`w-16 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                    placeholder="0"
-                    placeholderTextColor={t.colors.tabBarInactive}
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    value={myHandicapDraft}
-                    onChangeText={setMyHandicapDraft}
-                    editable={!savingMyHandicap}
-                    autoFocus
-                  />
-                </View>
-                <View className="flex-row gap-2">
-                  <TouchableOpacity
-                    className={`flex-1 rounded-xl py-3 items-center border ${t.border}`}
-                    onPress={() => setEditingMyHandicap(false)}
-                  >
-                    <Text className={`text-sm font-semibold ${t.textSecondary}`}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    className={`flex-1 rounded-xl py-3 items-center ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
-                    onPress={handleSaveMyHandicap}
-                    disabled={savingMyHandicap}
-                  >
-                    {savingMyHandicap ? (
-                      <ActivityIndicator color="white" />
-                    ) : (
-                      <Text className="text-white font-semibold text-sm">Save</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              <TouchableOpacity
-                className="px-4 py-3 flex-row items-center gap-3"
-                onPress={() => {
-                  setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
-                  setEditingMyHandicap(true);
-                }}
-              >
-                <Text className={`flex-1 text-sm ${t.textPrimary}`}>{myPlayer!.display_name}</Text>
-                <Text className={`text-sm font-bold ${t.textSecondary}`}>HCP {myPlayer!.course_handicap}</Text>
-                <Ionicons name="pencil-outline" size={14} color={t.colors.tabBarInactive} />
+          editingMyHandicap ? (
+            <View className={`mx-4 mt-3 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
+              <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+              <Text className={`flex-1 text-xs ${t.textSecondary}`}>My handicap</Text>
+              <TextInput
+                className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                placeholder="0"
+                placeholderTextColor={t.colors.tabBarInactive}
+                keyboardType="number-pad"
+                maxLength={2}
+                value={myHandicapDraft}
+                onChangeText={setMyHandicapDraft}
+                editable={!savingMyHandicap}
+                autoFocus
+              />
+              <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
+                <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
               </TouchableOpacity>
-            )}
-          </View>
+              <TouchableOpacity
+                className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                onPress={handleSaveMyHandicap}
+                disabled={savingMyHandicap}
+              >
+                {savingMyHandicap
+                  ? <ActivityIndicator size="small" color="white" />
+                  : <Text className="text-white text-xs font-semibold">Save</Text>
+                }
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              className={`mx-4 mt-3 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}
+              onPress={() => {
+                setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
+                setEditingMyHandicap(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+              <Text className={`flex-1 text-xs ${t.textSecondary}`}>My handicap</Text>
+              <Text className={`text-sm font-bold ${t.textPrimary}`}>{myPlayer!.course_handicap}</Text>
+              <Ionicons name="pencil-outline" size={13} color={t.colors.tabBarInactive} />
+            </TouchableOpacity>
+          )
         )}
 
         {/* ── Individual view: player selector pills ─────────────────────────── */}

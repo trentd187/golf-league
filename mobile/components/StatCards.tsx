@@ -6,9 +6,11 @@
 //   DirectionalMissCard — FIR or GIR compass with miss-direction breakdown
 //   PuttingCard       — avg putts / round, putt distribution donut, made-putt distances
 
-import { View, Text } from "react-native";
+import { useState } from "react";
+import { View, Text, ScrollView, TouchableOpacity } from "react-native";
 import Svg, { Path, Line, Text as SvgText } from "react-native-svg";
 import { useTheme } from "@/hooks/useTheme";
+import type { GirBandData } from "@/utils/stats";
 
 // ─── ScoringCard ──────────────────────────────────────────────────────────────
 
@@ -411,6 +413,100 @@ export function PuttingCard({
             {longestPuttMade === null ? "—" : `${longestPuttMade} ft`}
           </Text>
         </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── ApproachYardageBandCard ──────────────────────────────────────────────────
+
+// ApproachYardageBandCard renders GIR% and miss-direction breakdown by approach
+// yardage band. Chips let the user filter the compass to a specific distance range.
+// Returns null when no holes have approach_yds recorded (bands[0].total === 0).
+export function ApproachYardageBandCard({ bands }: Readonly<{ bands: GirBandData[] }>) {
+  const t = useTheme();
+  const [selectedBand, setSelectedBand] = useState("All");
+
+  // When approach_yds has never been tracked, hide the card entirely.
+  if (bands.length === 0 || bands[0].total === 0) return null;
+
+  const current = bands.find((b) => b.band === selectedBand) ?? bands[0];
+  const hasData  = current.girPercent !== null;
+  const girValue = hasData ? `${current.girPercent!.toFixed(0)}%` : "—";
+
+  function pct(count: number): string {
+    if (current.total === 0) return "—";
+    return `${Math.round((count / current.total) * 100)}%`;
+  }
+
+  return (
+    <View className={`${t.surface} rounded-2xl border ${t.border} p-4 mb-3`}>
+      <Text className={`text-sm font-bold uppercase tracking-widest ${t.textTertiary} mb-3`}>
+        GIR by Distance
+      </Text>
+
+      {/* Band picker chips */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, paddingBottom: 12 }}
+      >
+        {bands.map((b) => {
+          const isActive = selectedBand === b.band;
+          return (
+            <TouchableOpacity
+              key={b.band}
+              className={`rounded-full px-3 py-1.5 border ${
+                isActive ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.border}`
+              }`}
+              onPress={() => setSelectedBand(b.band)}
+              activeOpacity={0.8}
+            >
+              <Text className={`text-xs font-semibold ${isActive ? "text-white" : t.textSecondary}`}>
+                {b.band}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {/* Compass — same layout as DirectionalMissCard */}
+      <View className="items-center">
+        <View className="items-center mb-1">
+          <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(current.miss.long)}</Text>
+          <Text className={`text-sm font-semibold ${t.textTertiary}`}>Long</Text>
+        </View>
+        <View className="flex-row items-center">
+          <View className="items-center w-16">
+            <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(current.miss.left)}</Text>
+            <Text className={`text-sm font-semibold ${t.textTertiary}`}>Left</Text>
+          </View>
+          <View
+            className={`w-24 h-24 rounded-full border-2 items-center justify-center mx-4 ${
+              hasData ? "bg-green-100 border-green-300" : t.border
+            }`}
+          >
+            <Text className={`text-xl font-bold ${hasData ? "text-green-700" : t.textPrimary}`}>
+              {girValue}
+            </Text>
+            <Text className={`text-sm font-semibold ${hasData ? "text-green-600" : t.textTertiary}`}>
+              GIR
+            </Text>
+          </View>
+          <View className="items-center w-16">
+            <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(current.miss.right)}</Text>
+            <Text className={`text-sm font-semibold ${t.textTertiary}`}>Right</Text>
+          </View>
+        </View>
+        <View className="items-center mt-1">
+          <Text className={`text-lg font-bold ${t.textPrimary}`}>{pct(current.miss.short)}</Text>
+          <Text className={`text-sm font-semibold ${t.textTertiary}`}>Short</Text>
+        </View>
+      </View>
+
+      {/* Hole count context */}
+      <View className="items-center mt-3">
+        <Text className={`text-xs ${t.textTertiary}`}>{current.total} holes tracked</Text>
       </View>
     </View>
   );

@@ -2,7 +2,7 @@
 // Unit tests for buildStats(), buildRoundStats(), buildMyStats(), findMyPlayer(),
 // and handicapConsistencyLabel() in utils/stats.ts. All functions are pure — no mocking needed.
 
-import { buildStats, buildRoundStats, buildMyStats, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
+import { buildStats, buildRoundStats, buildMyStats, buildGirByBand, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
 import type { Scorecard, ScorecardPlayer, ScorecardHole } from "@/types/scorecard";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -411,6 +411,150 @@ describe("buildMyStats", () => {
     expect(result.parsCount).toBe(1);
     expect(result.bogeysCount).toBe(1);
     expect(result.doublesPlus).toBe(1);
+  });
+});
+
+// ─── buildGirByBand ───────────────────────────────────────────────────────────
+
+// makeHoleStat builds a minimal ScorecardHoleStat for band tests.
+function makeHoleStat(overrides: {
+  hole_number?: number;
+  gir?: "hit" | "miss" | "na" | null;
+  gir_miss_direction?: "short" | "left" | "right" | "long" | null;
+  approach_yds?: number | null;
+}) {
+  return {
+    hole_number:         overrides.hole_number ?? 1,
+    gir:                 overrides.gir ?? null,
+    gir_miss_direction:  overrides.gir_miss_direction ?? null,
+    fir:                 null as null,
+    fir_miss_direction:  null as null,
+    putts:               null as null,
+    first_putt_distance: null as null,
+    putt_distance_made:  null as null,
+    approach_yds:        overrides.approach_yds ?? null,
+    tee_shot_club:       null as null,
+    tee_shot_distance:   null as null,
+  };
+}
+
+describe("buildGirByBand", () => {
+  it("returns only 'All' with total=0 when no holes have approach_yds", () => {
+    const player = makePlayer({ hole_stats: [makeHoleStat({ gir: "hit", approach_yds: null })] });
+    const sc = makeScorecard({ player });
+    const result = buildGirByBand([sc]);
+    expect(result).toHaveLength(1);
+    expect(result[0].band).toBe("All");
+    expect(result[0].total).toBe(0);
+    expect(result[0].girPercent).toBeNull();
+  });
+
+  it("excludes holes where gir is null or 'na'", () => {
+    const player = makePlayer({
+      hole_stats: [
+        makeHoleStat({ gir: null,  approach_yds: 120 }),
+        makeHoleStat({ gir: "na",  approach_yds: 120 }),
+        makeHoleStat({ gir: "hit", approach_yds: 120 }),
+      ],
+    });
+    const sc = makeScorecard({ player });
+    const result = buildGirByBand([sc]);
+    // Only the "hit" hole should count.
+    expect(result[0].total).toBe(1);
+    expect(result[0].girPercent).toBeCloseTo(100);
+  });
+
+  it("buckets holes into the correct 50-yd band", () => {
+    const player = makePlayer({
+      hole_stats: [
+        makeHoleStat({ gir: "hit",  approach_yds: 30  }), // < 50
+        makeHoleStat({ gir: "miss", approach_yds: 75,  gir_miss_direction: "left" }), // 50–99
+        makeHoleStat({ gir: "hit",  approach_yds: 120 }), // 100–149
+        makeHoleStat({ gir: "miss", approach_yds: 160, gir_miss_direction: "right" }), // 150–199
+        makeHoleStat({ gir: "hit",  approach_yds: 220 }), // 200+
+      ],
+    });
+    const sc = makeScorecard({ player });
+    const result = buildGirByBand([sc]);
+
+    // "All" has all 5 holes; 3 hits = 60%
+    expect(result[0].band).toBe("All");
+    expect(result[0].total).toBe(5);
+    expect(result[0].girPercent).toBeCloseTo(60);
+
+    const lt50 = result.find((b) => b.band === "< 50")!;
+    expect(lt50.total).toBe(1);
+    expect(lt50.girPercent).toBeCloseTo(100);
+
+    const band50 = result.find((b) => b.band === "50–99")!;
+    expect(band50.total).toBe(1);
+    expect(band50.girPercent).toBeCloseTo(0);
+    expect(band50.miss.left).toBe(1);
+
+    const band100 = result.find((b) => b.band === "100–149")!;
+    expect(band100.total).toBe(1);
+    expect(band100.girPercent).toBeCloseTo(100);
+
+    const band150 = result.find((b) => b.band === "150–199")!;
+    expect(band150.miss.right).toBe(1);
+
+    const band200 = result.find((b) => b.band === "200+")!;
+    expect(band200.girPercent).toBeCloseTo(100);
+  });
+
+  it("omits bands with no holes from the result", () => {
+    const player = makePlayer({
+      hole_stats: [makeHoleStat({ gir: "hit", approach_yds: 80 })], // only 50–99 band
+    });
+    const sc = makeScorecard({ player });
+    const result = buildGirByBand([sc]);
+    // "All" + "50–99" only — other bands absent.
+    expect(result.map((b) => b.band)).toEqual(["All", "50–99"]);
+  });
+
+  it("accumulates miss directions in the 'All' band", () => {
+    const player = makePlayer({
+      hole_stats: [
+        makeHoleStat({ gir: "miss", approach_yds: 100, gir_miss_direction: "left"  }),
+        makeHoleStat({ gir: "miss", approach_yds: 120, gir_miss_direction: "right" }),
+        makeHoleStat({ gir: "miss", approach_yds: 140, gir_miss_direction: "short" }),
+        makeHoleStat({ gir: "miss", approach_yds: 160, gir_miss_direction: "long"  }),
+      ],
+    });
+    const sc = makeScorecard({ player });
+    const allBand = buildGirByBand([sc])[0];
+    expect(allBand.miss.left).toBe(1);
+    expect(allBand.miss.right).toBe(1);
+    expect(allBand.miss.short).toBe(1);
+    expect(allBand.miss.long).toBe(1);
+    expect(allBand.girPercent).toBeCloseTo(0);
+  });
+
+  it("accumulates across multiple scorecards", () => {
+    const sc1 = makeScorecard({
+      round_id: "r1",
+      player: makePlayer({ hole_stats: [makeHoleStat({ gir: "hit", approach_yds: 100 })] }),
+    });
+    const sc2 = makeScorecard({
+      round_id: "r2",
+      player: makePlayer({ hole_stats: [makeHoleStat({ gir: "miss", approach_yds: 110, gir_miss_direction: "left" })] }),
+    });
+    const allBand = buildGirByBand([sc1, sc2])[0];
+    expect(allBand.total).toBe(2);
+    expect(allBand.girPercent).toBeCloseTo(50);
+  });
+
+  it("uses userId to find the correct player when provided", () => {
+    const alice = makePlayer({ user_id: "alice", hole_stats: [makeHoleStat({ gir: "hit", approach_yds: 100 })] });
+    const bob   = makePlayer({ user_id: "bob",   hole_stats: [makeHoleStat({ gir: "miss", approach_yds: 100, gir_miss_direction: "left" })] });
+    const sc = makeScorecard({
+      caller_user_id: "alice",
+      groups: [{ group_id: "g-1", group_number: 1, players: [alice, bob] }],
+    });
+    // When userId = "bob", only bob's hole is counted.
+    const result = buildGirByBand([sc], "bob");
+    expect(result[0].total).toBe(1);
+    expect(result[0].girPercent).toBeCloseTo(0);
   });
 });
 

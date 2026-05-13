@@ -36,7 +36,7 @@ import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, scoreTextColor } from "@/utils/stats";
 import ModalHeader from "@/components/ModalHeader";
-import { ScoringCard, DirectionalMissCard, PuttingCard, ApproachYardageBandCard } from "@/components/StatCards";
+import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 // import HandicapSection from "@/components/HandicapSection"; // hidden pending GHIN review
 import type { Scorecard, ScorecardHole } from "@/types/scorecard"; // UserHandicapStats unused until GHIN integrated
 
@@ -168,8 +168,9 @@ function RoundStatsModal({
 }>) {
   const t = useTheme();
 
-  const player     = scorecard ? findMyPlayer(scorecard) : undefined;
-  const roundStats = player && scorecard ? buildRoundStats(player, scorecard.holes) : null;
+  const player        = scorecard ? findMyPlayer(scorecard) : undefined;
+  const roundStats    = player && scorecard ? buildRoundStats(player, scorecard.holes) : null;
+  const roundGirBands = scorecard ? buildGirByBand([scorecard]) : [];
 
   const [year, month, day] = round.scheduled_date.split("-").map(Number);
   const date = new Date(year, month - 1, day).toLocaleDateString("en-US", {
@@ -238,6 +239,7 @@ function RoundStatsModal({
                 denominator={roundStats.girTotal}
                 naValue={roundStats.girNaPercent === null ? "—" : `${roundStats.girNaPercent.toFixed(0)}%`}
                 extraRows={roundStats.proximityRows}
+                bands={roundGirBands}
               />
               <PuttingCard
                 avgPuttsPerRound={roundStats.avgPuttsPerRound}
@@ -791,8 +793,8 @@ export default function StatsScreen() {
                 denominator={stats.girTotal}
                 naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
                 extraRows={stats.proximityRows}
+                bands={girBands}
               />
-              <ApproachYardageBandCard bands={girBands} />
               <PuttingCard
                 avgPuttsPerRound={stats.avgPuttsPerRound}
                 puttDist={stats.puttDist}

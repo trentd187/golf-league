@@ -412,6 +412,38 @@ describe("buildMyStats", () => {
     expect(result.bogeysCount).toBe(1);
     expect(result.doublesPlus).toBe(1);
   });
+
+  it("builds proximity rows sorted by yardage band when GIR hits have approach distance and first putt distance", () => {
+    const player = makePlayer({
+      hole_stats: [
+        {
+          hole_number: 1, putts: null, gir: "hit", fir: null,
+          approach_yds: 120, first_putt_distance: 10,
+          fir_miss_direction: null, gir_miss_direction: null,
+          tee_shot_distance: null, putt_distance_made: null,
+        },
+        {
+          hole_number: 2, putts: null, gir: "hit", fir: null,
+          approach_yds: 80, first_putt_distance: 20,
+          fir_miss_direction: null, gir_miss_direction: null,
+          tee_shot_distance: null, putt_distance_made: null,
+        },
+        {
+          hole_number: 3, putts: null, gir: "miss", fir: null,
+          approach_yds: 100, first_putt_distance: null, // miss — not counted
+          fir_miss_direction: null, gir_miss_direction: "short",
+          tee_shot_distance: null, putt_distance_made: null,
+        },
+      ],
+    });
+    const sc = makeScorecard({ player });
+    const result = buildMyStats([sc], rounds);
+    // Two GIR hits: 80 yds (band 80) → 20 ft, 120 yds (band 120) → 10 ft; sorted ascending.
+    expect(result.proximityRows).toEqual([
+      { label: "80–99 yds",   value: "20.0 ft" },
+      { label: "120–139 yds", value: "10.0 ft" },
+    ]);
+  });
 });
 
 // ─── buildGirByBand ───────────────────────────────────────────────────────────
@@ -464,14 +496,14 @@ describe("buildGirByBand", () => {
     expect(result[0].girPercent).toBeCloseTo(100);
   });
 
-  it("buckets holes into the correct 50-yd band", () => {
+  it("buckets holes into the correct 20-yd band", () => {
     const player = makePlayer({
       hole_stats: [
-        makeHoleStat({ gir: "hit",  approach_yds: 30  }), // < 50
-        makeHoleStat({ gir: "miss", approach_yds: 75,  gir_miss_direction: "left" }), // 50–99
-        makeHoleStat({ gir: "hit",  approach_yds: 120 }), // 100–149
-        makeHoleStat({ gir: "miss", approach_yds: 160, gir_miss_direction: "right" }), // 150–199
-        makeHoleStat({ gir: "hit",  approach_yds: 220 }), // 200+
+        makeHoleStat({ gir: "hit",  approach_yds: 30  }), // 20–39 yds
+        makeHoleStat({ gir: "miss", approach_yds: 75,  gir_miss_direction: "left" }), // 60–79 yds
+        makeHoleStat({ gir: "hit",  approach_yds: 120 }), // 120–139 yds
+        makeHoleStat({ gir: "miss", approach_yds: 160, gir_miss_direction: "right" }), // 160–179 yds
+        makeHoleStat({ gir: "hit",  approach_yds: 220 }), // 220–239 yds
       ],
     });
     const sc = makeScorecard({ player });
@@ -482,34 +514,34 @@ describe("buildGirByBand", () => {
     expect(result[0].total).toBe(5);
     expect(result[0].girPercent).toBeCloseTo(60);
 
-    const lt50 = result.find((b) => b.band === "< 50")!;
-    expect(lt50.total).toBe(1);
-    expect(lt50.girPercent).toBeCloseTo(100);
+    const band20 = result.find((b) => b.band === "20–39 yds")!;
+    expect(band20.total).toBe(1);
+    expect(band20.girPercent).toBeCloseTo(100);
 
-    const band50 = result.find((b) => b.band === "50–99")!;
-    expect(band50.total).toBe(1);
-    expect(band50.girPercent).toBeCloseTo(0);
-    expect(band50.miss.left).toBe(1);
+    const band60 = result.find((b) => b.band === "60–79 yds")!;
+    expect(band60.total).toBe(1);
+    expect(band60.girPercent).toBeCloseTo(0);
+    expect(band60.miss.left).toBe(1);
 
-    const band100 = result.find((b) => b.band === "100–149")!;
-    expect(band100.total).toBe(1);
-    expect(band100.girPercent).toBeCloseTo(100);
+    const band120 = result.find((b) => b.band === "120–139 yds")!;
+    expect(band120.total).toBe(1);
+    expect(band120.girPercent).toBeCloseTo(100);
 
-    const band150 = result.find((b) => b.band === "150–199")!;
-    expect(band150.miss.right).toBe(1);
+    const band160 = result.find((b) => b.band === "160–179 yds")!;
+    expect(band160.miss.right).toBe(1);
 
-    const band200 = result.find((b) => b.band === "200+")!;
-    expect(band200.girPercent).toBeCloseTo(100);
+    const band220 = result.find((b) => b.band === "220–239 yds")!;
+    expect(band220.girPercent).toBeCloseTo(100);
   });
 
   it("omits bands with no holes from the result", () => {
     const player = makePlayer({
-      hole_stats: [makeHoleStat({ gir: "hit", approach_yds: 80 })], // only 50–99 band
+      hole_stats: [makeHoleStat({ gir: "hit", approach_yds: 80 })], // only 80–99 yds band
     });
     const sc = makeScorecard({ player });
     const result = buildGirByBand([sc]);
-    // "All" + "50–99" only — other bands absent.
-    expect(result.map((b) => b.band)).toEqual(["All", "50–99"]);
+    // "All" + "80–99 yds" only — other bands absent.
+    expect(result.map((b) => b.band)).toEqual(["All", "80–99 yds"]);
   });
 
   it("accumulates miss directions in the 'All' band", () => {

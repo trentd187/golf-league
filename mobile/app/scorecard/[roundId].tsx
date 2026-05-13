@@ -891,94 +891,94 @@ export default function ScorecardScreen() {
           </View>
         )}
 
-        {/* ── My course handicap edit (post-entry correction) ────────────────── */}
-        {/* Compact single row — visible when active and handicap already set.    */}
-        {/* Expanding inline edit avoids a large card for an infrequent action.   */}
-        {canEditMyHandicap && (
-          editingMyHandicap ? (
-            <View className={`mx-4 mt-3 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
-              <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
-              <Text className={`flex-1 text-xs ${t.textSecondary}`}>My handicap</Text>
-              <TextInput
-                className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                placeholder="0"
-                placeholderTextColor={t.colors.tabBarInactive}
-                keyboardType="number-pad"
-                maxLength={2}
-                value={myHandicapDraft}
-                onChangeText={setMyHandicapDraft}
-                editable={!savingMyHandicap}
-                autoFocus
-              />
-              <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
-                <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
-                onPress={handleSaveMyHandicap}
-                disabled={savingMyHandicap}
-              >
-                {savingMyHandicap
-                  ? <ActivityIndicator size="small" color="white" />
-                  : <Text className="text-white text-xs font-semibold">Save</Text>
-                }
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <TouchableOpacity
-              className={`mx-4 mt-3 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}
-              onPress={() => {
-                setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
-                setEditingMyHandicap(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
-              <Text className={`flex-1 text-xs ${t.textSecondary}`}>My handicap</Text>
-              <Text className={`text-sm font-bold ${t.textPrimary}`}>{myPlayer!.course_handicap}</Text>
-              <Ionicons name="pencil-outline" size={13} color={t.colors.tabBarInactive} />
-            </TouchableOpacity>
-          )
-        )}
 
         {/* ── Individual view: player selector pills ─────────────────────────── */}
         {effectiveViewMode === "individual" && (
-          <View className="flex-row gap-2 px-4 mt-4 flex-wrap">
-            {sortedPlayers.map((p) => {
-              const isSelected = selectedPlayerId === p.round_player_id;
-              const isMe = p.user_id === scorecard.caller_user_id;
-              return (
-                <TouchableOpacity
-                  key={p.round_player_id}
-                  onPress={() => setSelectedPlayerId(p.round_player_id)}
-                  className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                    isSelected
-                      ? "bg-green-700 border-green-700"
-                      : isMe
-                      ? `bg-green-700/10 border-green-700`
-                      : `${t.surface} ${t.border}`
-                  }`}
-                >
-                  <Ionicons
-                    name="person"
-                    size={10}
-                    color={isSelected ? "white" : isMe ? "#15803d" : "transparent"}
-                    style={{ display: isMe ? "flex" : "none" }}
-                  />
-                  <Text
-                    className={`text-sm font-semibold ${
-                      isSelected ? "text-white" : isMe ? "text-green-700" : t.textPrimary
+          <View className="mt-4 gap-2">
+            <View className="flex-row gap-2 px-4 flex-wrap">
+              {sortedPlayers.map((p) => {
+                const isSelected = selectedPlayerId === p.round_player_id;
+                const isMe = p.user_id === scorecard.caller_user_id;
+                return (
+                  <TouchableOpacity
+                    key={p.round_player_id}
+                    onPress={() => setSelectedPlayerId(p.round_player_id)}
+                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                      isSelected
+                        ? "bg-green-700 border-green-700"
+                        : isMe
+                        ? `bg-green-700/10 border-green-700`
+                        : `${t.surface} ${t.border}`
                     }`}
-                    numberOfLines={1}
                   >
-                    {(() => {
-                      const diff = scoreToPar(p.round_player_id, holeRows, scores);
-                      return `${p.display_name.split(" ")[0]} (${diff != null ? formatToPar(diff) : "-"})`;
-                    })()}
+                    <Ionicons
+                      name="person"
+                      size={10}
+                      color={isSelected ? "white" : isMe ? "#15803d" : "transparent"}
+                      style={{ display: isMe ? "flex" : "none" }}
+                    />
+                    <Text
+                      className={`text-sm font-semibold ${
+                        isSelected ? "text-white" : isMe ? "text-green-700" : t.textPrimary
+                      }`}
+                      numberOfLines={1}
+                    >
+                      {(() => {
+                        const diff = scoreToPar(p.round_player_id, holeRows, scores);
+                        return `${p.display_name.split(" ")[0]} (${diff != null ? formatToPar(diff) : "-"})`;
+                      })()}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {/* C.H. chip — inline when ≤3 players and not currently editing */}
+              {canEditMyHandicap && group.players.length <= 3 && !editingMyHandicap && (
+                <TouchableOpacity
+                  className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${t.border} ${t.surface}`}
+                  onPress={() => {
+                    setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
+                    setEditingMyHandicap(true);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text className={`text-sm font-semibold ${t.textSecondary}`}>
+                    C.H. {myPlayer!.course_handicap}
                   </Text>
+                  <Ionicons name="pencil-outline" size={10} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
-              );
-            })}
+              )}
+            </View>
+            {/* Edit row — shown below pills when ≤3 players and editing */}
+            {canEditMyHandicap && group.players.length <= 3 && editingMyHandicap && (
+              <View className={`mx-4 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
+                <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+                <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
+                <TextInput
+                  className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                  placeholder="0"
+                  placeholderTextColor={t.colors.tabBarInactive}
+                  keyboardType="number-pad"
+                  maxLength={2}
+                  value={myHandicapDraft}
+                  onChangeText={setMyHandicapDraft}
+                  editable={!savingMyHandicap}
+                  autoFocus
+                />
+                <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
+                  <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                  onPress={handleSaveMyHandicap}
+                  disabled={savingMyHandicap}
+                >
+                  {savingMyHandicap
+                    ? <ActivityIndicator size="small" color="white" />
+                    : <Text className="text-white text-xs font-semibold">Save</Text>
+                  }
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
@@ -1691,6 +1691,54 @@ export default function ScorecardScreen() {
                 </Text>
               </View>
             </View>
+
+            {/* C.H. edit affordance — at the bottom when 4+ players (inline would crowd the pills row) */}
+            {canEditMyHandicap && group.players.length >= 4 && (
+              editingMyHandicap ? (
+                <View className={`flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
+                  <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
+                  <TextInput
+                    className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
+                    placeholder="0"
+                    placeholderTextColor={t.colors.tabBarInactive}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    value={myHandicapDraft}
+                    onChangeText={setMyHandicapDraft}
+                    editable={!savingMyHandicap}
+                    autoFocus
+                  />
+                  <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
+                    <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                    onPress={handleSaveMyHandicap}
+                    disabled={savingMyHandicap}
+                  >
+                    {savingMyHandicap
+                      ? <ActivityIndicator size="small" color="white" />
+                      : <Text className="text-white text-xs font-semibold">Save</Text>
+                    }
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  className={`flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}
+                  onPress={() => {
+                    setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
+                    setEditingMyHandicap(true);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
+                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
+                  <Text className={`text-sm font-bold ${t.textPrimary}`}>{myPlayer!.course_handicap}</Text>
+                  <Ionicons name="pencil-outline" size={13} color={t.colors.tabBarInactive} />
+                </TouchableOpacity>
+              )
+            )}
 
           </View>
         )}

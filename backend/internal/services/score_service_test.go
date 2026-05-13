@@ -161,6 +161,57 @@ func TestScoreService_SetHandicap_DifferentGroupForbidden(t *testing.T) {
 	assert.True(t, errors.Is(err, services.ErrScoreForbidden))
 }
 
+// TestScoreService_SetHandicap_RecalculatesNetScores verifies that changing a
+// player's course_handicap back-fills net_score on all existing score rows so
+// the leaderboard reflects the updated handicap without requiring re-entry.
+// Regression test for: handicap edit mid-round left stale net scores.
+func TestScoreService_SetHandicap_RecalculatesNetScores(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "Recalc Course")
+	seedHoles(t, db, tee.ID) // SI=hole_number (hole 1 = hardest)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	// Set initial handicap=8 and enter two scores (hole 1 SI=1, hole 9 SI=9).
+	// With handicap 8: strokes on SI 1–8, so hole 1 gets 1 stroke, hole 9 gets 0.
+	require.NoError(t, db.Model(&rp).Update("course_handicap", 8).Error)
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", []services.ScoreInput{
+		{HoleNumber: 1, GrossScore: 5}, // net = 5 - 1 = 4
+		{HoleNumber: 9, GrossScore: 5}, // net = 5 - 0 = 5
+	})
+	require.NoError(t, err)
+
+	// Verify initial net scores.
+	var before []models.Score
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).Order("hole_number").Find(&before).Error)
+	require.Len(t, before, 2)
+	assert.Equal(t, 4, before[0].NetScore, "hole 1 net before handicap change")
+	assert.Equal(t, 5, before[1].NetScore, "hole 9 net before handicap change")
+
+	// Change handicap from 8 → 10. Now SI 1–10 each get a stroke.
+	// hole 1 (SI=1): net = 5 - 1 = 4 (unchanged)
+	// hole 9 (SI=9): net = 5 - 1 = 4 (was 5, now recalculated)
+	err = svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", 10)
+	require.NoError(t, err)
+
+	var after []models.Score
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).Order("hole_number").Find(&after).Error)
+	require.Len(t, after, 2)
+	assert.Equal(t, 4, after[0].NetScore, "hole 1 net after handicap change")
+	assert.Equal(t, 4, after[1].NetScore, "hole 9 net after handicap change — must update")
+}
+
 // ─── UpsertScores ─────────────────────────────────────────────────────────────
 
 // TestScoreService_UpsertScores_Success verifies that scores are written with

@@ -1,11 +1,11 @@
 // stores/themeStore.ts
 // Zustand store that manages the active theme and persists the user's selection
-// across app restarts using expo-secure-store.
+// across app restarts.
 //
-// Why Zustand persist + SecureStore?
+// Why Zustand persist + platformStorage?
 //   - `persist` middleware adds automatic save/load around the store state.
-//   - expo-secure-store is an encrypted key-value store that survives app restarts.
-//     It's the same adapter already used for Supabase session tokens, so no new native module needed.
+//   - platformStorage uses expo-secure-store on native (encrypted) and localStorage
+//     on web (plaintext — theme preference is not sensitive data).
 //   - Only `themeName` (a short string like "dark") is persisted — the full Theme object
 //     is re-derived at runtime from THEMES[themeName], keeping stored data compact.
 //
@@ -16,29 +16,29 @@
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import * as SecureStore from "expo-secure-store";
+import { platformStorage } from "@/utils/platformStorage";
 import { Theme, ThemeName, THEMES } from "@/themes";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ThemeState {
-  themeName: ThemeName; // persisted to SecureStore
+  themeName: ThemeName; // persisted via platformStorage
   theme: Theme;         // derived at runtime — NOT persisted
   setTheme: (name: ThemeName) => void;
-  _hasHydrated: boolean; // true once SecureStore read completes; false during the brief startup window
+  _hasHydrated: boolean; // true once storage read completes; false during the brief startup window
 }
 
-// ─── SecureStore adapter ──────────────────────────────────────────────────────
+// ─── Storage adapter ──────────────────────────────────────────────────────────
 // createJSONStorage expects { getItem, setItem, removeItem } with async signatures.
-// The .catch() guards handle the rare case where SecureStore is unavailable
-// (e.g. device encryption not set up) — we fall back to the default theme gracefully.
-const secureStoreAdapter = createJSONStorage(() => ({
+// The .catch() guards handle the rare case where storage is unavailable — we fall
+// back to the default theme gracefully.
+const storageAdapter = createJSONStorage(() => ({
   getItem: (key: string): Promise<string | null> =>
-    SecureStore.getItemAsync(key).catch(() => null),
+    platformStorage.getItemAsync(key).catch(() => null),
   setItem: (key: string, value: string): Promise<void> =>
-    SecureStore.setItemAsync(key, value).catch(() => {}),
+    platformStorage.setItemAsync(key, value).catch(() => {}),
   removeItem: (key: string): Promise<void> =>
-    SecureStore.deleteItemAsync(key).catch(() => {}),
+    platformStorage.deleteItemAsync(key).catch(() => {}),
 }));
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ export const useThemeStore = create<ThemeState>()(
     }),
     {
       name: "theme-storage",
-      storage: secureStoreAdapter,
+      storage: storageAdapter,
 
       // Only write themeName to storage — not the full theme object, setTheme, or _hasHydrated.
       partialize: (state) => ({ themeName: state.themeName }),

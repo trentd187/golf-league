@@ -186,7 +186,58 @@ export default function ProfileScreen() {
 
   // --- Handlers ---
 
+  // uploadAvatarBuffer: shared upload logic used by both the native and web image picker paths.
+  const uploadAvatarBuffer = async (arrayBuffer: ArrayBuffer, mimeType: string) => {
+    const fileName = `${user!.id}/avatar.jpg`;
+    const { error: uploadError } = await supabase.storage
+      .from("avatars")
+      .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
+    if (uploadError) throw uploadError;
+
+    const { data: { publicUrl } } = supabase.storage
+      .from("avatars")
+      .getPublicUrl(fileName);
+
+    // Append a cache-busting timestamp so the CDN and React Native's image cache
+    // treat each upload as a new resource.
+    const cacheBustedUrl = `${publicUrl}?t=${Date.now()}`;
+
+    // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
+    // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
+    // is user-writable only and is never touched by the OAuth flow.
+    const { error: updateError } = await supabase.auth.updateUser({
+      data: { custom_avatar_url: cacheBustedUrl },
+    });
+    if (updateError) throw updateError;
+  };
+
   const handlePickImage = async () => {
+    if (Platform.OS === "web") {
+      // Web: trigger a hidden <input type="file"> — no permission prompt needed in browsers.
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        setUploadingPhoto(true);
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          await uploadAvatarBuffer(arrayBuffer, file.type || "image/jpeg");
+          getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
+        } catch (err) {
+          getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
+            message: (err as Error)?.message,
+          });
+          Alert.alert("Upload failed", (err as Error)?.message ?? "Could not upload photo.");
+        } finally {
+          setUploadingPhoto(false);
+        }
+      };
+      input.click();
+      return;
+    }
+
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
       Alert.alert(
@@ -212,7 +263,6 @@ export default function ProfileScreen() {
 
     try {
       const mimeType = asset.mimeType ?? "image/jpeg";
-      const fileName = `${user!.id}/avatar.jpg`;
 
       // Read the file as an ArrayBuffer rather than a Blob. On Android, React Native's
       // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
@@ -221,30 +271,7 @@ export default function ProfileScreen() {
       const fileResponse = await fetch(asset.uri);
       const arrayBuffer = await fileResponse.arrayBuffer();
 
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from("avatars")
-        .getPublicUrl(fileName);
-
-      // Append a cache-busting timestamp so the CDN and React Native's image cache
-      // treat each upload as a new resource. The storage path stays the same (no
-      // orphaned files), but the URL changes on every upload, bypassing stale caches.
-      const cacheBustedUrl = `${publicUrl}?t=${Date.now()}`;
-
-      // Save to custom_avatar_url, not avatar_url. Google OAuth re-logins overwrite
-      // avatar_url with the Google profile picture on every sign-in; custom_avatar_url
-      // is user-writable only and is never touched by the OAuth flow.
-      const { error: updateError } = await supabase.auth.updateUser({
-        data: { custom_avatar_url: cacheBustedUrl },
-      });
-
-      if (updateError) throw updateError;
-
+      await uploadAvatarBuffer(arrayBuffer, mimeType);
       getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
     } catch (err) {
       setLocalPhotoUri(null);

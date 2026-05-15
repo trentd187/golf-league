@@ -23,7 +23,7 @@ import {
 } from "@tanstack/react-query";
 
 import { useEffect } from "react";
-import { AppState, AppStateStatus } from "react-native";
+import { AppState, AppStateStatus, Platform } from "react-native";
 import { Stack } from "expo-router";
 
 import { getTelemetryClient } from "@/utils/telemetry";
@@ -55,18 +55,21 @@ const queryClient = new QueryClient({
   }),
 });
 
-// Configure React Query's focus detection for React Native.
-// React Query defaults to the browser's "visibilitychange" event, which doesn't exist
-// in React Native — replace it with AppState so refetchOnWindowFocus works correctly.
-focusManager.setEventListener((handleFocus) => {
-  const subscription = AppState.addEventListener(
-    "change",
-    (state: AppStateStatus) => {
-      handleFocus(state === "active");
-    }
-  );
-  return () => subscription.remove();
-});
+// Configure React Query's focus detection for native only.
+// React Query defaults to the browser's "visibilitychange" event (correct on web).
+// On native, replace it with AppState so refetchOnWindowFocus works correctly.
+// AppState is a no-op stub in react-native-web, so we guard explicitly.
+if (Platform.OS !== "web") {
+  focusManager.setEventListener((handleFocus) => {
+    const subscription = AppState.addEventListener(
+      "change",
+      (state: AppStateStatus) => {
+        handleFocus(state === "active");
+      }
+    );
+    return () => subscription.remove();
+  });
+}
 
 // TelemetrySetup wires the Supabase JWT getter into the TelemetryClient so telemetry
 // flush requests are authenticated. Renders nothing — purely a side-effect component.
@@ -78,7 +81,9 @@ function TelemetrySetup(): null {
   }, [getToken]);
 
   // Flush queued telemetry when the app backgrounds; log when it foregrounds.
+  // AppState is native-only — on web, the browser manages its own lifecycle.
   useEffect(() => {
+    if (Platform.OS === "web") return;
     const subscription = AppState.addEventListener(
       "change",
       (state: AppStateStatus) => {

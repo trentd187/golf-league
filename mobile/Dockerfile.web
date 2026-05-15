@@ -1,0 +1,41 @@
+# mobile/Dockerfile.web
+# Two-stage build for the Expo web static export.
+#
+# Stage 1 (builder): installs dependencies and runs `expo export --platform web`,
+#   producing a static SPA in /app/dist.
+# Stage 2 (serve):   copies the /app/dist directory into nginx and serves it.
+#   nginx.conf handles SPA routing (all paths → index.html).
+#
+# EXPO_PUBLIC_* variables are baked into the JS bundle at build time.
+# Pass them as --build-arg when building locally, or as Railway build variables.
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+RUN npm install -g pnpm
+
+# Copy lockfile first so dependency installation is cached separately from source.
+COPY package.json pnpm-lock.yaml ./
+# --ignore-scripts skips the postinstall `lefthook install` step. The builder
+# stage has no git repo, so lefthook would fail. Git hooks are not needed for
+# a static web export.
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY . .
+
+ARG EXPO_PUBLIC_API_URL
+ARG EXPO_PUBLIC_SUPABASE_URL
+ARG EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
+ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
+ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+RUN npx expo export --platform web
+
+# ── Stage 2: Serve ────────────────────────────────────────────────────────────
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80

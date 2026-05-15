@@ -1,16 +1,22 @@
 // utils/supabase.ts
 // Supabase client singleton — import this wherever you need to call Supabase Auth or Storage.
 //
-// Session persistence uses AsyncStorage so the Supabase client can await reads and writes.
-// The expo-sqlite localStorage polyfill is NOT used here: its synchronous surface hides async
-// SQLite I/O, which means the PKCE code verifier write may not flush before openAuthSessionAsync
-// backgrounds the app — causing "both auth code and code verifier should be non-empty" on return.
+// Session persistence:
+//   - Native (iOS/Android): AsyncStorage so the Supabase client can await reads and writes.
+//     The expo-sqlite localStorage polyfill is NOT used: its synchronous surface hides async
+//     SQLite I/O, which means the PKCE code verifier write may not flush before
+//     openAuthSessionAsync backgrounds the app — causing "both auth code and code verifier
+//     should be non-empty" on return.
+//   - Web: undefined (Supabase defaults to window.localStorage, which is synchronous and
+//     always available).
 //
-// react-native-url-polyfill is required because @supabase/supabase-js uses the URL API internally
-// and React Native's JS environment doesn't include it natively.
+// react-native-url-polyfill is required because @supabase/supabase-js uses the URL API
+// internally and React Native's JS environment doesn't include it natively. It is a no-op
+// on web where the URL API is built in.
 
 // Must be the very first import so the URL polyfill is applied before any Supabase code runs.
 import 'react-native-url-polyfill/auto';
+import { Platform } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -61,13 +67,16 @@ export const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
   {
     auth: {
-      // AsyncStorage is async — Supabase awaits each read/write, so the PKCE code verifier
-      // is guaranteed to be persisted before the OAuth browser session opens.
-      storage: AsyncStorage,
+      // Native: AsyncStorage (async — PKCE code verifier is flushed before OAuth browser opens).
+      // Web: undefined — Supabase defaults to window.localStorage, which is always present.
+      storage: Platform.OS === 'web' ? undefined : AsyncStorage,
       autoRefreshToken: true,
       persistSession: true,
-      // Must be false in React Native — the URL scheme is not a browser URL.
-      detectSessionInUrl: false,
+      // Native: false — the custom URL scheme (golfstuffinhere://) is not a browser URL;
+      //   we extract the code manually and call exchangeCodeForSession() ourselves.
+      // Web: true — Supabase automatically detects the ?code= param on the callback page
+      //   and completes the PKCE exchange, then fires onAuthStateChange(SIGNED_IN).
+      detectSessionInUrl: Platform.OS === 'web',
       // Explicitly use PKCE so signInWithOAuth generates response_type=code.
       // Without this, Supabase JS may default to implicit flow (response_type=token),
       // which puts tokens in the URL fragment instead of a code — causing exchangeCodeForSession

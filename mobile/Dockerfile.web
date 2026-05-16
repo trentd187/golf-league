@@ -37,5 +37,7 @@ RUN npx expo export --platform web
 # ── Stage 2: Serve ────────────────────────────────────────────────────────────
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy as a template — nginx:alpine automatically runs envsubst on files in
+# /etc/nginx/templates/ at startup, substituting ${PORT} before nginx reads the config.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 80

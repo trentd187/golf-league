@@ -1,16 +1,18 @@
 // utils/api.ts
-// Thin fetch wrapper that attaches the session correlation ID to every outgoing
-// API request and captures the backend's trace ID from every response.
+// Thin fetch wrapper that attaches observability headers to every outgoing API request
+// and captures the backend's trace ID from every response.
 //
-// Why this exists:
-//   - X-Correlation-ID links a mobile session's Loki log entries with backend
-//     Tempo spans for the same request (backend's correlation middleware reads it
-//     and tags the span).
-//   - X-Trace-ID (from the backend response) is stored on the TelemetryClient so
-//     subsequent mobile log entries can reference the exact backend trace span,
-//     making it possible to jump from a Loki error directly to the Tempo trace.
+// Headers injected on every request:
+//   - traceparent (W3C Trace Context): session trace ID + per-request span ID.
+//     The backend's otelfiber middleware reads this and creates child spans under
+//     the same trace ID, linking all backend work for the session in Tempo.
+//   - X-Correlation-ID: stable session UUID for Loki log correlation (legacy;
+//     kept alongside traceparent for backwards compatibility with existing queries).
 //
-// Usage: replace all fetch(`${API_URL}/api/v1/...`) calls with apiFetch(`${API_URL}/api/v1/...`).
+// X-Trace-ID in the response is stored on TelemetryClient for reference; after
+// traceparent propagation it equals the session trace ID already present in logs.
+//
+// Usage: replace fetch(`${API_URL}/api/v1/...`) calls with apiFetch(...).
 // The returned Response is unchanged — callers still call .json() / .ok themselves.
 
 import { getTelemetryClient } from "@/utils/telemetry";
@@ -23,8 +25,9 @@ export async function apiFetch(
 ): Promise<Response> {
   const client = getTelemetryClient();
 
-  // Merge our correlation header into any headers the caller already set.
+  // Merge observability headers into any headers the caller already set.
   const headers = new Headers(init?.headers);
+  headers.set("traceparent", client.getTraceparent());
   headers.set("X-Correlation-ID", client.getSessionId());
 
   const response = await fetch(input, { ...init, headers });

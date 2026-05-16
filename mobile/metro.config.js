@@ -16,17 +16,18 @@ const { withNativeWind } = require("nativewind/metro");
 // so Metro knows where the project root is.
 const config = getDefaultConfig(__dirname);
 
-// @supabase/supabase-js v2 ships ESM code with import.meta (via @supabase/realtime-js).
+// @supabase/supabase-js v2 ships ESM with import.meta (via @supabase/realtime-js).
 // Metro skips transforming node_modules by default, so import.meta lands in the bundle
 // verbatim. Expo web exports as a classic <script> (not type="module"), which causes
 // "Cannot use 'import.meta' outside a module" at runtime.
-// Fix: prepend @supabase to the exception list so Babel transforms those packages too.
-const [defaultPattern] = config.transformer.transformIgnorePatterns ?? [];
-if (defaultPattern) {
-  config.transformer.transformIgnorePatterns = [
-    defaultPattern.replace("node_modules/(?!(", "node_modules/(?!(@supabase|"),
-  ];
-}
+//
+// Fix: set transformIgnorePatterns explicitly so Metro forces @supabase packages through
+// Babel. We hardcode the full list rather than mutating the default because the default
+// may be a RegExp (not a string) in some Metro versions, making .replace() a no-op.
+// The list covers every package Expo SDK 54 needs to transform for React Native.
+config.transformer.transformIgnorePatterns = [
+  "node_modules/(?!(@supabase|react-native|@react-native|@react-navigation|expo|@expo|nativewind|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context)/)",
+];
 
 // Wrap the config with NativeWind's Metro plugin.
 // The "input" option points to the global CSS file that contains the Tailwind directives

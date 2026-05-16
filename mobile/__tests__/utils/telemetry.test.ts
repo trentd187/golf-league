@@ -3,9 +3,11 @@
 // All tests are Tier 1 — no network or native device APIs required.
 // expo-crypto and fetch are mocked below.
 
-// Mock expo-crypto so the constructor's randomUUID() call returns a predictable value.
+// Mock expo-crypto with a valid hex UUID so traceId/spanId derivations produce
+// well-formed hex strings. The constructor calls randomUUID() twice (sessionId + traceId)
+// and getTraceparent() calls it once more (spanId); all calls return the same value here.
 jest.mock("expo-crypto", () => ({
-  randomUUID: jest.fn(() => "test-session-uuid"),
+  randomUUID: jest.fn(() => "deadbeef-dead-4bee-beef-deadbeefcafe"),
 }));
 
 // Mock the API_URL constant so flush() targets a stable URL in assertions.
@@ -60,7 +62,7 @@ describe("getTelemetryClient", () => {
 describe("TelemetryClient.getSessionId", () => {
   it("returns the UUID generated at construction", () => {
     const client = freshClient();
-    expect(client.getSessionId()).toBe("test-session-uuid");
+    expect(client.getSessionId()).toBe("deadbeef-dead-4bee-beef-deadbeefcafe");
   });
 });
 
@@ -79,6 +81,21 @@ describe("TelemetryClient.log", () => {
       client.log("info", "batch_test", `entry ${i}`);
     }
     expect(flushSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("always includes trace_id in the entry fields from the first log call", async () => {
+    const client = freshClient();
+    client.setTokenGetter(() => Promise.resolve("tok"));
+    // Log before any API response has been received — trace_id must still be present.
+    client.log("info", "startup_event", "app launched");
+    await client.flush();
+
+    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(opts.body as string) as {
+      entries: { fields: Record<string, unknown> }[];
+    };
+    expect(body.entries[0].fields.trace_id).toBeDefined();
+    expect(typeof body.entries[0].fields.trace_id).toBe("string");
   });
 });
 
@@ -119,6 +136,22 @@ describe("TelemetryClient.setTokenGetter", () => {
     client.setTokenGetter(() => Promise.resolve("tok"));
 
     expect(flushSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("TelemetryClient.getTraceparent", () => {
+  it("returns a string in W3C traceparent format (00-traceId-spanId-01)", () => {
+    const client = freshClient();
+    expect(client.getTraceparent()).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+  });
+
+  it("trace ID portion is stable across multiple calls", () => {
+    const client = freshClient();
+    const first = client.getTraceparent();
+    const second = client.getTraceparent();
+    // traceparent format: "00-{traceId}-{spanId}-01" — no dashes inside traceId or spanId,
+    // so split("-")[1] is exactly the 32-char trace ID segment.
+    expect(first.split("-")[1]).toBe(second.split("-")[1]);
   });
 });
 

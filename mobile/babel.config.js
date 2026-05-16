@@ -23,5 +23,14 @@ module.exports = function (api) {
       // into the inline StyleSheet objects that React Native actually understands.
       "nativewind/babel",
     ],
+    plugins: [
+      // @supabase/realtime-js ships ESM code that includes import.meta.url.
+      // metro.config.js forces @supabase packages through Babel; this plugin then
+      // rewrites import.meta to browser-safe equivalents so the bundle works when
+      // served as a classic <script> (Expo web export does not use type="module").
+      // @babel/plugin-syntax-import-meta (already installed) only allows parsing;
+      // this transform plugin actually rewrites the syntax.
+      "babel-plugin-transform-import-meta",
+    ],
   };
 };

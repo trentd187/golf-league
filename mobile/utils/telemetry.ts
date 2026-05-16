@@ -6,12 +6,13 @@
 // them to /api/v1/telemetry/logs using the user's Supabase JWT — the backend proxies
 // them to Loki with server-side credentials.
 //
-// Correlation with backend traces works via two fields automatically included in
-// every log entry:
-//   - correlation_id: a stable UUID generated on app launch (same value sent as
-//     X-Correlation-ID on every API request via apiFetch)
-//   - trace_id: the backend's trace ID from the most recent API response
-//     (X-Trace-ID response header, captured by apiFetch)
+// Distributed trace linking works via two mechanisms:
+//   - traceparent (W3C Trace Context): sent as a header on every API request via
+//     apiFetch. Contains the session's stable 128-bit trace ID and a per-request
+//     span ID. The backend's otelfiber middleware reads this and creates child spans
+//     under the same trace ID, so all backend work for a session shares one trace in Tempo.
+//   - trace_id / correlation_id fields: included in every log entry so Loki entries
+//     can be correlated with Tempo traces for the same session.
 
 import * as ExpoCrypto from "expo-crypto";
 
@@ -39,8 +40,14 @@ class TelemetryClient {
   // Allows joining mobile Loki entries with backend Tempo spans for the same session.
   private readonly sessionId: string;
 
+  // 128-bit trace ID for this session, formatted as 32 lowercase hex chars.
+  // Sent in the W3C traceparent header on every API request so the backend creates
+  // child spans under this trace ID — all backend work for the session shares one
+  // root trace in Tempo.
+  private readonly traceId: string;
+
   // Most recent trace ID received from the backend in an X-Trace-ID response header.
-  // Included in log entries so a Loki error can link directly to a Tempo span.
+  // After traceparent propagation this equals traceId; kept for legacy compatibility.
   private lastTraceId: string | null = null;
 
   private readonly queue: QueueEntry[] = [];
@@ -51,6 +58,8 @@ class TelemetryClient {
     // Use expo-crypto rather than the global crypto object — the global is not
     // available in all Hermes/React Native environments (e.g. older Expo Go builds).
     this.sessionId = ExpoCrypto.randomUUID();
+    // Strip dashes to produce 32 lowercase hex chars as required by W3C Trace Context.
+    this.traceId = ExpoCrypto.randomUUID().replace(/-/g, "");
   }
 
   // setTokenGetter is called from _layout.tsx after auth loads so the client
@@ -67,6 +76,15 @@ class TelemetryClient {
   // the X-Correlation-ID request header on every API call.
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  // getTraceparent returns a W3C traceparent header value for one outgoing request.
+  // The trace ID is stable for the session; the span ID is fresh per call so each
+  // request gets a unique parent span ID in the backend trace.
+  // Format: 00-{32-hex traceId}-{16-hex spanId}-01  (version-traceId-parentSpanId-sampled)
+  getTraceparent(): string {
+    const spanId = ExpoCrypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    return `00-${this.traceId}-${spanId}-01`;
   }
 
   // setLastTraceId stores the trace ID from the most recent X-Trace-ID response
@@ -91,8 +109,8 @@ class TelemetryClient {
       fields: {
         ...fields,
         correlation_id: this.sessionId,
+        trace_id: this.traceId,
         env: APP_ENV,
-        ...(this.lastTraceId ? { trace_id: this.lastTraceId } : {}),
       },
     };
 

@@ -1,0 +1,24 @@
+# mobile/Caddyfile
+# Serves the Expo web SPA and proxies API calls to the backend via Railway private networking.
+#
+# PORT is injected at runtime by Railway (or docker-compose for local dev).
+# BACKEND_PRIVATE_URL is the private Railway hostname (e.g. http://backend.railway.internal:PORT)
+# or the docker-compose service name (e.g. http://backend:8080) for local dev.
+# Caddy resolves {$VAR} substitutions from the environment at startup — no template step needed.
+
+:{$PORT}
+
+# Healthcheck — Caddy responds directly; no backend call needed.
+respond /health 200
+
+# Proxy all API traffic to the backend over the private network.
+# Caddy forwards all request/response headers by default, preserving
+# X-Correlation-ID and X-Trace-ID used by the telemetry layer.
+reverse_proxy /api/* {$BACKEND_PRIVATE_URL}
+
+# Serve the static SPA. try_files falls back to index.html so Expo Router
+# client-side routes (e.g. /events/123) load correctly on direct navigation.
+root * /srv
+encode gzip
+try_files {path} /index.html
+file_server

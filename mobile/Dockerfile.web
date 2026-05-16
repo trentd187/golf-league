@@ -3,11 +3,14 @@
 #
 # Stage 1 (builder): installs dependencies and runs `expo export --platform web`,
 #   producing a static SPA in /app/dist.
-# Stage 2 (serve):   copies the /app/dist directory into nginx and serves it.
-#   nginx.conf handles SPA routing (all paths → index.html).
+# Stage 2 (serve):   copies /app/dist into a Caddy container.
+#   Caddyfile handles SPA routing, gzip, and reverse-proxying /api/* to the backend
+#   via Railway private networking (BACKEND_PRIVATE_URL runtime env var).
 #
 # EXPO_PUBLIC_* variables are baked into the JS bundle at build time.
 # Pass them as --build-arg when building locally, or as Railway build variables.
+# EXPO_PUBLIC_API_URL should be "" (empty) so the bundle uses relative URLs that
+# Caddy intercepts and proxies to the backend — never the backend's public URL.
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
@@ -35,9 +38,8 @@ ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 RUN npx expo export --platform web
 
 # ── Stage 2: Serve ────────────────────────────────────────────────────────────
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-# Copy as a template — nginx:alpine automatically runs envsubst on files in
-# /etc/nginx/templates/ at startup, substituting ${PORT} before nginx reads the config.
-COPY nginx.conf /etc/nginx/templates/default.conf.template
-EXPOSE 80
+# caddy:alpine is Go-based with a strong security track record and native env var
+# substitution in the Caddyfile — no template processing step needed.
+FROM caddy:alpine
+COPY --from=builder /app/dist /srv
+COPY Caddyfile /etc/caddy/Caddyfile

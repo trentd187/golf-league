@@ -16,6 +16,18 @@ const { withNativeWind } = require("nativewind/metro");
 // so Metro knows where the project root is.
 const config = getDefaultConfig(__dirname);
 
+// @supabase/supabase-js v2 ships ESM code with import.meta (via @supabase/realtime-js).
+// Metro skips transforming node_modules by default, so import.meta lands in the bundle
+// verbatim. Expo web exports as a classic <script> (not type="module"), which causes
+// "Cannot use 'import.meta' outside a module" at runtime.
+// Fix: prepend @supabase to the exception list so Babel transforms those packages too.
+const [defaultPattern] = config.transformer.transformIgnorePatterns ?? [];
+if (defaultPattern) {
+  config.transformer.transformIgnorePatterns = [
+    defaultPattern.replace("node_modules/(?!(", "node_modules/(?!(@supabase|"),
+  ];
+}
+
 // Wrap the config with NativeWind's Metro plugin.
 // The "input" option points to the global CSS file that contains the Tailwind directives
 // (@tailwind base, @tailwind components, @tailwind utilities).

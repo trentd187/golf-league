@@ -5,6 +5,12 @@
 # BACKEND_PRIVATE_URL is the private Railway hostname (e.g. http://backend.railway.internal:PORT)
 # or the docker-compose service name (e.g. http://backend:8080) for local dev.
 # Caddy resolves {$VAR} substitutions from the environment at startup — no template step needed.
+#
+# IMPORTANT: use handle blocks, not flat directives. In a flat Caddyfile block Caddy compiles
+# try_files as a rewrite that runs BEFORE reverse_proxy in its internal directive ordering —
+# so /api/v1/events gets rewritten to /index.html before reverse_proxy can match it, causing
+# Caddy to serve the SPA shell instead of proxying to the backend.
+# handle blocks give "first match wins" semantics, isolating the two routing paths.
 
 :{$PORT}
 
@@ -12,13 +18,18 @@
 respond /health 200
 
 # Proxy all API traffic to the backend over the private network.
-# Caddy forwards all request/response headers by default, preserving
-# X-Correlation-ID and X-Trace-ID used by the telemetry layer.
-reverse_proxy /api/* {$BACKEND_PRIVATE_URL}
+# handle /api/* is evaluated before the catch-all handle block below, so try_files
+# never rewrites API paths to /index.html.
+handle /api/* {
+    reverse_proxy {$BACKEND_PRIVATE_URL}
+}
 
 # Serve the static SPA. try_files falls back to index.html so Expo Router
 # client-side routes (e.g. /events/123) load correctly on direct navigation.
-root * /srv
-encode gzip
-try_files {path} /index.html
-file_server
+# encode gzip applies only inside this handle block.
+handle {
+    root * /srv
+    encode gzip
+    try_files {path} /index.html
+    file_server
+}

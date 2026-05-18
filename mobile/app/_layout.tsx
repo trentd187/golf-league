@@ -80,6 +80,13 @@ function TelemetrySetup(): null {
     getTelemetryClient().setTokenGetter(() => getToken());
   }, [getToken]);
 
+  // Log a session-start event on web page load so there is baseline signal in Loki
+  // even when no errors occur. On native the AppState listener below covers this.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    getTelemetryClient().info("web.session.start", "Web session started");
+  }, []);
+
   // Flush queued telemetry when the app backgrounds; log when it foregrounds.
   // AppState is native-only — on web, the browser manages its own lifecycle.
   useEffect(() => {

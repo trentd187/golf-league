@@ -35,7 +35,10 @@ ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
 ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
-RUN npx expo export --platform web
+# --clear flushes Metro's transform cache so every Railway build produces a
+# fresh bundle. Without it, BuildKit may cache the export layer and serve
+# stale output even when babel.config.js or metro.config.js change.
+RUN npx expo export --platform web --clear
 
 # ── Stage 2: Serve ────────────────────────────────────────────────────────────
 # caddy:alpine is Go-based with a strong security track record and native env var

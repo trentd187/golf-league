@@ -38,7 +38,10 @@
     "coverageReporters": [
       "lcov",
       "text-summary"
-    ]
+    ],
+    "moduleNameMapper": {
+      "\\.css$": "<rootDir>/__mocks__/fileMock.js"
+    }
   },
   "expo": {
     "install": {

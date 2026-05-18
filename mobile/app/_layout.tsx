@@ -24,7 +24,7 @@ import {
 
 import { useEffect } from "react";
 import { AppState, AppStateStatus, Platform } from "react-native";
-import { Stack } from "expo-router";
+import { Stack, usePathname } from "expo-router";
 
 import { getTelemetryClient } from "@/utils/telemetry";
 import { initWebTracing } from "@/utils/tracing";
@@ -74,8 +74,12 @@ if (Platform.OS !== "web") {
 
 // TelemetrySetup wires the Supabase JWT getter into the TelemetryClient so telemetry
 // flush requests are authenticated. Renders nothing — purely a side-effect component.
-function TelemetrySetup(): null {
+// Exported so tests can render it in isolation without the full RootLayout tree.
+export function TelemetrySetup(): null {
   const { getToken } = useAuth();
+  // Called unconditionally — Rules of Hooks require hooks at the top level.
+  // The logging effect below guards on Platform.OS so native builds are unaffected.
+  const pathname = usePathname();
 
   useEffect(() => {
     getTelemetryClient().setTokenGetter(() => getToken());
@@ -95,6 +99,14 @@ function TelemetrySetup(): null {
     if (Platform.OS !== "web") return;
     initWebTracing();
   }, []);
+
+  // Log a Loki event on every client-side route change (and on the initial page load).
+  // This covers pages that never hit the backend — static SPA routes are otherwise
+  // invisible in Grafana because Railway has no log drain for Caddy stdout.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    getTelemetryClient().info("web.navigation", pathname);
+  }, [pathname]);
 
   // Flush queued telemetry when the app backgrounds; log when it foregrounds.
   // AppState is native-only — on web, the browser manages its own lifecycle.

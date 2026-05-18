@@ -27,7 +27,7 @@ const config = getDefaultConfig(__dirname);
 // equivalents. We hardcode the full list rather than mutating the default because the
 // default may be a RegExp (not a string) in some Metro versions, making .replace() a no-op.
 config.transformer.transformIgnorePatterns = [
-  "node_modules/(?!(@supabase|zustand|react-native|@react-native|@react-navigation|expo|@expo|nativewind|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context)/)",
+  "node_modules/(?!(@supabase|zustand|@opentelemetry|react-native|@react-native|@react-navigation|expo|@expo|nativewind|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context)/)",
 ];
 
 // Wrap the config with NativeWind's Metro plugin.

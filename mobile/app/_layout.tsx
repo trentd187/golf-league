@@ -27,6 +27,7 @@ import { AppState, AppStateStatus, Platform } from "react-native";
 import { Stack } from "expo-router";
 
 import { getTelemetryClient } from "@/utils/telemetry";
+import { initWebTracing } from "@/utils/tracing";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -85,6 +86,14 @@ function TelemetrySetup(): null {
   useEffect(() => {
     if (Platform.OS !== "web") return;
     getTelemetryClient().info("web.session.start", "Web session started");
+  }, []);
+
+  // Start the OTel browser tracer on web. Must run after the telemetry client is
+  // wired up (above) so the session-start log fires first. initWebTracing() is
+  // idempotent — safe to call on every render.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    initWebTracing();
   }, []);
 
   // Flush queued telemetry when the app backgrounds; log when it foregrounds.

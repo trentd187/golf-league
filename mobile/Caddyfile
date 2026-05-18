@@ -37,6 +37,18 @@ handle /api/* {
     reverse_proxy {$BACKEND_PRIVATE_URL}
 }
 
+# Proxy browser OTLP spans to Grafana Cloud Tempo.
+# The browser sends to /otlp/v1/traces (same origin, no CORS); Caddy forwards the
+# full path to OTLP_URL (e.g. https://otlp-gateway-prod-us-east-3.grafana.net) so
+# the final URL is OTLP_URL/otlp/v1/traces — same format the backend uses.
+# OTLP_BASIC_AUTH is computed at startup by docker-entrypoint.sh from OTLP_USER
+# and OTLP_API_KEY (same env vars as the backend service — no separate secret needed).
+handle /otlp/* {
+    reverse_proxy {$OTLP_URL} {
+        header_up Authorization "Basic {$OTLP_BASIC_AUTH}"
+    }
+}
+
 # Serve the static SPA. try_files falls back to index.html so Expo Router
 # client-side routes (e.g. /events/123) load correctly on direct navigation.
 # encode gzip applies only inside this handle block.

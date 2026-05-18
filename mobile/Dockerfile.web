@@ -46,3 +46,7 @@ RUN npx expo export --platform web --clear
 FROM caddy:alpine
 COPY --from=builder /app/dist /srv
 COPY Caddyfile /etc/caddy/Caddyfile
+# Entrypoint computes OTLP_BASIC_AUTH from OTLP_USER + OTLP_API_KEY before starting Caddy.
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT ["/docker-entrypoint.sh"]

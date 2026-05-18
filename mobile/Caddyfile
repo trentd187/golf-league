@@ -14,8 +14,21 @@
 
 :{$PORT}
 
+# Emit structured JSON access logs to stdout so Railway's log drain can forward them to Loki.
+# Captures every request Caddy handles: static files, API proxies, and edge errors (4xx from
+# Caddy itself, TLS failures) that never reach the backend and are otherwise invisible.
+log {
+    output stdout
+    format json
+}
+
 # Healthcheck — Caddy responds directly; no backend call needed.
-respond /health 200
+# log_skip suppresses the access log entry for this route; Railway polls /health every few
+# seconds and logging it adds volume without value.
+handle /health {
+    log_skip
+    respond 200
+}
 
 # Proxy all API traffic to the backend over the private network.
 # handle /api/* is evaluated before the catch-all handle block below, so try_files

@@ -291,6 +291,28 @@ export default function SignIn() {
             {inlineError ? (
               <Text className="text-red-600 text-sm text-center">{inlineError}</Text>
             ) : null}
+
+            {/* Legal notice — shown on the initial sign-in step only */}
+            {!pendingVerification && (
+              <Text className={`text-xs text-center mt-2 ${t.textTertiary}`}>
+                By continuing, you agree to our{" "}
+                <Text
+                  className="underline text-green-700"
+                  onPress={() => router.push("/terms")}
+                  accessibilityLabel="Terms of Service"
+                >
+                  Terms of Service
+                </Text>
+                {" "}and{" "}
+                <Text
+                  className="underline text-green-700"
+                  onPress={() => router.push("/privacy")}
+                  accessibilityLabel="Privacy Policy"
+                >
+                  Privacy Policy
+                </Text>
+              </Text>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

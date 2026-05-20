@@ -9,7 +9,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 
 const LAST_UPDATED = "May 19, 2026";
-const CONTACT_EMAIL = "trentd187@gmail.com";
+const CONTACT_EMAIL = "trentdaileyjunkmail@gmail.com";
 
 // Section renders a numbered heading + body block.
 function Section({ number, title, children }: { number: string; title: string; children: React.ReactNode }) {

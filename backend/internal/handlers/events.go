@@ -1,16 +1,21 @@
 // Package handlers contains HTTP route handler functions for the Golf League API.
 // This file handles all /api/v1/events routes:
 //
-//	GET    /events                        — list events (filtered by membership)
-//	POST   /events                        — create a new event
-//	GET    /events/:id                    — event detail + members list
-//	PATCH  /events/:id                    — update event name/description/dates/status
-//	DELETE /events/:id                    — delete an event (cascades)
-//	GET    /events/:id/members            — list event members
-//	POST   /events/:id/members            — add a member
-//	DELETE /events/:id/members/:userId    — remove a member
-//	GET    /events/:id/rounds             — list rounds for an event
-//	POST   /events/:id/rounds             — schedule a new round (kept here pending PR #3)
+//	GET    /events                           — list events (filtered by membership)
+//	GET    /events/public                    — list public events the caller is not in
+//	POST   /events                           — create a new event
+//	GET    /events/:id                       — event detail + members list
+//	PATCH  /events/:id                       — update event name/description/dates/status/is_public
+//	DELETE /events/:id                       — delete an event (cascades)
+//	GET    /events/:id/members              — list event members
+//	POST   /events/:id/members              — add a member
+//	DELETE /events/:id/members/:userId      — remove a member
+//	PATCH  /events/:id/members/:userId/role — promote/demote a member (organizer ↔ player)
+//	GET    /events/:id/rounds               — list rounds for an event
+//	POST   /events/:id/rounds               — schedule a new round
+//	POST   /events/:id/request-join         — submit a join request (public events)
+//	GET    /events/:id/join-requests        — list pending join requests (organizer only)
+//	PATCH  /events/:id/join-requests/:userId — approve or deny a join request
 //
 // All business logic lives in internal/services.EventService. Each handler
 // here parses HTTP input (URL params, JSON body, content-type), calls the
@@ -41,6 +46,7 @@ type EventResponse struct {
 	StartDate         *string  `json:"start_date"`
 	EndDate           *string  `json:"end_date"`
 	HandicapAllowance *float64 `json:"handicap_allowance"`
+	IsPublic          bool     `json:"is_public"`
 	CreatorName       string   `json:"creator_name"`
 	MemberCount       int64    `json:"member_count"`
 	CreatedAt         string   `json:"created_at"`
@@ -85,6 +91,7 @@ type CreateEventRequest struct {
 	StartDate         *string  `json:"start_date"`
 	EndDate           *string  `json:"end_date"`
 	HandicapAllowance *float64 `json:"handicap_allowance"`
+	IsPublic          bool     `json:"is_public"`
 }
 
 // UpdateEventRequest is the body for PATCH /api/v1/events/:id.
@@ -96,6 +103,17 @@ type UpdateEventRequest struct {
 	EndDate           *string  `json:"end_date"`
 	Status            *string  `json:"status"`
 	HandicapAllowance *float64 `json:"handicap_allowance"`
+	IsPublic          *bool    `json:"is_public"`
+}
+
+// JoinRequestActionRequest is the body for PATCH /api/v1/events/:id/join-requests/:userId.
+type JoinRequestActionRequest struct {
+	Approve bool `json:"approve"`
+}
+
+// UpdateMemberRoleRequest is the body for PATCH /api/v1/events/:id/members/:userId/role.
+type UpdateMemberRoleRequest struct {
+	Role string `json:"role"`
 }
 
 // AddMemberRequest is the body for POST /api/v1/events/:id/members.
@@ -174,16 +192,22 @@ func writeEventError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	case errors.Is(err, services.ErrMemberNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "member not found"})
+	case errors.Is(err, services.ErrJoinRequestNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "join request not found"})
 	case errors.Is(err, services.ErrEventForbidden):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
 	case errors.Is(err, services.ErrEventNotMember):
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not a member of this event"})
+	case errors.Is(err, services.ErrEventNotPublic):
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "event is not open for join requests"})
 	case errors.Is(err, services.ErrMemberAlreadyExists):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "user is already a member"})
 	case errors.Is(err, services.ErrLastOrganizer):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "cannot remove the last organizer; promote another member first",
 		})
+	case errors.Is(err, services.ErrInvalidRole):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be 'organizer' or 'player'"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
 	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
@@ -200,6 +224,7 @@ func buildEventResponse(item services.EventListItem) EventResponse {
 		StartDate:         formatOptionalDate(item.Event.StartDate),
 		EndDate:           formatOptionalDate(item.Event.EndDate),
 		HandicapAllowance: item.Event.HandicapAllowance,
+		IsPublic:          item.Event.IsPublic,
 		CreatorName:       item.Creator.DisplayName,
 		MemberCount:       item.MemberCount,
 		CreatedAt:         item.Event.CreatedAt.UTC().Format(time.RFC3339),
@@ -262,6 +287,7 @@ func CreateEvent(svc *services.EventService) fiber.Handler {
 			StartDate:         req.StartDate,
 			EndDate:           req.EndDate,
 			HandicapAllowance: req.HandicapAllowance,
+			IsPublic:          req.IsPublic,
 			CreatedBy:         userID,
 		})
 		if err != nil {
@@ -330,6 +356,7 @@ func UpdateEvent(svc *services.EventService) fiber.Handler {
 			EndDate:           req.EndDate,
 			Status:            req.Status,
 			HandicapAllowance: req.HandicapAllowance,
+			IsPublic:          req.IsPublic,
 		})
 		if err != nil {
 			return writeEventError(c, err, "event.update", "failed to update event")
@@ -476,6 +503,122 @@ func GetEventRounds(svc *services.EventService) fiber.Handler {
 			}
 		}
 		return c.JSON(out)
+	}
+}
+
+// GetPublicEvents returns a handler for GET /api/v1/events/public.
+// Returns all public events the caller is not already a member of.
+func GetPublicEvents(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, _, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		items, err := svc.ListPublic(c.UserContext(), userID)
+		if err != nil {
+			return writeEventError(c, err, "event.list_public", "failed to fetch public events")
+		}
+		out := make([]EventResponse, 0, len(items))
+		for _, item := range items {
+			out = append(out, buildEventResponse(item))
+		}
+		return c.JSON(out)
+	}
+}
+
+// RequestJoinEvent returns a handler for POST /api/v1/events/:id/request-join.
+func RequestJoinEvent(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, _, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		if err := svc.RequestJoin(c.UserContext(), eventID, userID); err != nil {
+			return writeEventError(c, err, "event.request_join", "failed to submit join request")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
+// GetJoinRequests returns a handler for GET /api/v1/events/:id/join-requests.
+// Organizer-only: returns all pending join requests.
+func GetJoinRequests(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		items, err := svc.ListJoinRequests(c.UserContext(), eventID, userID, userRole)
+		if err != nil {
+			return writeEventError(c, err, "event.list_join_requests", "failed to load join requests")
+		}
+		out := make([]MemberResponse, len(items))
+		for i, m := range items {
+			out[i] = buildMemberResponse(m)
+		}
+		return c.JSON(out)
+	}
+}
+
+// HandleJoinRequest returns a handler for PATCH /api/v1/events/:id/join-requests/:userId.
+// Body: {"approve": true|false}
+func HandleJoinRequest(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		targetUserID, err := uuid.Parse(c.Params("userId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
+		}
+		var req JoinRequestActionRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		if err := svc.HandleJoinRequest(c.UserContext(), eventID, userID, userRole, targetUserID, req.Approve); err != nil {
+			return writeEventError(c, err, "event.handle_join_request", "failed to handle join request")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
+// UpdateMemberRole returns a handler for PATCH /api/v1/events/:id/members/:userId/role.
+// Body: {"role": "organizer"|"player"}
+func UpdateMemberRole(svc *services.EventService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		eventID, ok := parseEventID(c)
+		if !ok {
+			return nil
+		}
+		targetUserID, err := uuid.Parse(c.Params("userId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
+		}
+		var req UpdateMemberRoleRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		if err := svc.UpdateMemberRole(c.UserContext(), eventID, userID, userRole, targetUserID, req.Role); err != nil {
+			return writeEventError(c, err, "event.update_member_role", "failed to update member role")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 

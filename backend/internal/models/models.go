@@ -63,6 +63,7 @@ const (
 type EventPlayerStatus string
 
 const (
+	EventPlayerStatusPending    EventPlayerStatus = "pending" // Join request awaiting organizer approval
 	EventPlayerStatusInvited    EventPlayerStatus = "invited"
 	EventPlayerStatusRegistered EventPlayerStatus = "registered"
 	EventPlayerStatusWithdrawn  EventPlayerStatus = "withdrawn"
@@ -154,6 +155,7 @@ type Event struct {
 	// HandicapAllowance is the percentage of each player's course_handicap applied when
 	// calculating net scores (e.g. 90 = 90%). NULL means full handicap (no allowance set).
 	HandicapAllowance *float64  `gorm:"type:decimal(5,2)"`
+	IsPublic          bool      `gorm:"not null;default:false"` // Public events are discoverable and joinable by any user
 	CreatedBy         uuid.UUID `gorm:"type:uuid;not null"`
 	Creator           User      `gorm:"foreignKey:CreatedBy"`
 	CreatedAt         time.Time

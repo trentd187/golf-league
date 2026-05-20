@@ -290,3 +290,114 @@ func TestGetEventRounds_InvalidEventID_BadRequest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+// ─── GetPublicEvents ─────────────────────────────────────────────────────────
+
+func TestGetPublicEvents_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, "/events/public", handlers.GetPublicEvents(nilEventSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/events/public", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// ─── RequestJoinEvent ────────────────────────────────────────────────────────
+
+func TestRequestJoinEvent_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, "/events/:id/request-join", handlers.RequestJoinEvent(nilEventSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/events/"+validUUID+"/request-join", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestRequestJoinEvent_InvalidEventID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, "/events/:id/request-join", handlers.RequestJoinEvent(nilEventSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/events/not-a-uuid/request-join", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── GetJoinRequests ─────────────────────────────────────────────────────────
+
+func TestGetJoinRequests_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, "/events/:id/join-requests", handlers.GetJoinRequests(nilEventSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/events/"+validUUID+"/join-requests", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestGetJoinRequests_InvalidEventID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodGet, "/events/:id/join-requests", handlers.GetJoinRequests(nilEventSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/events/not-a-uuid/join-requests", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── HandleJoinRequest ───────────────────────────────────────────────────────
+
+func TestHandleJoinRequest_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPatch, "/events/:id/join-requests/:userId",
+		handlers.HandleJoinRequest(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/"+validUUID+"/join-requests/"+validUUID, nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestHandleJoinRequest_InvalidEventID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/join-requests/:userId",
+		handlers.HandleJoinRequest(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/not-a-uuid/join-requests/"+validUUID, nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleJoinRequest_InvalidTargetUserID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/join-requests/:userId",
+		handlers.HandleJoinRequest(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/"+validUUID+"/join-requests/not-a-uuid", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── UpdateMemberRole ────────────────────────────────────────────────────────
+
+func TestUpdateMemberRole_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPatch, "/events/:id/members/:userId/role",
+		handlers.UpdateMemberRole(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/"+validUUID+"/members/"+validUUID+"/role", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestUpdateMemberRole_InvalidEventID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/members/:userId/role",
+		handlers.UpdateMemberRole(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/not-a-uuid/members/"+validUUID+"/role", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestUpdateMemberRole_InvalidTargetUserID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/members/:userId/role",
+		handlers.UpdateMemberRole(nilEventSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPatch, "/events/"+validUUID+"/members/not-a-uuid/role", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpdateMemberRole_InvalidRole verifies that an invalid role value is
+// rejected by the service (ErrInvalidRole → 400) before any DB access —
+// nilEventSvc() is safe because ErrInvalidRole is returned in UpdateMemberRole
+// before any DB call is made.
+func TestUpdateMemberRole_InvalidRole(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/members/:userId/role",
+		handlers.UpdateMemberRole(nilEventSvc()))
+	resp := doJSON(t, app, http.MethodPatch, "/events/"+validUUID+"/members/"+validUUID+"/role",
+		map[string]any{"role": "superadmin"})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

@@ -37,14 +37,20 @@ var (
 	ErrEventForbidden = errors.New("not authorized for this event")
 	// ErrEventNotMember — caller is not admin and not a member; cannot view detail.
 	ErrEventNotMember = errors.New("not a member of this event")
+	// ErrEventNotPublic — join request attempted on a private event.
+	ErrEventNotPublic = errors.New("event is not public")
 	// ErrUserNotFound — looking up a user (e.g. by AddMember target) missed.
 	ErrUserNotFound = errors.New("user not found")
-	// ErrMemberAlreadyExists — AddMember tried to add a user who is already a member.
+	// ErrMemberAlreadyExists — AddMember tried to add a user who is already a member or has a pending request.
 	ErrMemberAlreadyExists = errors.New("user is already a member")
 	// ErrMemberNotFound — RemoveMember target is not on the event_players list.
 	ErrMemberNotFound = errors.New("member not found")
 	// ErrLastOrganizer — cannot remove the last remaining organizer.
 	ErrLastOrganizer = errors.New("cannot remove the last organizer; promote another member first")
+	// ErrJoinRequestNotFound — no pending join request for the target user.
+	ErrJoinRequestNotFound = errors.New("join request not found")
+	// ErrInvalidRole — role string is not "organizer" or "player".
+	ErrInvalidRole = errors.New("role must be 'organizer' or 'player'")
 )
 
 // ─── Inputs and DTOs ───────────────────────────────────────────────────────────
@@ -58,6 +64,7 @@ type CreateEventInput struct {
 	StartDate         *string // optional, "" or nil = no start date
 	EndDate           *string
 	HandicapAllowance *float64 // 0..100; nil = full handicap
+	IsPublic          bool
 	CreatedBy         uuid.UUID
 }
 
@@ -75,6 +82,7 @@ type UpdateEventInput struct {
 	EndDate           *string
 	Status            *string  // "active", "completed", "cancelled"
 	HandicapAllowance *float64 // 0..100
+	IsPublic          *bool
 }
 
 // ListEventsFilters scopes a List query to a single user's view.
@@ -365,6 +373,7 @@ func (s *EventService) Create(ctx context.Context, in CreateEventInput) (EventLi
 			StartDate:         startDate,
 			EndDate:           endDate,
 			HandicapAllowance: in.HandicapAllowance,
+			IsPublic:          in.IsPublic,
 			CreatedBy:         in.CreatedBy,
 		}
 		if err := tx.Create(&event).Error; err != nil {
@@ -467,6 +476,9 @@ func (s *EventService) Update(ctx context.Context, eventID, requesterID uuid.UUI
 	allowanceChanged := in.HandicapAllowance != nil
 	if allowanceChanged {
 		event.HandicapAllowance = in.HandicapAllowance
+	}
+	if in.IsPublic != nil {
+		event.IsPublic = *in.IsPublic
 	}
 
 	if err := s.DB.WithContext(ctx).Save(&event).Error; err != nil {
@@ -590,6 +602,192 @@ func (s *EventService) RemoveMember(ctx context.Context, eventID, requesterID uu
 
 	if err := s.DB.WithContext(ctx).Delete(&player).Error; err != nil {
 		return fmt.Errorf("delete event_player: %w", err)
+	}
+	return nil
+}
+
+// ─── Public-event / join-request methods ───────────────────────────────────────
+
+// ListPublic returns all public events the requesting user is NOT already a
+// member of (any status counts as membership).
+func (s *EventService) ListPublic(ctx context.Context, requesterID uuid.UUID) ([]EventListItem, error) {
+	var events []models.Event
+	err := s.DB.WithContext(ctx).Preload("Creator").
+		Where("is_public = TRUE AND id NOT IN (?)",
+			s.DB.Model(&models.EventPlayer{}).
+				Select("event_id").
+				Where("user_id = ?", requesterID),
+		).Find(&events).Error
+	if err != nil {
+		return nil, fmt.Errorf("list public events: %w", err)
+	}
+	if len(events) == 0 {
+		return []EventListItem{}, nil
+	}
+
+	ids := make([]uuid.UUID, len(events))
+	for i, e := range events {
+		ids[i] = e.ID
+	}
+	type countRow struct {
+		EventID string
+		Count   int64
+	}
+	var rows []countRow
+	if err := s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
+		Select("event_id, COUNT(*) as count").
+		Where("event_id IN ?", ids).
+		Group("event_id").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("count public event members: %w", err)
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		counts[r.EventID] = r.Count
+	}
+
+	out := make([]EventListItem, len(events))
+	for i, e := range events {
+		out[i] = EventListItem{Event: e, Creator: e.Creator, MemberCount: counts[e.ID.String()]}
+	}
+	return out, nil
+}
+
+// RequestJoin creates a pending event_player row for the requester on a public event.
+// Returns ErrEventNotFound, ErrEventNotPublic, or ErrMemberAlreadyExists as appropriate.
+func (s *EventService) RequestJoin(ctx context.Context, eventID, requesterID uuid.UUID) error {
+	var event models.Event
+	if err := s.DB.WithContext(ctx).First(&event, "id = ?", eventID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrEventNotFound
+		}
+		return fmt.Errorf("load event: %w", err)
+	}
+	if !event.IsPublic {
+		return ErrEventNotPublic
+	}
+
+	var existing models.EventPlayer
+	dupErr := s.DB.WithContext(ctx).
+		Where("event_id = ? AND user_id = ?", eventID, requesterID).
+		First(&existing).Error
+	if dupErr == nil {
+		return ErrMemberAlreadyExists
+	}
+	if !errors.Is(dupErr, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("dup-check: %w", dupErr)
+	}
+
+	player := models.EventPlayer{
+		EventID: eventID,
+		UserID:  requesterID,
+		Role:    models.EventPlayerRolePlayer,
+		Status:  models.EventPlayerStatusPending,
+	}
+	if err := s.DB.WithContext(ctx).Create(&player).Error; err != nil {
+		return fmt.Errorf("create join request: %w", err)
+	}
+	return nil
+}
+
+// ListJoinRequests returns all pending event_players for an event. Organizer-only.
+func (s *EventService) ListJoinRequests(ctx context.Context, eventID, requesterID uuid.UUID, requesterRole string) ([]EventMemberItem, error) {
+	authorized, err := s.IsOrganizer(ctx, eventID, requesterID, requesterRole)
+	if err != nil {
+		return nil, err
+	}
+	if !authorized {
+		return nil, ErrEventForbidden
+	}
+
+	var players []models.EventPlayer
+	if err := s.DB.WithContext(ctx).Preload("User").
+		Where("event_id = ? AND status = ?", eventID, models.EventPlayerStatusPending).
+		Find(&players).Error; err != nil {
+		return nil, fmt.Errorf("list join requests: %w", err)
+	}
+	out := make([]EventMemberItem, len(players))
+	for i, p := range players {
+		out[i] = EventMemberItem{Player: p, User: p.User}
+	}
+	return out, nil
+}
+
+// HandleJoinRequest approves or denies a pending join request.
+// approve=true → set status to registered; approve=false → delete the row.
+// Returns ErrJoinRequestNotFound if there is no pending row for targetUserID.
+func (s *EventService) HandleJoinRequest(ctx context.Context, eventID, requesterID uuid.UUID, requesterRole string, targetUserID uuid.UUID, approve bool) error {
+	authorized, err := s.IsOrganizer(ctx, eventID, requesterID, requesterRole)
+	if err != nil {
+		return err
+	}
+	if !authorized {
+		return ErrEventForbidden
+	}
+
+	var player models.EventPlayer
+	err = s.DB.WithContext(ctx).
+		Where("event_id = ? AND user_id = ? AND status = ?", eventID, targetUserID, models.EventPlayerStatusPending).
+		First(&player).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrJoinRequestNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("load join request: %w", err)
+	}
+
+	if approve {
+		if err := s.DB.WithContext(ctx).Model(&player).Update("status", models.EventPlayerStatusRegistered).Error; err != nil {
+			return fmt.Errorf("approve join request: %w", err)
+		}
+	} else {
+		if err := s.DB.WithContext(ctx).Delete(&player).Error; err != nil {
+			return fmt.Errorf("deny join request: %w", err)
+		}
+	}
+	return nil
+}
+
+// UpdateMemberRole sets the role of an existing (registered) event_player.
+// Only "organizer" and "player" are valid roles. Refuses to demote the last organizer.
+func (s *EventService) UpdateMemberRole(ctx context.Context, eventID, requesterID uuid.UUID, requesterRole string, targetUserID uuid.UUID, newRole string) error {
+	if newRole != "organizer" && newRole != "player" {
+		return ErrInvalidRole
+	}
+	authorized, err := s.IsOrganizer(ctx, eventID, requesterID, requesterRole)
+	if err != nil {
+		return err
+	}
+	if !authorized {
+		return ErrEventForbidden
+	}
+
+	var player models.EventPlayer
+	err = s.DB.WithContext(ctx).
+		Where("event_id = ? AND user_id = ?", eventID, targetUserID).
+		First(&player).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrMemberNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("load member: %w", err)
+	}
+
+	// Refuse to demote if this is the only organizer.
+	if newRole == "player" && player.Role == models.EventPlayerRoleOrganizer {
+		var organizerCount int64
+		if err := s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
+			Where("event_id = ? AND role = ?", eventID, models.EventPlayerRoleOrganizer).
+			Count(&organizerCount).Error; err != nil {
+			return fmt.Errorf("count organizers: %w", err)
+		}
+		if organizerCount <= 1 {
+			return ErrLastOrganizer
+		}
+	}
+
+	if err := s.DB.WithContext(ctx).Model(&player).Update("role", newRole).Error; err != nil {
+		return fmt.Errorf("update member role: %w", err)
 	}
 	return nil
 }

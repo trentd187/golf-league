@@ -24,6 +24,7 @@ import {
   Platform,
   ScrollView,
   RefreshControl,
+  Switch,
 } from "react-native";
 
 import { useAuth } from "@/hooks/useAuth";
@@ -48,6 +49,7 @@ type EventResponse = {
   start_date: string | null; // "YYYY-MM-DD" or null
   end_date: string | null;
   handicap_allowance: number | null; // 0–100, null = full handicap
+  is_public: boolean;
   creator_name: string;
   member_count: number;
   created_at: string;
@@ -174,6 +176,7 @@ export default function EventsScreen() {
   const [newEndDate, setNewEndDate] = useState("");
   // Handicap allowance stored as a display string (e.g. "90"); converted to number on submit.
   const [newHandicapAllowance, setNewHandicapAllowance] = useState("");
+  const [newIsPublic, setNewIsPublic] = useState(false);
 
   // When start date is picked, pre-fill end date if it's still empty (saves a tap for single-day events).
   const handleStartDateChange = (value: string) => {
@@ -282,6 +285,7 @@ export default function EventsScreen() {
       description?: string;
       start_date?: string;
       end_date?: string;
+      is_public?: boolean;
       handicap_allowance?: number;
     }) => {
       const token = await getToken();
@@ -308,6 +312,7 @@ export default function EventsScreen() {
       setNewStartDate("");
       setNewEndDate("");
       setNewHandicapAllowance("");
+      setNewIsPublic(false);
     },
     onError: (err: Error) => {
       Alert.alert("Something went wrong", err.message, [{ text: "OK" }]);
@@ -337,6 +342,7 @@ export default function EventsScreen() {
       start_date: startDate,
       end_date:   endDate,
       handicap_allowance: allowanceNum,
+      is_public: newIsPublic,
     });
   };
 
@@ -348,6 +354,7 @@ export default function EventsScreen() {
     setNewStartDate("");
     setNewEndDate("");
     setNewHandicapAllowance("");
+    setNewIsPublic(false);
   };
 
   const clearFilters = () => {
@@ -363,15 +370,24 @@ export default function EventsScreen() {
         {/* Page header */}
         <View className="px-5 flex-row items-center justify-between mb-3">
           <Text className={`text-2xl font-bold ${t.textPrimary}`}>Events</Text>
-          {canCreate && (
+          <View className="flex-row items-center gap-2">
             <TouchableOpacity
-              className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
-              onPress={() => setModalVisible(true)}
+              className={`border ${t.border} rounded-xl px-3 py-2 flex-row items-center gap-1.5`}
+              onPress={() => router.push("/events/public")}
             >
-              <Ionicons name="add" size={18} color="white" />
-              <Text className="text-white font-semibold text-sm">Create</Text>
+              <Ionicons name="globe-outline" size={15} color={t.colors.tabBarInactive} />
+              <Text className={`text-xs font-semibold ${t.textSecondary}`}>Discover</Text>
             </TouchableOpacity>
-          )}
+            {canCreate && (
+              <TouchableOpacity
+                className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
+                onPress={() => setModalVisible(true)}
+              >
+                <Ionicons name="add" size={18} color="white" />
+                <Text className="text-white font-semibold text-sm">Create</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {/* Filter + Sort bar */}
@@ -746,7 +762,7 @@ export default function EventsScreen() {
               </View>
 
               {/* Handicap allowance — percentage of each player's course handicap applied to net scores */}
-              <View className="mb-8">
+              <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Handicap Allowance{" "}
                   <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional, 0–100%)</Text>
@@ -761,6 +777,27 @@ export default function EventsScreen() {
                   returnKeyType="done"
                   editable={!createEventMutation.isPending}
                 />
+              </View>
+
+              {/* Public event toggle — public events are discoverable by anyone */}
+              <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden mb-8`}>
+                <View className="flex-row items-center justify-between px-4 py-3">
+                  <View className="flex-1 mr-4">
+                    <Text className={`text-sm ${t.textPrimary}`}>Public event</Text>
+                    <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
+                      {newIsPublic
+                        ? "Anyone can discover and request to join"
+                        : "Invite-only — only members you add can join"}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={newIsPublic}
+                    onValueChange={setNewIsPublic}
+                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
+                    thumbColor="#ffffff"
+                    disabled={createEventMutation.isPending}
+                  />
+                </View>
               </View>
 
               <TouchableOpacity

@@ -52,6 +52,9 @@ export interface ScorecardSettings {
   stat_order:                  string[];
   // score_position controls whether gross score entry appears before or after stats.
   score_position:              "first" | "last";
+  // show_group_on_scorecard controls whether other players in the group are shown.
+  // When false, the scorecard always shows individual view for the current user only.
+  show_group_on_scorecard:     boolean;
 }
 
 // DEFAULT_SCORECARD_SETTINGS matches the server-side column defaults so the UI
@@ -67,6 +70,7 @@ export const DEFAULT_SCORECARD_SETTINGS: ScorecardSettings = {
   tee_shot_distance_enabled:   false,
   stat_order:                  ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
   score_position:              "last",
+  show_group_on_scorecard:     true,
 };
 
 export interface ScorecardPlayer {

@@ -671,9 +671,13 @@ export default function ScorecardScreen() {
 
   // Scramble: all players play from the same ball — individual scorecards don't apply.
   const isScramble = scorecard.scoring_format === "scramble";
-  // Single-player groups are always shown in individual view so the net column is available.
-  const effectiveViewMode = group.players.length === 1 ? "individual" : viewMode;
-  const showToggle = !isScramble && group.players.length > 1;
+  // When show_group_on_scorecard is disabled, force individual view so the user only
+  // sees their own scores regardless of group size.
+  const effectiveViewMode =
+    group.players.length === 1 || !settings.show_group_on_scorecard
+      ? "individual"
+      : viewMode;
+  const showToggle = !isScramble && group.players.length > 1 && settings.show_group_on_scorecard;
 
   // Resolve the selected player, falling back to the first player if stale.
   const selectedPlayer =

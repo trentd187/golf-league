@@ -217,6 +217,8 @@ func TestUserService_GetScorecardSettings_NoRowReturnsDefaults(t *testing.T) {
 	assert.False(t, data.TeeShotClubEnabled)
 	assert.Equal(t, "last", data.ScorePosition)
 	assert.NotEmpty(t, data.StatOrder)
+	// show_group_on_scorecard defaults to true (show group view by default).
+	assert.True(t, data.ShowGroupOnScorecard)
 }
 
 // TestUserService_UpsertScorecardSettings_SavesAndReturns verifies that settings
@@ -253,4 +255,34 @@ func TestUserService_UpsertScorecardSettings_SavesAndReturns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "first", fetched.ScorePosition)
 	assert.Equal(t, []string{"gir", "putts", "fir"}, fetched.StatOrder)
+}
+
+// TestUserService_UpsertScorecardSettings_ShowGroupFalse verifies that
+// show_group_on_scorecard=false is written and re-read correctly.
+// This guards against GORM treating false as a zero value and silently
+// applying the column default (true) via an ORM-level INSERT — the raw SQL
+// upsert path must explicitly write the false value.
+func TestUserService_UpsertScorecardSettings_ShowGroupFalse(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+
+	user := seedUser(t, db, "sc_group_false")
+
+	in := services.ScorecardSettingsInput{
+		FIREnabled:           true,
+		GIREnabled:           true,
+		PuttsEnabled:         true,
+		StatOrder:            []string{"fir", "gir", "putts"},
+		ScorePosition:        "last",
+		ShowGroupOnScorecard: false,
+	}
+
+	data, err := svc.UpsertScorecardSettings(context.Background(), user.ID, in)
+	require.NoError(t, err)
+	assert.False(t, data.ShowGroupOnScorecard)
+
+	// Re-fetch to confirm false survived the round-trip through the DB.
+	fetched, err := svc.GetScorecardSettings(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.False(t, fetched.ShowGroupOnScorecard)
 }

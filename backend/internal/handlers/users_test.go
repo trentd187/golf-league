@@ -242,6 +242,7 @@ func TestUpsertScorecardSettings_InvalidScorePosition(t *testing.T) {
 		"approach_yds_enabled":        true,
 		"tee_shot_club_enabled":       false,
 		"tee_shot_distance_enabled":   false,
+		"show_group_on_scorecard":     true,
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

@@ -290,6 +290,7 @@ type ScorecardSettings struct {
 	TeeShotDistanceEnabled   bool      `gorm:"not null;default:false"`
 	StatOrder                string    `gorm:"not null;default:'fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance'"`
 	ScorePosition            string    `gorm:"not null;default:'last'"`
+	ShowGroupOnScorecard     bool      `gorm:"not null;default:true"`
 	UpdatedAt                time.Time `gorm:"autoUpdateTime"`
 }
 

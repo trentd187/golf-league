@@ -115,43 +115,6 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 				})
 			}
 
-			// auth_id not found — check if a row already exists for this email.
-			// This fallback handles the Clerk→Supabase auth migration: the same user has a new
-			// Supabase UUID but the same email. Rather than inserting a duplicate row (which would
-			// violate the UNIQUE constraint on email), we adopt the existing row by writing the
-			// new auth_id.
-			// TODO: remove this fallback once all production users have re-authenticated via
-			// Supabase and no Clerk UUIDs remain in the auth_id column.
-			if email != "" {
-				var existing models.User
-				emailResult := db.Where("email = ?", email).First(&existing)
-				if emailResult.Error == nil {
-					// Existing row found — migrate it to the new Supabase auth_id.
-					migrationUpdates := map[string]interface{}{"auth_id": authID}
-					if avatarURL != "" {
-						migrationUpdates["avatar_url"] = avatarURL
-					}
-					if err := db.Model(&existing).Updates(migrationUpdates).Error; err != nil {
-						c.Locals("error_detail", "auth.migrate_auth_id: "+err.Error())
-						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-							"error": "failed to migrate user auth_id",
-						})
-					}
-					existing.AuthID = &authID
-					if avatarURL != "" {
-						existing.AvatarURL = &avatarURL
-					}
-					user = existing
-					// Skip the create block below.
-					goto userResolved
-				} else if emailResult.Error != gorm.ErrRecordNotFound {
-					c.Locals("error_detail", "auth.email_lookup: "+emailResult.Error.Error())
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-						"error": "database error",
-					})
-				}
-			}
-
 			// Truly new user — create the record. Role defaults to "user".
 			// Try to get the display name from OAuth user_metadata (e.g. Google sets full_name).
 			{
@@ -200,8 +163,6 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 				db.Model(&user).Updates(updates)
 			}
 		}
-
-	userResolved:
 
 		// Store user info in request-scoped locals for downstream handlers.
 		c.Locals("userID", user.ID.String())

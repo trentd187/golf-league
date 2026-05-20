@@ -2,6 +2,7 @@
 // Terms of Service screen — accessible at /terms on web and as a native stack screen.
 // Required by Google Play and Apple App Store before publishing.
 
+/* eslint-disable react/no-unescaped-entities */
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -86,7 +87,7 @@ export default function TermsScreen() {
           <Body>
             These Terms of Service ("Terms") govern your access to and use of the Golf Stuff In
             Here mobile application and any associated website (collectively, the "Service"),
-            operated by Trent Dahlheimer ("we," "us," or "our"). By downloading, installing,
+            operated by Trent Dailey ("we," "us," or "our"). By downloading, installing,
             accessing, or using the Service, you agree to these Terms. If you do not agree, you
             must not use the Service.
           </Body>
@@ -196,7 +197,7 @@ export default function TermsScreen() {
         <Section number="8" title="Intellectual Property">
           <Body>
             The Service and all content created by us — including the design, code, graphics, and
-            branding — are owned by Trent Dahlheimer and protected by applicable copyright,
+            branding — are owned by Trent Dailey and protected by applicable copyright,
             trademark, and other intellectual property laws. You may not copy, modify, distribute,
             sell, or create derivative works of the Service or its content without prior written
             permission. "Golf Stuff In Here" and related marks are the property of Trent
@@ -248,7 +249,7 @@ export default function TermsScreen() {
         {/* ── 12. Indemnification ── */}
         <Section number="12" title="Indemnification">
           <Body>
-            You agree to indemnify, defend, and hold harmless Trent Dahlheimer and his heirs,
+            You agree to indemnify, defend, and hold harmless Trent Dailey and his heirs,
             successors, and assigns from and against any and all claims, liabilities, damages,
             losses, costs, and expenses (including reasonable attorneys' fees) arising from: (a)
             your use of the Service; (b) your violation of these Terms; (c) your violation of any
@@ -305,7 +306,7 @@ export default function TermsScreen() {
         <Section number="17" title="Entire Agreement">
           <Body>
             These Terms, together with our Privacy Policy, constitute the entire agreement between
-            you and Trent Dahlheimer regarding your use of the Service and supersede all prior
+            you and Trent Dailey regarding your use of the Service and supersede all prior
             agreements, proposals, or representations, written or oral, concerning the Service.
           </Body>
         </Section>
@@ -316,7 +317,7 @@ export default function TermsScreen() {
             If you have any questions about these Terms, please contact us:
           </Body>
           <Body>
-            Trent Dahlheimer{"\n"}
+            Trent Dailey{"\n"}
             Email: {CONTACT_EMAIL}
           </Body>
         </Section>

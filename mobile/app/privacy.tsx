@@ -2,6 +2,7 @@
 // Privacy Policy screen — accessible at /privacy on web and as a native stack screen.
 // Required by Google Play and Apple App Store before publishing.
 
+/* eslint-disable react/no-unescaped-entities */
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -73,7 +74,7 @@ export default function PrivacyScreen() {
         <Text className={`text-xs mb-6 ${t.textTertiary}`}>Last Updated: {LAST_UPDATED}</Text>
 
         <Body>
-          This Privacy Policy explains how Trent Dahlheimer ("we," "us," or "our") collects,
+          This Privacy Policy explains how Trent Dailey ("we," "us," or "our") collects,
           uses, shares, and protects information about you when you use Golf Stuff In Here (the
           "Service"). By using the Service, you agree to the practices described in this policy.
         </Body>
@@ -335,7 +336,7 @@ export default function PrivacyScreen() {
             our data practices, please contact us:
           </Body>
           <Body>
-            Trent Dahlheimer{"\n"}
+            Trent Dailey{"\n"}
             Email: {CONTACT_EMAIL}
           </Body>
         </Section>

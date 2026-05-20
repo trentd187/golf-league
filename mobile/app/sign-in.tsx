@@ -55,8 +55,27 @@ export default function SignIn() {
   const handleGoogleOAuth = async () => {
     try {
       setLoading(true);
-      // Always use the custom scheme so the redirect URL is the same across Expo Go,
-      // development builds, and production builds. Without { scheme }, development
+
+      if (Platform.OS === "web") {
+        // On web, signInWithOAuth redirects the browser tab to Google. The browser then
+        // redirects back to /oauth-callback where Supabase (detectSessionInUrl: true)
+        // automatically exchanges the code and fires onAuthStateChange(SIGNED_IN).
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: window.location.origin + "/oauth-callback" },
+        });
+        if (error) {
+          getTelemetryClient().warn("auth.google.error", "Google OAuth sign-in failed", {
+            message: error.message,
+          });
+          showErrorAlert(error.message);
+        }
+        // Browser navigates away — no further code runs in this function.
+        return;
+      }
+
+      // Native flow — always use the custom scheme so the redirect URL is the same across
+      // Expo Go, development builds, and production builds. Without { scheme }, development
       // builds return "exp+golfstuffinhere://expo-development-client" which Supabase
       // doesn't recognise, causing it to fall back to the project's Site URL (localhost:3000).
       //
@@ -272,6 +291,28 @@ export default function SignIn() {
             {inlineError ? (
               <Text className="text-red-600 text-sm text-center">{inlineError}</Text>
             ) : null}
+
+            {/* Legal notice — shown on the initial sign-in step only */}
+            {!pendingVerification && (
+              <Text className={`text-xs text-center mt-2 ${t.textTertiary}`}>
+                By continuing, you agree to our{" "}
+                <Text
+                  className="underline text-green-700"
+                  onPress={() => router.push("/terms")}
+                  accessibilityLabel="Terms of Service"
+                >
+                  Terms of Service
+                </Text>
+                {" "}and{" "}
+                <Text
+                  className="underline text-green-700"
+                  onPress={() => router.push("/privacy")}
+                  accessibilityLabel="Privacy Policy"
+                >
+                  Privacy Policy
+                </Text>
+              </Text>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

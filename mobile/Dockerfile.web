@@ -1,0 +1,52 @@
+# mobile/Dockerfile.web
+# Two-stage build for the Expo web static export.
+#
+# Stage 1 (builder): installs dependencies and runs `expo export --platform web`,
+#   producing a static SPA in /app/dist.
+# Stage 2 (serve):   copies /app/dist into a Caddy container.
+#   Caddyfile handles SPA routing, gzip, and reverse-proxying /api/* to the backend
+#   via Railway private networking (BACKEND_PRIVATE_URL runtime env var).
+#
+# EXPO_PUBLIC_* variables are baked into the JS bundle at build time.
+# Pass them as --build-arg when building locally, or as Railway build variables.
+# EXPO_PUBLIC_API_URL should be "" (empty) so the bundle uses relative URLs that
+# Caddy intercepts and proxies to the backend — never the backend's public URL.
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+RUN npm install -g pnpm
+
+# Copy lockfile first so dependency installation is cached separately from source.
+COPY package.json pnpm-lock.yaml ./
+# --ignore-scripts skips the postinstall `lefthook install` step. The builder
+# stage has no git repo, so lefthook would fail. Git hooks are not needed for
+# a static web export.
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY . .
+
+ARG EXPO_PUBLIC_API_URL
+ARG EXPO_PUBLIC_SUPABASE_URL
+ARG EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
+ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
+ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+# --clear flushes Metro's transform cache so every Railway build produces a
+# fresh bundle. Without it, BuildKit may cache the export layer and serve
+# stale output even when babel.config.js or metro.config.js change.
+RUN npx expo export --platform web --clear
+
+# ── Stage 2: Serve ────────────────────────────────────────────────────────────
+# caddy:alpine is Go-based with a strong security track record and native env var
+# substitution in the Caddyfile — no template processing step needed.
+FROM caddy:alpine
+COPY --from=builder /app/dist /srv
+COPY Caddyfile /etc/caddy/Caddyfile
+# Entrypoint computes OTLP_BASIC_AUTH from OTLP_USER + OTLP_API_KEY before starting Caddy.
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT ["/docker-entrypoint.sh"]

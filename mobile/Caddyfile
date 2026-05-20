@@ -1,0 +1,60 @@
+# mobile/Caddyfile
+# Serves the Expo web SPA and proxies API calls to the backend via Railway private networking.
+#
+# PORT is injected at runtime by Railway (or docker-compose for local dev).
+# BACKEND_PRIVATE_URL is the private Railway hostname (e.g. http://backend.railway.internal:PORT)
+# or the docker-compose service name (e.g. http://backend:8080) for local dev.
+# Caddy resolves {$VAR} substitutions from the environment at startup — no template step needed.
+#
+# IMPORTANT: use handle blocks, not flat directives. In a flat Caddyfile block Caddy compiles
+# try_files as a rewrite that runs BEFORE reverse_proxy in its internal directive ordering —
+# so /api/v1/events gets rewritten to /index.html before reverse_proxy can match it, causing
+# Caddy to serve the SPA shell instead of proxying to the backend.
+# handle blocks give "first match wins" semantics, isolating the two routing paths.
+
+:{$PORT}
+
+# Emit structured JSON access logs to stdout so Railway's log drain can forward them to Loki.
+# Captures every request Caddy handles: static files, API proxies, and edge errors (4xx from
+# Caddy itself, TLS failures) that never reach the backend and are otherwise invisible.
+log {
+    output stdout
+    format json
+}
+
+# Healthcheck — Caddy responds directly; no backend call needed.
+# log_skip suppresses the access log entry for this route; Railway polls /health every few
+# seconds and logging it adds volume without value.
+handle /health {
+    log_skip
+    respond 200
+}
+
+# Proxy all API traffic to the backend over the private network.
+# handle /api/* is evaluated before the catch-all handle block below, so try_files
+# never rewrites API paths to /index.html.
+handle /api/* {
+    reverse_proxy {$BACKEND_PRIVATE_URL}
+}
+
+# Proxy browser OTLP spans to Grafana Cloud Tempo.
+# The browser sends to /otlp/v1/traces (same origin, no CORS); Caddy forwards the
+# full path to OTLP_URL (e.g. https://otlp-gateway-prod-us-east-3.grafana.net) so
+# the final URL is OTLP_URL/otlp/v1/traces — same format the backend uses.
+# OTLP_BASIC_AUTH is computed at startup by docker-entrypoint.sh from OTLP_USER
+# and OTLP_API_KEY (same env vars as the backend service — no separate secret needed).
+handle /otlp/* {
+    reverse_proxy {$OTLP_URL} {
+        header_up Authorization "Basic {$OTLP_BASIC_AUTH}"
+    }
+}
+
+# Serve the static SPA. try_files falls back to index.html so Expo Router
+# client-side routes (e.g. /events/123) load correctly on direct navigation.
+# encode gzip applies only inside this handle block.
+handle {
+    root * /srv
+    encode gzip
+    try_files {path} /index.html
+    file_server
+}

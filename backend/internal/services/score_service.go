@@ -382,7 +382,9 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 
 // ─── SetHandicap ──────────────────────────────────────────────────────────────
 
-// SetHandicap sets the playing handicap (course_handicap) for a single round_player.
+// SetHandicap sets the playing handicap (course_handicap) for a single round_player
+// and back-fills net_score on all existing score rows for that player so the
+// leaderboard reflects the updated handicap without requiring re-entry.
 // Caller must share a tee-time group with the target player, or be an organizer/admin.
 func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, callerID uuid.UUID, callerRole string, handicap int) error {
 	ok, err := s.canModifyScores(ctx, roundID, roundPlayerID, callerID, callerRole)
@@ -404,6 +406,37 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 	rp.CourseHandicap = &handicap
 	if err := s.DB.WithContext(ctx).Save(&rp).Error; err != nil {
 		return fmt.Errorf("save handicap: %w", err)
+	}
+
+	// Back-fill net_score for every score this player has already entered.
+	// Mirrors RecalculateEventScores but scoped to a single round_player.
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Preload("Event").First(&round, "id = ?", roundID).Error; err != nil {
+		return fmt.Errorf("load round for recalc: %w", err)
+	}
+	eff := EffectiveCourseHandicap(handicap, round.Event.HandicapAllowance)
+
+	type scoreRow struct {
+		ScoreID     uuid.UUID
+		GrossScore  int
+		StrokeIndex int
+	}
+	var rows []scoreRow
+	if err := s.DB.WithContext(ctx).Table("scores s").
+		Select("s.id as score_id, s.gross_score, h.stroke_index").
+		Joins("JOIN holes h ON h.tee_id = ? AND h.hole_number = s.hole_number", round.DefaultTeeID).
+		Where("s.round_player_id = ?", roundPlayerID).
+		Scan(&rows).Error; err != nil {
+		return fmt.Errorf("load scores for recalc: %w", err)
+	}
+
+	for _, row := range rows {
+		netScore := row.GrossScore - HandicapStrokes(eff, row.StrokeIndex)
+		if err := s.DB.WithContext(ctx).Model(&models.Score{}).
+			Where("id = ?", row.ScoreID).
+			Update("net_score", netScore).Error; err != nil {
+			return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+		}
 	}
 	return nil
 }

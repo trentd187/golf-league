@@ -1,0 +1,30 @@
+# mobile/railway.toml
+# Railway deployment configuration for the Golf League web service.
+#
+# Config file path in Railway dashboard must be set to: /mobile/railway.toml
+# Root Directory in Railway dashboard must be set to: mobile
+# This ensures the Docker build context is mobile/, so COPY . . in Dockerfile.web
+# copies mobile/ contents (not the entire repo).
+#
+# Required Railway environment variables for the web service:
+#   PORT             — injected automatically by Railway; Caddy listens on this port
+#   BACKEND_PRIVATE_URL — e.g. http://<backend-service>.railway.internal:<port>
+#                         Set via Railway dashboard → web service → Variables tab
+#   EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY — build args
+#   EXPO_PUBLIC_API_URL — must be "" (empty) so the bundle uses relative URLs
+#
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+# Dockerfile.web is a multi-stage build: Expo web export (node:20-alpine) → caddy:alpine.
+# Path is relative to Root Directory (mobile/).
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.web"
+
+[deploy]
+# Caddy listens on $PORT (Railway-injected). The /health route responds directly from Caddy.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

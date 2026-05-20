@@ -36,10 +36,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     // Ship the error to Loki so it appears in Grafana alongside the backend trace
     // for the most recent API call (trace_id is injected automatically by the client).
-    getTelemetryClient().error("react.error", error.message, {
+    const t = getTelemetryClient();
+    t.error("react.error", error.message, {
       error_name: error.name,
       component_stack: info.componentStack ?? undefined,
     });
+    // Flush immediately — render crashes often precede tab close on web, so waiting
+    // for the 30-second batch timer means the error is silently lost.
+    void t.flush();
   }
 
   render() {

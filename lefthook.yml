@@ -63,6 +63,20 @@ pre-commit:
       run: "if docker info > /dev/null 2>&1; then docker build --no-cache -t golf-league-backend-check:latest . && docker rmi golf-league-backend-check:latest; else echo 'Docker not running - skipping Docker build check'; fi"
 
     # -------------------------------------------------------------------------
+    # Web: Docker build check
+    # -------------------------------------------------------------------------
+    # Verifies the web Dockerfile (mobile/Dockerfile.web) builds successfully.
+    # Catches broken build steps and missing files before they fail in CI.
+    # Skipped if Docker is not running.
+    # -------------------------------------------------------------------------
+    web-docker-build:
+      # files: diffs against origin/main so lefthook knows which files changed.
+      # glob: hook is skipped entirely if no mobile or web Dockerfile files changed.
+      files: git diff --name-only origin/main HEAD
+      glob: "{mobile/**,mobile/Dockerfile.web,mobile/nginx.conf}"
+      run: "if docker info > /dev/null 2>&1; then docker build --no-cache -f mobile/Dockerfile.web -t golf-league-web-check:latest mobile/ && docker rmi golf-league-web-check:latest; else echo 'Docker not running - skipping web Docker build check'; fi"
+
+    # -------------------------------------------------------------------------
     # Mobile: TypeScript type-checking
     # -------------------------------------------------------------------------
     # tsc --noEmit checks all TypeScript types without emitting any files.

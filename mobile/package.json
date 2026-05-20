@@ -38,7 +38,10 @@
     "coverageReporters": [
       "lcov",
       "text-summary"
-    ]
+    ],
+    "moduleNameMapper": {
+      "\\.css$": "<rootDir>/__mocks__/fileMock.js"
+    }
   },
   "expo": {
     "install": {
@@ -55,6 +58,13 @@
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
     "@expo/vector-icons": "~15.1.1",
+    "@opentelemetry/core": "^2.7.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/instrumentation": "^0.218.0",
+    "@opentelemetry/instrumentation-document-load": "^0.63.0",
+    "@opentelemetry/instrumentation-fetch": "^0.218.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
+    "@opentelemetry/sdk-trace-web": "^2.7.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.4.4",
     "@supabase/supabase-js": "^2.104.0",
@@ -82,6 +92,7 @@
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
     "react-native-url-polyfill": "^3.0.0",
+    "react-native-web": "^0.21.2",
     "react-native-worklets": "0.7.4",
     "tailwindcss": "^3.4.0",
     "zustand": "latest"
@@ -90,6 +101,7 @@
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^29.5.14",
     "@types/react": "~19.1.17",
+    "babel-plugin-transform-import-meta": "^2.3.3",
     "eslint": "^9.39.4",
     "eslint-config-expo": "~10.0.0",
     "eslint-plugin-react-native": "^5.0.0",

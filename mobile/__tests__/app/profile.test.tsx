@@ -377,6 +377,7 @@ it("calls settings mutation when a stat toggle is switched", async () => {
     tee_shot_distance_enabled: false,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
+    show_group_on_scorecard: true,
   };
   // Return known settings for the scorecardSettings query; idle for everything else.
   mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
@@ -390,10 +391,10 @@ it("calls settings mutation when a stat toggle is switched", async () => {
   const { Switch } = require("react-native");
   const switches = UNSAFE_getAllByType(Switch);
 
-  // The first Switch rendered in the Scorecard Stats section is FIR.
-  // Toggling it off should call mutate with fir_enabled: false.
+  // switches[0] is the Group Visibility toggle; switches[1] is the first stat (FIR).
+  // Toggling FIR off should call mutate with fir_enabled: false.
   await act(async () => {
-    fireEvent(switches[0], "valueChange", false);
+    fireEvent(switches[1], "valueChange", false);
   });
 
   expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, fir_enabled: false });
@@ -468,6 +469,7 @@ it("calls settings mutation when score position pill is pressed", async () => {
     tee_shot_distance_enabled: false,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
+    show_group_on_scorecard: true,
   };
   mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
     if (opts?.queryKey?.[0] === "scorecardSettings") {
@@ -497,6 +499,7 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
     tee_shot_distance_enabled: false,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
+    show_group_on_scorecard: true,
   };
   mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
     if (opts?.queryKey?.[0] === "scorecardSettings") {
@@ -514,4 +517,66 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
     ...knownSettings,
     stat_order: ["gir", "fir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
   });
+});
+
+// ─── Group Visibility toggle ───────────────────────────────────────────────────
+
+it("renders Group Visibility section heading and description", () => {
+  const { getByText } = render(<ProfileScreen />);
+  expect(getByText("Group Visibility")).toBeTruthy();
+  expect(getByText("Show group on scorecard")).toBeTruthy();
+  expect(getByText("All players in your group are visible")).toBeTruthy();
+});
+
+it("shows solo description when show_group_on_scorecard is false", () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+    show_group_on_scorecard: false,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByText } = render(<ProfileScreen />);
+  expect(getByText("Only your own scores are shown")).toBeTruthy();
+});
+
+it("calls settings mutation when group visibility toggle is switched off", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+    show_group_on_scorecard: true,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByTestId } = render(<ProfileScreen />);
+  await act(async () => {
+    fireEvent(getByTestId("show-group-toggle"), "valueChange", false);
+  });
+  expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, show_group_on_scorecard: false });
 });

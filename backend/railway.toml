@@ -1,0 +1,26 @@
+# backend/railway.toml
+# Railway deployment configuration for the Golf League API service.
+#
+# Config file path in Railway dashboard must be set to: /backend/railway.toml
+# Root Directory should remain unset (repo root) — the build Dockerfile lives at the
+# repo root with COPY paths adjusted for a repo-root build context.
+#
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+# Force a Docker build. Railway uses Dockerfile at the repo root (default when no
+# dockerfilePath is specified). The root Dockerfile has COPY paths adjusted for the
+# repo-root build context. See backend/Dockerfile for the local docker-compose equivalent.
+builder = "DOCKERFILE"
+
+[deploy]
+# Railway polls this HTTP endpoint after every deploy to verify the container is healthy.
+# GET /health handler (handlers/health.go) returns HTTP 200 with {"status":"ok",...}.
+# If it doesn't return 2xx within healthcheckTimeout seconds, the deploy is marked failed.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+# Restart the container automatically if it exits with a non-zero status code (i.e., crashes).
+# ON_FAILURE means Railway won't restart if we exit cleanly (e.g., on SIGTERM during a redeploy).
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

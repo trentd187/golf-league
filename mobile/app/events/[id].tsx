@@ -28,6 +28,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Switch,
 } from "react-native";
 
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -83,6 +84,7 @@ type EventDetail = {
   start_date: string | null;
   end_date: string | null;
   handicap_allowance: number | null; // 0–100; null = full handicap
+  is_public: boolean;
   creator_name: string;
   member_count: number;
   created_at: string;
@@ -146,7 +148,7 @@ export default function EventDetailScreen() {
   const [scheduleRoundModalVisible, setScheduleRoundModalVisible] = useState(false);
 
   // --- Tab state ---
-  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats">("members");
+  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats" | "requests">("members");
 
   // --- Edit event form state ---
   const [editName, setEditName]               = useState("");
@@ -155,6 +157,7 @@ export default function EventDetailScreen() {
   const [editEndDate, setEditEndDate]                     = useState("");
   // Handicap allowance stored as display string (e.g. "90"); converted to number on submit.
   const [editHandicapAllowance, setEditHandicapAllowance] = useState("");
+  const [editIsPublic, setEditIsPublic] = useState(false);
 
   // --- Add member search state (owned here so it resets when the modal closes) ---
   const [memberSearch, setMemberSearch] = useState("");
@@ -268,6 +271,23 @@ export default function EventDetailScreen() {
     .map((q) => q.data)
     .filter((sc): sc is Scorecard => sc !== undefined);
 
+  // Join requests — only fetched when the organizer opens the Requests tab.
+  const {
+    data: joinRequests,
+    isLoading: joinRequestsLoading,
+  } = useQuery<MemberResponse[]>({
+    queryKey: ["event", id, "join-requests"],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/join-requests`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch join requests: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!id && activeTab === "requests",
+  });
+
   // --- Derived values ---
 
   // Match by email — that's what our DB uses as the unique key.
@@ -288,6 +308,7 @@ export default function EventDetailScreen() {
       start_date?: string;
       end_date?: string;
       handicap_allowance?: number | null;
+      is_public?: boolean;
     }) => {
       const token = await getToken();
       const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
@@ -431,6 +452,51 @@ export default function EventDetailScreen() {
     },
   });
 
+  // handleJoinRequest: approve or deny a pending join request.
+  const handleJoinRequestMutation = useMutation({
+    mutationFn: async ({ userId, approve }: { userId: string; approve: boolean }) => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/join-requests/${userId}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ approve }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["event", id] });
+      queryClient.invalidateQueries({ queryKey: ["event", id, "join-requests"] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not handle request", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  // updateMemberRoleMutation: promote or demote a member between organizer and player.
+  const updateMemberRoleMutation = useMutation({
+    mutationFn: async ({ userId, role }: { userId: string; role: "organizer" | "player" }) => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/members/${userId}/role`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["event", id] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not update role", err.message, [{ text: "OK" }]);
+    },
+  });
+
   // --- Handlers ---
 
   const openEditModal = () => {
@@ -440,6 +506,7 @@ export default function EventDetailScreen() {
     setEditStartDate(apiToDisplay(event?.start_date));
     setEditEndDate(apiToDisplay(event?.end_date));
     setEditHandicapAllowance(event?.handicap_allowance != null ? String(event.handicap_allowance) : "");
+    setEditIsPublic(event?.is_public ?? false);
     setEditModalVisible(true);
   };
 
@@ -467,6 +534,7 @@ export default function EventDetailScreen() {
       start_date: displayToApi(editStartDate.trim()),
       end_date: displayToApi(editEndDate.trim()),
       handicap_allowance: allowanceVal,
+      is_public: editIsPublic,
     });
   };
 
@@ -686,6 +754,12 @@ export default function EventDetailScreen() {
           <View className="flex-row items-center gap-2 mb-3">
             <EventTypeBadge type={event.event_type} />
             <StatusChip status={event.status} />
+            {event.is_public && (
+              <View className="flex-row items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200">
+                <Ionicons name="globe-outline" size={11} color="#2563eb" />
+                <Text className="text-xs font-semibold text-blue-700">Public</Text>
+              </View>
+            )}
           </View>
 
           {event.description ? (
@@ -745,8 +819,11 @@ export default function EventDetailScreen() {
         </View>
 
         {/* ── Tab bar ────────────────────────────────────────────────────────── */}
+        {/* "Requests" tab only appears for organizers of public events */}
         <View className="flex-row gap-2 mb-5">
-          {(["members", "rounds", "leaderboard", "stats"] as const).map((tab) => {
+          {(["members", "rounds", "leaderboard", "stats",
+            ...(isOrganizer && event.is_public ? ["requests"] : []),
+          ] as const).map((tab) => {
             const isActive = activeTab === tab;
             return (
               <TouchableOpacity
@@ -754,11 +831,11 @@ export default function EventDetailScreen() {
                 className={`flex-1 rounded-full py-2 items-center border ${
                   isActive ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.border}`
                 }`}
-                onPress={() => setActiveTab(tab)}
+                onPress={() => setActiveTab(tab as typeof activeTab)}
                 activeOpacity={0.8}
               >
                 <Text className={`text-sm font-semibold ${isActive ? "text-white" : t.textSecondary}`}>
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "requests" ? "Requests" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </Text>
               </TouchableOpacity>
             );
@@ -780,29 +857,54 @@ export default function EventDetailScreen() {
             // overflow-hidden clips the border-radius on the first and last rows
             <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
               {event.members.map((member, idx) => (
-                <TouchableOpacity
+                <View
                   key={member.user_id}
                   className={`px-4 py-3 flex-row items-center gap-3 ${
                     idx < event.members.length - 1 ? `border-b ${t.divider}` : ""
                   }`}
-                  activeOpacity={0.7}
-                  onPress={() => router.push(`/users/${member.user_id}`)}
                 >
-                  <UserAvatar avatarUrl={member.avatar_url} displayName={member.display_name} size={36} />
+                  <TouchableOpacity
+                    className="flex-row items-center gap-3 flex-1 min-w-0"
+                    activeOpacity={0.7}
+                    onPress={() => router.push(`/users/${member.user_id}`)}
+                  >
+                    <UserAvatar avatarUrl={member.avatar_url} displayName={member.display_name} size={36} />
+                    <View className="flex-1 min-w-0">
+                      <Text className={`font-semibold text-sm ${t.textPrimary}`} numberOfLines={1}>
+                        {member.display_name}
+                      </Text>
+                      <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
+                        {member.email}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
 
-                  {/* min-w-0 prevents text from overflowing the flex container */}
-                  <View className="flex-1 min-w-0">
-                    <Text className={`font-semibold text-sm ${t.textPrimary}`} numberOfLines={1}>
-                      {member.display_name}
-                    </Text>
-                    <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
-                      {member.email}
-                    </Text>
-                  </View>
-
-                  {/* RoleBadge renders null for "player" — safe to always include */}
                   <RoleBadge role={member.role} />
-                </TouchableOpacity>
+
+                  {/* Promote/demote — organizers only, not for yourself */}
+                  {isOrganizer && member.email !== myEmail && (
+                    <TouchableOpacity
+                      hitSlop={8}
+                      onPress={() => {
+                        const newRole = member.role === "organizer" ? "player" : "organizer";
+                        const action = newRole === "organizer" ? "Promote to organizer?" : "Remove organizer role?";
+                        const message = newRole === "organizer"
+                          ? `${member.display_name} will be able to manage this event.`
+                          : `${member.display_name} will become a regular player.`;
+                        Alert.alert(action, message, [
+                          { text: "Cancel", style: "cancel" },
+                          { text: "Confirm", onPress: () => updateMemberRoleMutation.mutate({ userId: member.user_id, role: newRole }) },
+                        ]);
+                      }}
+                    >
+                      <Ionicons
+                        name={member.role === "organizer" ? "shield-checkmark-outline" : "shield-outline"}
+                        size={18}
+                        color={member.role === "organizer" ? t.colors.tabBarActive : t.colors.tabBarInactive}
+                      />
+                    </TouchableOpacity>
+                  )}
+                </View>
               ))}
             </View>
           )}
@@ -986,6 +1088,60 @@ export default function EventDetailScreen() {
           </View>
         )}
 
+        {/* ── Join Requests tab — organizers of public events only ──────────── */}
+        {activeTab === "requests" && (
+          <View className="mb-8">
+            <SectionHeader title="Join Requests" showAction={false} />
+            {joinRequestsLoading ? (
+              <ActivityIndicator color={t.colors.tabBarActive} />
+            ) : !joinRequests || joinRequests.length === 0 ? (
+              <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                <Ionicons name="person-add-outline" size={32} color={t.colors.tabBarInactive} />
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
+                  No pending join requests.
+                </Text>
+              </View>
+            ) : (
+              <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden`}>
+                {joinRequests.map((req, idx) => (
+                  <View
+                    key={req.user_id}
+                    className={`px-4 py-3 flex-row items-center gap-3 ${
+                      idx < joinRequests.length - 1 ? `border-b ${t.divider}` : ""
+                    }`}
+                  >
+                    <UserAvatar avatarUrl={req.avatar_url} displayName={req.display_name} size={36} />
+                    <View className="flex-1 min-w-0">
+                      <Text className={`font-semibold text-sm ${t.textPrimary}`} numberOfLines={1}>
+                        {req.display_name}
+                      </Text>
+                      <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
+                        {req.email}
+                      </Text>
+                    </View>
+                    <View className="flex-row gap-2">
+                      <TouchableOpacity
+                        className="px-3 py-1.5 rounded-xl bg-green-700"
+                        onPress={() => handleJoinRequestMutation.mutate({ userId: req.user_id, approve: true })}
+                        disabled={handleJoinRequestMutation.isPending}
+                      >
+                        <Text className="text-xs font-semibold text-white">Approve</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        className={`px-3 py-1.5 rounded-xl border ${t.border}`}
+                        onPress={() => handleJoinRequestMutation.mutate({ userId: req.user_id, approve: false })}
+                        disabled={handleJoinRequestMutation.isPending}
+                      >
+                        <Text className={`text-xs font-semibold ${t.textSecondary}`}>Deny</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
       </ScrollView>
 
       {/* ── Edit Event Modal ───────────────────────────────────────────────── */}
@@ -1064,7 +1220,7 @@ export default function EventDetailScreen() {
               </View>
 
               {/* Handicap allowance — leave blank to remove (full handicap) */}
-              <View className="mb-8">
+              <View className="mb-4">
                 <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
                   Handicap Allowance{" "}
                   <Text className={`normal-case font-normal ${t.textTertiary}`}>(optional, 0–100%)</Text>
@@ -1079,6 +1235,27 @@ export default function EventDetailScreen() {
                   returnKeyType="done"
                   editable={!updateEventMutation.isPending}
                 />
+              </View>
+
+              {/* Public event toggle */}
+              <View className={`${t.surface} rounded-2xl border ${t.border} overflow-hidden mb-8`}>
+                <View className="flex-row items-center justify-between px-4 py-3">
+                  <View className="flex-1 mr-4">
+                    <Text className={`text-sm ${t.textPrimary}`}>Public event</Text>
+                    <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
+                      {editIsPublic
+                        ? "Anyone can discover and request to join"
+                        : "Invite-only — only members you add can join"}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={editIsPublic}
+                    onValueChange={setEditIsPublic}
+                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
+                    thumbColor="#ffffff"
+                    disabled={updateEventMutation.isPending}
+                  />
+                </View>
               </View>
 
               <TouchableOpacity

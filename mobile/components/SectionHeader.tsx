@@ -16,8 +16,8 @@ import { useTheme } from "@/hooks/useTheme";
 
 interface SectionHeaderProps {
   title: string;
-  actionLabel: string;
-  onAction: () => void;
+  actionLabel?: string;
+  onAction?: () => void;
   showAction: boolean; // pass false to hide the action button entirely
 }
 

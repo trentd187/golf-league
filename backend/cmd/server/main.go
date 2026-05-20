@@ -126,8 +126,10 @@ func main() {
 	// Requires a valid Supabase JWT (auth middleware above), so Loki credentials stay server-side.
 	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
-	// Event routes — any authenticated user can create events (they become the organizer)
+	// Event routes — any authenticated user can create events (they become the organizer).
+	// /events/public must be registered before /events/:id so Fiber matches it literally.
 	api.Get("/events", handlers.GetEvents(eventService))
+	api.Get("/events/public", handlers.GetPublicEvents(eventService))
 	api.Post("/events", handlers.CreateEvent(eventService))
 
 	api.Get("/events/:id", handlers.GetEvent(eventService))
@@ -137,9 +139,14 @@ func main() {
 	api.Get("/events/:id/members", handlers.GetEventMembers(eventService))
 	api.Post("/events/:id/members", handlers.AddEventMember(eventService))
 	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(eventService))
+	api.Patch("/events/:id/members/:userId/role", handlers.UpdateMemberRole(eventService))
 
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
 	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(roundService))
+
+	api.Post("/events/:id/request-join", handlers.RequestJoinEvent(eventService))
+	api.Get("/events/:id/join-requests", handlers.GetJoinRequests(eventService))
+	api.Patch("/events/:id/join-requests/:userId", handlers.HandleJoinRequest(eventService))
 
 	// Round routes — round IDs are globally unique, so these are top-level.
 	// GET /rounds must be registered before /rounds/:roundId so Fiber's router

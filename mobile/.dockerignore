@@ -1,0 +1,13 @@
+# mobile/.dockerignore
+# Excludes files from the Docker build context for Dockerfile.web.
+#
+# Without this, COPY . . in the Dockerfile copies local node_modules (built for
+# Windows) into the Linux container, overwriting the pnpm-installed Linux binaries
+# and causing native-module crashes in the web export step.
+
+node_modules/
+.expo/
+coverage/
+dist/
+.env
+*.log

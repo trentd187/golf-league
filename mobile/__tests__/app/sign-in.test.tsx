@@ -45,8 +45,9 @@ jest.mock("expo-auth-session", () => ({
 }));
 
 const mockReplace = jest.fn();
+const mockPush = jest.fn();
 jest.mock("expo-router", () => ({
-  useRouter: () => ({ replace: mockReplace }),
+  useRouter: () => ({ replace: mockReplace, push: mockPush }),
 }));
 
 jest.mock("@/hooks/useTheme", () => ({
@@ -78,6 +79,39 @@ it("renders the sign-in screen without crashing", () => {
   const { getByText } = render(<SignIn />);
   expect(getByText("Continue with Google")).toBeTruthy();
   expect(getByText("Continue with Email")).toBeTruthy();
+});
+
+it("shows the Terms of Service and Privacy Policy links on the initial step", () => {
+  const { getByText } = render(<SignIn />);
+  expect(getByText("Terms of Service")).toBeTruthy();
+  expect(getByText("Privacy Policy")).toBeTruthy();
+});
+
+it("navigates to /terms when the Terms of Service link is pressed", () => {
+  const { getByLabelText } = render(<SignIn />);
+  fireEvent.press(getByLabelText("Terms of Service"));
+  expect(mockPush).toHaveBeenCalledWith("/terms");
+});
+
+it("navigates to /privacy when the Privacy Policy link is pressed", () => {
+  const { getByLabelText } = render(<SignIn />);
+  fireEvent.press(getByLabelText("Privacy Policy"));
+  expect(mockPush).toHaveBeenCalledWith("/privacy");
+});
+
+it("hides the legal links during OTP code entry", async () => {
+  (supabase.auth.signInWithOtp as jest.Mock).mockResolvedValue({ error: null });
+
+  const { getByPlaceholderText, getByText, queryByLabelText } = render(<SignIn />);
+
+  fireEvent.changeText(getByPlaceholderText("Email address"), "test@example.com");
+  await act(async () => {
+    fireEvent.press(getByText("Continue with Email"));
+  });
+  await waitFor(() => getByPlaceholderText("000000"));
+
+  expect(queryByLabelText("Terms of Service")).toBeNull();
+  expect(queryByLabelText("Privacy Policy")).toBeNull();
 });
 
 it("calls info telemetry when OTP email is sent successfully", async () => {

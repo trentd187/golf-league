@@ -115,6 +115,7 @@ type ScorecardSettingsData struct {
 	TeeShotDistanceEnabled   bool     `json:"tee_shot_distance_enabled"`
 	StatOrder                []string `json:"stat_order"`
 	ScorePosition            string   `json:"score_position"`
+	ShowGroupOnScorecard     bool     `json:"show_group_on_scorecard"`
 }
 
 // ScorecardSettingsInput is the PATCH body parsed by the handler and passed here.
@@ -129,6 +130,7 @@ type ScorecardSettingsInput struct {
 	TeeShotDistanceEnabled   bool     `json:"tee_shot_distance_enabled"`
 	StatOrder                []string `json:"stat_order"`
 	ScorePosition            string   `json:"score_position"`
+	ShowGroupOnScorecard     bool     `json:"show_group_on_scorecard"`
 }
 
 // ─── Scorecard-settings helpers ───────────────────────────────────────────────
@@ -149,6 +151,7 @@ func defaultScorecardSettings() models.ScorecardSettings {
 		TeeShotDistanceEnabled:   false,
 		StatOrder:                defaultStatOrder,
 		ScorePosition:            "last",
+		ShowGroupOnScorecard:     true,
 	}
 }
 
@@ -168,6 +171,7 @@ func toSettingsData(row models.ScorecardSettings) ScorecardSettingsData {
 		TeeShotDistanceEnabled:   row.TeeShotDistanceEnabled,
 		StatOrder:                order,
 		ScorePosition:            row.ScorePosition,
+		ShowGroupOnScorecard:     row.ShowGroupOnScorecard,
 	}
 }
 
@@ -658,8 +662,8 @@ func (s *UserService) UpsertScorecardSettings(ctx context.Context, callerID uuid
 		INSERT INTO user_scorecard_settings
 			(user_id, fir_enabled, gir_enabled, putts_enabled, first_putt_distance_enabled,
 			 putt_distance_made_enabled, approach_yds_enabled, tee_shot_club_enabled,
-			 tee_shot_distance_enabled, stat_order, score_position)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 tee_shot_distance_enabled, stat_order, score_position, show_group_on_scorecard)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (user_id) DO UPDATE SET
 			fir_enabled                 = EXCLUDED.fir_enabled,
 			gir_enabled                 = EXCLUDED.gir_enabled,
@@ -670,12 +674,13 @@ func (s *UserService) UpsertScorecardSettings(ctx context.Context, callerID uuid
 			tee_shot_club_enabled       = EXCLUDED.tee_shot_club_enabled,
 			tee_shot_distance_enabled   = EXCLUDED.tee_shot_distance_enabled,
 			stat_order                  = EXCLUDED.stat_order,
-			score_position              = EXCLUDED.score_position
+			score_position              = EXCLUDED.score_position,
+			show_group_on_scorecard     = EXCLUDED.show_group_on_scorecard
 	`,
 		callerID,
 		in.FIREnabled, in.GIREnabled, in.PuttsEnabled, in.FirstPuttDistanceEnabled,
 		in.PuttDistanceMadeEnabled, in.ApproachYdsEnabled, in.TeeShotClubEnabled,
-		in.TeeShotDistanceEnabled, statOrder, in.ScorePosition,
+		in.TeeShotDistanceEnabled, statOrder, in.ScorePosition, in.ShowGroupOnScorecard,
 	).Error
 	if err != nil {
 		return nil, fmt.Errorf("scorecard_settings.save: %w", err)
@@ -693,6 +698,7 @@ func (s *UserService) UpsertScorecardSettings(ctx context.Context, callerID uuid
 		TeeShotDistanceEnabled:   in.TeeShotDistanceEnabled,
 		StatOrder:                statOrder,
 		ScorePosition:            in.ScorePosition,
+		ShowGroupOnScorecard:     in.ShowGroupOnScorecard,
 	})
 	return &data, nil
 }

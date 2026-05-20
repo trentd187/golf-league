@@ -1,5 +1,5 @@
-// metrics.go provides the HTTPMetrics middleware that records request count
-// and latency for every HTTP request using the OTel instruments in Metrics.
+// metrics.go provides the HTTPMetrics middleware that records request count,
+// latency, and a structured access log entry for every HTTP request.
 // It uses the Fiber route pattern (e.g. "/rounds/:roundId") rather than the
 // raw URL to prevent UUID-per-series cardinality explosions on the Mimir free tier.
 package middleware
@@ -31,6 +31,26 @@ func HTTPMetrics(m *observability.Metrics) fiber.Handler {
 
 		statusCode := c.Response().StatusCode()
 		m.RecordHTTP(context.Background(), c.Method(), route, statusCode, duration)
+
+		// Emit a structured access log line for every request except /health.
+		// Railway polls /health every few seconds; logging it adds volume without value.
+		// correlation_id and user_id are appended when set by their respective middleware
+		// so each Loki line is linkable to a Tempo trace and a specific user.
+		if route != "/health" {
+			args := []any{
+				"method", c.Method(),
+				"route", route,
+				"status", statusCode,
+				"latency_ms", duration.Milliseconds(),
+			}
+			if cid, ok := c.Locals("correlationID").(string); ok && cid != "" {
+				args = append(args, "correlation_id", cid)
+			}
+			if uid, ok := c.Locals("userID").(string); ok && uid != "" {
+				args = append(args, "user_id", uid)
+			}
+			observability.LogInfo(c.UserContext(), "http.request", "HTTP request", args...)
+		}
 
 		// Log 5xx errors so they appear in Loki with full request context.
 		// Handlers that produce a 5xx store the underlying cause in c.Locals("error_detail")

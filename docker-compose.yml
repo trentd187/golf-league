@@ -24,5 +24,34 @@ services:
       db:
         condition: service_healthy
 
+  web:
+    build:
+      context: ./mobile
+      dockerfile: Dockerfile.web
+      args:
+        # Empty string so the JS bundle uses relative URLs (/api/v1/...) which
+        # Caddy intercepts and proxies to the backend — never the backend's public URL.
+        EXPO_PUBLIC_API_URL: ""
+        EXPO_PUBLIC_SUPABASE_URL: ${EXPO_PUBLIC_SUPABASE_URL}
+        EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+    environment:
+      # PORT: the port Caddy listens on (Railway injects this automatically in production).
+      PORT: "3000"
+      # BACKEND_PRIVATE_URL: Caddy proxies /api/* here. Uses the docker-compose service
+      # name so container-to-container traffic stays on the Docker bridge network.
+      # In Railway, set this to the backend's private hostname instead.
+      BACKEND_PRIVATE_URL: http://backend:8080
+      # OTLP_URL / OTLP_USER / OTLP_API_KEY: Caddy proxies /otlp/* to Grafana Cloud Tempo.
+      # Same naming as the backend service. docker-entrypoint.sh computes OTLP_BASIC_AUTH
+      # from OTLP_USER + OTLP_API_KEY at startup. Leave empty in local dev — span exports
+      # fail silently and the app continues to work.
+      OTLP_URL: ${OTLP_URL:-}
+      OTLP_USER: ${OTLP_USER:-}
+      OTLP_API_KEY: ${OTLP_API_KEY:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:

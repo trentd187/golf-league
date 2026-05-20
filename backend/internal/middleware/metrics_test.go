@@ -98,3 +98,49 @@ func TestHTTPMetrics_500_WithErrorDetail(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
+
+// TestHTTPMetrics_AccessLog_HealthExcluded verifies that /health requests do not
+// trigger the http.request log path (no panic = guard is in place).
+func TestHTTPMetrics_AccessLog_HealthExcluded(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(middleware.HTTPMetrics(&observability.Metrics{}))
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	resp, err := app.Test(req, -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestHTTPMetrics_AccessLog_WithCorrelationAndUser verifies that correlation_id and
+// user_id locals are appended to the http.request log args without panicking.
+func TestHTTPMetrics_AccessLog_WithCorrelationAndUser(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(middleware.HTTPMetrics(&observability.Metrics{}))
+	app.Get("/api/v1/events", func(c *fiber.Ctx) error {
+		c.Locals("correlationID", "550e8400-e29b-41d4-a716-446655440000")
+		c.Locals("userID", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	resp, err := app.Test(req, -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestHTTPMetrics_AccessLog_NoLocals verifies that missing correlation_id and
+// user_id locals (e.g. unauthenticated or pre-auth requests) are handled gracefully.
+func TestHTTPMetrics_AccessLog_NoLocals(t *testing.T) {
+	app := makeMetricsApp(http.StatusUnauthorized)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	resp, err := app.Test(req, -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}

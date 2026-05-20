@@ -23,5 +23,47 @@ module.exports = function (api) {
       // into the inline StyleSheet objects that React Native actually understands.
       "nativewind/babel",
     ],
+    plugins: [
+      // @supabase/realtime-js ships ESM code that includes import.meta.url.
+      // metro.config.js forces @supabase packages through Babel; this plugin then
+      // rewrites import.meta.url to a browser-safe equivalent so the bundle works
+      // when served as a classic <script> (Expo web export does not use type="module").
+      // NOTE: this plugin only handles import.meta.url — NOT import.meta.env.
+      "babel-plugin-transform-import-meta",
+
+      // zustand v5 devtools middleware ships ESM with import.meta.env.MODE to check
+      // whether Redux DevTools should activate. babel-plugin-transform-import-meta
+      // only handles import.meta.url, so import.meta.env passes through untransformed.
+      //
+      // This inline plugin replaces every `import.meta.env` expression with
+      // `process.env`. Metro/webpack polyfills `process.env` for the browser, so
+      // `process.env.MODE` evaluates to `undefined` (no MODE env var → devtools
+      // integration is silently disabled, which is fine for web production).
+      function importMetaEnvPlugin({ types: t }) {
+        return {
+          visitor: {
+            // Match: import.meta.env (MemberExpression where object is the
+            // MetaProperty `import.meta` and property is the identifier `env`).
+            MemberExpression(path) {
+              const { object, property } = path.node;
+              if (
+                t.isMetaProperty(object) &&
+                object.meta.name === "import" &&
+                object.property.name === "meta" &&
+                t.isIdentifier(property) &&
+                property.name === "env"
+              ) {
+                path.replaceWith(
+                  t.memberExpression(
+                    t.identifier("process"),
+                    t.identifier("env")
+                  )
+                );
+              }
+            },
+          },
+        };
+      },
+    ],
   };
 };

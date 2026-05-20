@@ -576,6 +576,227 @@ func TestEventService_GetRounds_EmptyAndPopulated(t *testing.T) {
 	assert.Equal(t, 1, rounds[0].GroupCount)
 }
 
+// ─── ListPublic ───────────────────────────────────────────────────────────────
+
+func TestEventService_ListPublic_OnlyReturnsPublicEvents(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	stranger := seedUser(t, db, "stranger")
+
+	// Create one public and one private event.
+	pub, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Public League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+	_, err = svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Private League", EventType: "league", IsPublic: false, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+
+	got, err := svc.ListPublic(context.Background(), stranger.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "only the public event should be returned")
+	assert.Equal(t, pub.Event.ID, got[0].Event.ID)
+}
+
+func TestEventService_ListPublic_ExcludesAlreadyMember(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+
+	// Creator is auto-added as organizer — so they are already a member.
+	_, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Public League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+
+	got, err := svc.ListPublic(context.Background(), creator.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got, "creator is already a member and should be excluded")
+}
+
+// ─── RequestJoin ──────────────────────────────────────────────────────────────
+
+func TestEventService_RequestJoin_CreatesRow(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	requester := seedUser(t, db, "requester")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Open League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+
+	err = svc.RequestJoin(context.Background(), event.Event.ID, requester.ID)
+	require.NoError(t, err)
+
+	var player models.EventPlayer
+	err = db.Where("event_id = ? AND user_id = ?", event.Event.ID, requester.ID).First(&player).Error
+	require.NoError(t, err)
+	assert.Equal(t, models.EventPlayerStatusPending, player.Status)
+	assert.Equal(t, models.EventPlayerRolePlayer, player.Role)
+}
+
+func TestEventService_RequestJoin_PrivateEventFails(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	requester := seedUser(t, db, "requester")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Closed League", EventType: "league", IsPublic: false, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+
+	err = svc.RequestJoin(context.Background(), event.Event.ID, requester.ID)
+	assert.ErrorIs(t, err, services.ErrEventNotPublic)
+}
+
+func TestEventService_RequestJoin_AlreadyMemberFails(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Open League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+
+	// Creator is already a member — requesting join should fail.
+	err = svc.RequestJoin(context.Background(), event.Event.ID, creator.ID)
+	assert.ErrorIs(t, err, services.ErrMemberAlreadyExists)
+}
+
+// ─── ListJoinRequests ─────────────────────────────────────────────────────────
+
+func TestEventService_ListJoinRequests_NotOrganizerForbidden(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	stranger := seedUser(t, db, "stranger")
+
+	event := createEventViaService(t, svc, creator.ID, "L")
+
+	_, err := svc.ListJoinRequests(context.Background(), event.ID, stranger.ID, "user")
+	assert.ErrorIs(t, err, services.ErrEventForbidden)
+}
+
+func TestEventService_ListJoinRequests_ReturnsPending(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	requester := seedUser(t, db, "requester")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Open League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+	err = svc.RequestJoin(context.Background(), event.Event.ID, requester.ID)
+	require.NoError(t, err)
+
+	items, err := svc.ListJoinRequests(context.Background(), event.Event.ID, creator.ID, "user")
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, requester.ID, items[0].User.ID)
+	assert.Equal(t, models.EventPlayerStatusPending, items[0].Player.Status)
+}
+
+// ─── HandleJoinRequest ────────────────────────────────────────────────────────
+
+func TestEventService_HandleJoinRequest_Approve(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	requester := seedUser(t, db, "requester")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Open League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.RequestJoin(context.Background(), event.Event.ID, requester.ID))
+
+	err = svc.HandleJoinRequest(context.Background(), event.Event.ID, creator.ID, "user", requester.ID, true)
+	require.NoError(t, err)
+
+	var player models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.Event.ID, requester.ID).First(&player).Error)
+	assert.Equal(t, models.EventPlayerStatusRegistered, player.Status)
+}
+
+func TestEventService_HandleJoinRequest_Deny(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	requester := seedUser(t, db, "requester")
+
+	event, err := svc.Create(context.Background(), services.CreateEventInput{
+		Name: "Open League", EventType: "league", IsPublic: true, CreatedBy: creator.ID,
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.RequestJoin(context.Background(), event.Event.ID, requester.ID))
+
+	err = svc.HandleJoinRequest(context.Background(), event.Event.ID, creator.ID, "user", requester.ID, false)
+	require.NoError(t, err)
+
+	var count int64
+	db.Model(&models.EventPlayer{}).Where("event_id = ? AND user_id = ?", event.Event.ID, requester.ID).Count(&count)
+	assert.Zero(t, count, "denied request row should be deleted")
+}
+
+func TestEventService_HandleJoinRequest_NotFound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	stranger := seedUser(t, db, "stranger")
+	event := createEventViaService(t, svc, creator.ID, "L")
+
+	err := svc.HandleJoinRequest(context.Background(), event.ID, creator.ID, "user", stranger.ID, true)
+	assert.ErrorIs(t, err, services.ErrJoinRequestNotFound)
+}
+
+// ─── UpdateMemberRole ─────────────────────────────────────────────────────────
+
+func TestEventService_UpdateMemberRole_PromoteToOrganizer(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	member := seedUser(t, db, "member")
+	event := createEventViaService(t, svc, creator.ID, "L")
+
+	_, err := svc.AddMember(context.Background(), event.ID, creator.ID, "user", member.ID)
+	require.NoError(t, err)
+
+	err = svc.UpdateMemberRole(context.Background(), event.ID, creator.ID, "user", member.ID, "organizer")
+	require.NoError(t, err)
+
+	var player models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, member.ID).First(&player).Error)
+	assert.Equal(t, models.EventPlayerRoleOrganizer, player.Role)
+}
+
+func TestEventService_UpdateMemberRole_CannotDemoteLastOrganizer(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	event := createEventViaService(t, svc, creator.ID, "L")
+
+	// Creator is the only organizer — demoting should fail.
+	err := svc.UpdateMemberRole(context.Background(), event.ID, creator.ID, "user", creator.ID, "player")
+	assert.ErrorIs(t, err, services.ErrLastOrganizer)
+}
+
+func TestEventService_UpdateMemberRole_MemberNotFound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewEventService(db)
+	creator := seedUser(t, db, "creator")
+	event := createEventViaService(t, svc, creator.ID, "L")
+
+	err := svc.UpdateMemberRole(context.Background(), event.ID, creator.ID, "user", uuid.New(), "organizer")
+	assert.ErrorIs(t, err, services.ErrMemberNotFound)
+}
+
 // ─── Local helpers ────────────────────────────────────────────────────────────
 
 func ptrString(s string) *string    { return &s }

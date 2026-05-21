@@ -73,6 +73,12 @@ func newScoreSvc(db *gorm.DB) *services.ScoreService {
 	return services.NewScoreService(db, services.NewEventService(db))
 }
 
+// activateRound sets a round's status to "active" so non-organizer score paths are reachable.
+func activateRound(t *testing.T, db *gorm.DB, roundID uuid.UUID) {
+	t.Helper()
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", roundID).Update("status", "active").Error)
+}
+
 // ─── SetHandicap (exercises canModifyScores) ──────────────────────────────────
 
 // TestScoreService_SetHandicap_OrganizerCanSet verifies that the event organizer
@@ -128,6 +134,8 @@ func TestScoreService_SetHandicap_SameGroupCanSet(t *testing.T) {
 	group := addGroupWithPlayer(t, db, result.Round.ID, 1, rpA.ID)
 	require.NoError(t, db.Omit(clause.Associations).Create(&models.GroupPlayer{GroupID: group.ID, RoundPlayerID: rpB.ID}).Error)
 
+	activateRound(t, db, result.Round.ID)
+
 	// playerA sets handicap for playerB — same group, allowed.
 	err := svc.SetHandicap(context.Background(), result.Round.ID, rpB.ID, playerA.ID, "user", 8)
 	require.NoError(t, err)
@@ -156,6 +164,8 @@ func TestScoreService_SetHandicap_DifferentGroupForbidden(t *testing.T) {
 	rpB := addRoundPlayer(t, db, result.Round.ID, epB.ID)
 	addGroupWithPlayer(t, db, result.Round.ID, 1, rpA.ID)
 	addGroupWithPlayer(t, db, result.Round.ID, 2, rpB.ID)
+
+	activateRound(t, db, result.Round.ID)
 
 	err := svc.SetHandicap(context.Background(), result.Round.ID, rpB.ID, playerA.ID, "user", 5)
 	assert.True(t, errors.Is(err, services.ErrScoreForbidden))
@@ -307,6 +317,8 @@ func TestScoreService_UpsertScores_Forbidden(t *testing.T) {
 	addGroupWithPlayer(t, db, result.Round.ID, 1, rpOutsider.ID)
 	addGroupWithPlayer(t, db, result.Round.ID, 2, rpTarget.ID)
 
+	activateRound(t, db, result.Round.ID)
+
 	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rpTarget.ID, outsider.ID, "user",
 		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
 	assert.True(t, errors.Is(err, services.ErrScoreForbidden))
@@ -338,7 +350,7 @@ func TestScoreService_UpsertScores_CompletedRoundForbidden(t *testing.T) {
 
 	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, player.ID, "user",
 		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
-	assert.True(t, errors.Is(err, services.ErrRoundCompleted))
+	assert.True(t, errors.Is(err, services.ErrRoundNotActive))
 }
 
 // TestScoreService_SetHandicap_CompletedRoundForbidden verifies that a non-organizer
@@ -364,7 +376,34 @@ func TestScoreService_SetHandicap_CompletedRoundForbidden(t *testing.T) {
 	require.NoError(t, db.Model(&result.Round).Update("status", "completed").Error)
 
 	err := svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, player.ID, "user", 10)
-	assert.True(t, errors.Is(err, services.ErrRoundCompleted))
+	assert.True(t, errors.Is(err, services.ErrRoundNotActive))
+}
+
+// TestScoreService_UpsertScores_ScheduledRoundForbidden verifies that a non-organizer
+// in the same group cannot submit scores when the round has not yet been started.
+func TestScoreService_UpsertScores_ScheduledRoundForbidden(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	player := seedUser(t, db, "player")
+	course, tee := seedCourseWithTee(t, db, "Scheduled Scores Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+
+	ep := addEventMember(t, db, event.ID, player.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	rp := addRoundPlayer(t, db, result.Round.ID, ep.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	// Round is still "scheduled" — no activateRound call.
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, player.ID, "user",
+		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
+	assert.True(t, errors.Is(err, services.ErrRoundNotActive))
 }
 
 // TestScoreService_OrganizerCanModifyCompletedRound verifies that the round organizer

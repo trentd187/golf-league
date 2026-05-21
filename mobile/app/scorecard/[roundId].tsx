@@ -718,9 +718,9 @@ export default function ScorecardScreen() {
     !showHandicapSection &&
     (scorecard.is_organizer || selectedPlayerId === myPlayer?.round_player_id);
 
-  // Completed rounds are read-only for non-organizers. Organizers keep full write access
-  // so they can make corrections after the fact.
-  const isRoundLocked = scorecard.status === "completed" && !scorecard.is_organizer;
+  // Non-organizers can only enter scores while the round is active. Organizers retain
+  // full write access on scheduled and completed rounds for setup and corrections.
+  const isRoundLocked = scorecard.status !== "active" && !scorecard.is_organizer;
 
   // canEditPlayer returns true when the current user is allowed to mutate scores/stats
   // for a given round_player_id. Organizers can edit anyone; regular players only themselves.

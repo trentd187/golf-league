@@ -457,6 +457,47 @@ export default function RoundDetailScreen() {
     );
   };
 
+  // reactivateRoundMutation reverts the round status from "completed" → "active".
+  // Only shown to organizers when the round has been ended but needs to be reopened.
+  const reactivateRoundMutation = useMutation({
+    mutationFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "active" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed: ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["round", id] });
+      if (round?.event_id) {
+        queryClient.invalidateQueries({ queryKey: ["event", round.event_id, "rounds"] });
+      }
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not reactivate round", err.message, [{ text: "OK" }]);
+    },
+  });
+
+  const handleReactivateRound = () => {
+    Alert.alert(
+      "Reactivate Round?",
+      "This will reopen the round and allow score entry again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reactivate",
+          onPress: () => reactivateRoundMutation.mutate(),
+        },
+      ]
+    );
+  };
+
   // startRoundMutation advances the round status from "scheduled" → "active".
   // Only shown to organizers when the round hasn't started yet.
   const startRoundMutation = useMutation({
@@ -794,6 +835,27 @@ export default function RoundDetailScreen() {
                 <>
                   <Ionicons name="flag-outline" size={15} color={t.colors.tabBarInactive} />
                   <Text className={`font-medium text-sm ${t.textSecondary}`}>End Round</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* Reactivate Round button — organizer only, only when round is completed */}
+          {round.is_organizer && round.status === "completed" && (
+            <TouchableOpacity
+              className={`mt-3 flex-row items-center justify-center gap-2 rounded-xl py-2.5 border ${
+                reactivateRoundMutation.isPending ? `opacity-50 ${t.border} ${t.surface}` : `${t.border} ${t.surface}`
+              }`}
+              onPress={handleReactivateRound}
+              disabled={reactivateRoundMutation.isPending}
+              activeOpacity={0.8}
+            >
+              {reactivateRoundMutation.isPending ? (
+                <ActivityIndicator size="small" color={t.colors.tabBarInactive} />
+              ) : (
+                <>
+                  <Ionicons name="refresh-outline" size={15} color={t.colors.tabBarInactive} />
+                  <Text className={`font-medium text-sm ${t.textSecondary}`}>Reactivate Round</Text>
                 </>
               )}
             </TouchableOpacity>

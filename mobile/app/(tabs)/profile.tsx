@@ -609,18 +609,18 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* ── Group Visibility toggle ───────────────────────────────────────── */}
+          {/* ── Player Visibility toggle ──────────────────────────────────────── */}
           <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
-            Group Visibility
+            Player Visibility
           </Text>
 
           <View className={`${t.surface} rounded-2xl mb-6 border ${t.border} overflow-hidden`}>
             <View className="flex-row items-center justify-between px-4 py-3">
               <View className="flex-1 mr-4">
-                <Text className={`text-sm ${t.textPrimary}`}>Show group on scorecard</Text>
+                <Text className={`text-sm ${t.textPrimary}`}>Show other players on scorecard</Text>
                 <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
                   {settings.show_group_on_scorecard
-                    ? "All players in your group are visible"
+                    ? "Other players in your group are visible"
                     : "Only your own scores are shown"}
                 </Text>
               </View>

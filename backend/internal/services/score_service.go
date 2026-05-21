@@ -28,8 +28,8 @@ var (
 	ErrScoreForbidden = errors.New("not authorized to modify scores for this player")
 	// ErrHandicapRequired is returned when requires_handicap is true but course_handicap is unset.
 	ErrHandicapRequired = errors.New("handicap must be set before entering scores for this round")
-	// ErrRoundCompleted is returned when a non-organizer tries to modify a completed round.
-	ErrRoundCompleted = errors.New("round is completed and scores can no longer be modified")
+	// ErrRoundNotActive is returned when a non-organizer tries to modify scores on a round that is not active.
+	ErrRoundNotActive = errors.New("round is not active — scores can only be entered while the round is in progress")
 )
 
 // ─── Input types ──────────────────────────────────────────────────────────────
@@ -181,9 +181,9 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		return true, nil
 	}
 
-	// Non-organizers cannot modify scores on a completed round.
-	if round.Status == models.RoundStatusCompleted {
-		return false, ErrRoundCompleted
+	// Non-organizers can only enter scores while the round is active.
+	if round.Status != models.RoundStatusActive {
+		return false, ErrRoundNotActive
 	}
 
 	// Find which group the target player belongs to.
@@ -411,27 +411,36 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 	// Back-fill net_score for every score this player has already entered.
 	// Mirrors RecalculateEventScores but scoped to a single round_player.
 	var round models.Round
-	if err := s.DB.WithContext(ctx).Preload("Event").First(&round, "id = ?", roundID).Error; err != nil {
+	if err := s.DB.WithContext(ctx).
+		Preload("Event").
+		Preload("DefaultTee.Holes").
+		First(&round, "id = ?", roundID).Error; err != nil {
 		return fmt.Errorf("load round for recalc: %w", err)
 	}
 	eff := EffectiveCourseHandicap(handicap, round.Event.HandicapAllowance)
 
+	played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
+	siMap := NormalizeStrokeIndexes(played)
+	holeCount := len(played)
+	if holeCount == 0 {
+		holeCount = 18
+	}
+
 	type scoreRow struct {
-		ScoreID     uuid.UUID
-		GrossScore  int
-		StrokeIndex int
+		ScoreID    uuid.UUID
+		GrossScore int
+		HoleNumber int
 	}
 	var rows []scoreRow
 	if err := s.DB.WithContext(ctx).Table("scores s").
-		Select("s.id as score_id, s.gross_score, h.stroke_index").
-		Joins("JOIN holes h ON h.tee_id = ? AND h.hole_number = s.hole_number", round.DefaultTeeID).
+		Select("s.id as score_id, s.gross_score, s.hole_number").
 		Where("s.round_player_id = ?", roundPlayerID).
 		Scan(&rows).Error; err != nil {
 		return fmt.Errorf("load scores for recalc: %w", err)
 	}
 
 	for _, row := range rows {
-		netScore := row.GrossScore - HandicapStrokes(eff, row.StrokeIndex)
+		netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
 		if err := s.DB.WithContext(ctx).Model(&models.Score{}).
 			Where("id = ?", row.ScoreID).
 			Update("net_score", netScore).Error; err != nil {
@@ -478,17 +487,23 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 		return 0, ErrHandicapRequired
 	}
 
-	siByHole := make(map[int]int, len(round.DefaultTee.Holes))
-	for _, h := range round.DefaultTee.Holes {
-		siByHole[h.HoleNumber] = h.StrokeIndex
+	// courseHoleCount is used for hole_number validation (back 9 has numbers 10–18).
+	courseHoleCount := round.Course.HoleCount
+	if courseHoleCount == 0 {
+		courseHoleCount = 18
 	}
-	holeCount := round.Course.HoleCount
-	if holeCount == 0 {
-		holeCount = 18
+
+	// For handicap allocation, normalize SIs within the played subset so that
+	// a 9-hole course handicap distributes correctly across the 9 holes.
+	played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
+	siByHole := NormalizeStrokeIndexes(played)
+	handicapHoleCount := len(played)
+	if handicapHoleCount == 0 {
+		handicapHoleCount = courseHoleCount
 	}
 
 	for _, sc := range scores {
-		if sc.HoleNumber < 1 || sc.HoleNumber > holeCount {
+		if sc.HoleNumber < 1 || sc.HoleNumber > courseHoleCount {
 			return 0, &ValidationError{Field: "hole_number", Message: "hole_number must be between 1 and course hole count"}
 		}
 		if sc.GrossScore < 1 {
@@ -509,7 +524,7 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 			RoundPlayerID: roundPlayerID,
 			HoleNumber:    sc.HoleNumber,
 			GrossScore:    sc.GrossScore,
-			NetScore:      sc.GrossScore - HandicapStrokes(chandi, si),
+			NetScore:      sc.GrossScore - HandicapStrokes(chandi, si, handicapHoleCount),
 			EnteredBy:     callerID,
 		})
 	}

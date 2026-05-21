@@ -131,11 +131,13 @@ function initHandicaps(players: ScorecardPlayer[]): LocalHandicaps {
 }
 
 // handicapStrokes returns the number of strokes a player receives on a hole.
-// Mirrors the Go HandicapStrokes function in handlers/scores.go.
-// A 20-handicap player gets 2 strokes on SI 1–2 and 1 stroke on SI 3–18.
-function handicapStrokes(courseHandicap: number, strokeIndex: number): number {
-  const base = Math.floor(courseHandicap / 18);
-  const remainder = courseHandicap % 18;
+// strokeIndex must be a normalized rank within the played set (1 = hardest).
+// holeCount is the number of holes being played (9 or 18).
+// Mirrors the Go HandicapStrokes function in services/handicap.go.
+function handicapStrokes(courseHandicap: number, strokeIndex: number, holeCount: number): number {
+  if (holeCount <= 0) return 0;
+  const base = Math.floor(courseHandicap / holeCount);
+  const remainder = courseHandicap % holeCount;
   return base + (strokeIndex <= remainder ? 1 : 0);
 }
 
@@ -270,10 +272,11 @@ export default function ScorecardScreen() {
   // handicapDismissed: user tapped "Skip" in the handicap entry section.
   // Hides the section for the rest of the session even if handicaps are missing.
   const [handicapDismissed, setHandicapDismissed] = useState(false);
-  // editingMyHandicap: user tapped the pencil to correct their already-set handicap.
-  const [editingMyHandicap, setEditingMyHandicap] = useState(false);
-  const [savingMyHandicap,  setSavingMyHandicap]  = useState(false);
-  const [myHandicapDraft,   setMyHandicapDraft]   = useState("");
+  // editingHandicapFor: round_player_id of the player whose handicap is being edited,
+  // or null when not editing. Organizers can edit any player; others only themselves.
+  const [editingHandicapFor, setEditingHandicapFor] = useState<string | null>(null);
+  const [savingHandicap,     setSavingHandicap]     = useState(false);
+  const [handicapDraft,      setHandicapDraft]      = useState("");
   const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
 
   // ── Advanced stats + hole navigation state ───────────────────────────────────
@@ -598,21 +601,21 @@ export default function ScorecardScreen() {
     }
   };
 
-  // ── My handicap edit (post-entry correction for current user) ──────────────
+  // ── Handicap edit (post-entry correction — organizer: any player; others: own) ──
 
-  const handleSaveMyHandicap = async () => {
-    const myPlayer = group?.players.find((p) => p.user_id === scorecard?.caller_user_id);
-    if (!myPlayer) return;
-    const hNum = Number.parseInt(myHandicapDraft, 10);
+  const handleSaveHandicap = async () => {
+    const targetId = editingHandicapFor;
+    if (!targetId || !group) return;
+    const hNum = Number.parseInt(handicapDraft, 10);
     if (Number.isNaN(hNum) || hNum < 0) {
       Alert.alert("Invalid", "Enter a valid course handicap (0 or more).");
       return;
     }
-    setSavingMyHandicap(true);
+    setSavingHandicap(true);
     try {
       const token = await getToken();
       const res = await fetch(
-        `${API_URL}/api/v1/rounds/${roundId}/players/${myPlayer.round_player_id}/handicap`,
+        `${API_URL}/api/v1/rounds/${roundId}/players/${targetId}/handicap`,
         {
           method:  "PUT",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -620,7 +623,7 @@ export default function ScorecardScreen() {
         }
       );
       if (!res.ok) throw new Error("save failed");
-      setEditingMyHandicap(false);
+      setEditingHandicapFor(null);
       // Refetch scorecard directly so net scores recalculate immediately.
       // Invalidate the round so the leaderboard reflects the updated handicap.
       await refetch();
@@ -628,7 +631,7 @@ export default function ScorecardScreen() {
     } catch {
       Alert.alert("Error", "Could not update handicap. Please try again.");
     } finally {
-      setSavingMyHandicap(false);
+      setSavingHandicap(false);
     }
   };
 
@@ -703,12 +706,14 @@ export default function ScorecardScreen() {
     if (b.user_id === scorecard.caller_user_id) return 1;
     return 0;
   });
-  // Show edit affordance when the round is active and the user already has a handicap set.
-  // Hidden while the initial entry section is visible (showHandicapSection covers that case).
-  const canEditMyHandicap =
+  // canEditSelectedHandicap: show the C.H. edit affordance for the currently selected player.
+  // Organizers can edit any player's handicap; regular players only their own.
+  // Hidden while the initial handicap entry section is still visible.
+  const canEditSelectedHandicap =
     scorecard.status === "active" &&
-    myPlayer?.course_handicap != null &&
-    !showHandicapSection;
+    selectedPlayer?.course_handicap != null &&
+    !showHandicapSection &&
+    (scorecard.is_organizer || selectedPlayerId === myPlayer?.round_player_id);
 
   // Completed rounds are read-only for non-organizers. Organizers keep full write access
   // so they can make corrections after the fact.
@@ -746,6 +751,15 @@ export default function ScorecardScreen() {
     return holeMap.get(n) ?? { hole_number: n, par: 0, stroke_index: 0, yardage: null };
   });
 
+  // Normalize stroke indexes to ranks 1–N within the played holes so that
+  // 9-hole handicap previews distribute correctly (mirrors Go NormalizeStrokeIndexes).
+  // holeRows is already filtered to the played set (front/back/full).
+  const normalizedSIMap = new Map<number, number>();
+  [...holeRows]
+    .sort((a, b) => a.stroke_index - b.stroke_index)
+    .forEach((h, rank) => normalizedSIMap.set(h.hole_number, rank + 1));
+  const handicapHoleCount = holeRows.length || 18;
+
   // Pre-compute individual view running totals.
   let indivGrossTotal = 0, indivGrossCount = 0;
   let indivNetTotal   = 0, indivNetCount   = 0;
@@ -757,7 +771,8 @@ export default function ScorecardScreen() {
         indivGrossTotal += g;
         indivGrossCount++;
         if (showNetCol && selectedPlayer.effective_course_handicap != null && hole.stroke_index) {
-          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, hole.stroke_index);
+          const nsi = normalizedSIMap.get(hole.hole_number) ?? 0;
+          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, nsi, handicapHoleCount);
           indivNetCount++;
         }
       }
@@ -936,47 +951,53 @@ export default function ScorecardScreen() {
                 );
               })}
               {/* C.H. chip — inline when ≤3 players and not currently editing */}
-              {canEditMyHandicap && group.players.length <= 3 && !editingMyHandicap && (
+              {canEditSelectedHandicap && group.players.length <= 3 && editingHandicapFor !== selectedPlayerId && (
                 <TouchableOpacity
                   className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${t.border} ${t.surface}`}
                   onPress={() => {
-                    setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
-                    setEditingMyHandicap(true);
+                    setHandicapDraft(String(selectedPlayer?.course_handicap ?? ""));
+                    setEditingHandicapFor(selectedPlayerId);
                   }}
                   activeOpacity={0.7}
                 >
                   <Text className={`text-sm font-semibold ${t.textSecondary}`}>
-                    C.H. {myPlayer!.course_handicap}
+                    {scorecard.is_organizer && selectedPlayerId !== myPlayer?.round_player_id
+                      ? `${selectedPlayer?.display_name.split(" ")[0]} C.H. ${selectedPlayer?.course_handicap}`
+                      : `C.H. ${selectedPlayer?.course_handicap}`}
                   </Text>
                   <Ionicons name="pencil-outline" size={10} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
               )}
             </View>
             {/* Edit row — shown below pills when ≤3 players and editing */}
-            {canEditMyHandicap && group.players.length <= 3 && editingMyHandicap && (
+            {canEditSelectedHandicap && group.players.length <= 3 && editingHandicapFor === selectedPlayerId && (
               <View className={`mx-4 flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
                 <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
-                <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
+                <Text className={`flex-1 text-xs ${t.textSecondary}`}>
+                  {scorecard.is_organizer && selectedPlayerId !== myPlayer?.round_player_id
+                    ? `${selectedPlayer?.display_name.split(" ")[0]} C.H.`
+                    : "C.H."}
+                </Text>
                 <TextInput
                   className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                   placeholder="0"
                   placeholderTextColor={t.colors.tabBarInactive}
                   keyboardType="number-pad"
                   maxLength={2}
-                  value={myHandicapDraft}
-                  onChangeText={setMyHandicapDraft}
-                  editable={!savingMyHandicap}
+                  value={handicapDraft}
+                  onChangeText={setHandicapDraft}
+                  editable={!savingHandicap}
                   autoFocus
                 />
-                <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
+                <TouchableOpacity onPress={() => setEditingHandicapFor(null)} hitSlop={8} className="px-1">
                   <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
-                  onPress={handleSaveMyHandicap}
-                  disabled={savingMyHandicap}
+                  className={`px-3 py-1 rounded-lg ${savingHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                  onPress={handleSaveHandicap}
+                  disabled={savingHandicap}
                 >
-                  {savingMyHandicap
+                  {savingHandicap
                     ? <ActivityIndicator size="small" color="white" />
                     : <Text className="text-white text-xs font-semibold">Save</Text>
                   }
@@ -1203,7 +1224,7 @@ export default function ScorecardScreen() {
               // matches what the server will store (allowance already applied).
               const hcp        = selectedPlayer.effective_course_handicap ?? null;
               const strokes    = (holeData.stroke_index && hcp != null)
-                ? handicapStrokes(hcp, holeData.stroke_index)
+                ? handicapStrokes(hcp, normalizedSIMap.get(holeData.hole_number) ?? 0, handicapHoleCount)
                 : 0;
               const net        = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
               const grossClr   = (holeData.par && !isNaN(gross) && gross >= 1)
@@ -1697,31 +1718,35 @@ export default function ScorecardScreen() {
             </View>
 
             {/* C.H. edit affordance — at the bottom when 4+ players (inline would crowd the pills row) */}
-            {canEditMyHandicap && group.players.length >= 4 && (
-              editingMyHandicap ? (
+            {canEditSelectedHandicap && group.players.length >= 4 && (
+              editingHandicapFor === selectedPlayerId ? (
                 <View className={`flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}>
                   <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
-                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
+                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>
+                    {scorecard.is_organizer && selectedPlayerId !== myPlayer?.round_player_id
+                      ? `${selectedPlayer?.display_name.split(" ")[0]} C.H.`
+                      : "C.H."}
+                  </Text>
                   <TextInput
                     className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                     placeholder="0"
                     placeholderTextColor={t.colors.tabBarInactive}
                     keyboardType="number-pad"
                     maxLength={2}
-                    value={myHandicapDraft}
-                    onChangeText={setMyHandicapDraft}
-                    editable={!savingMyHandicap}
+                    value={handicapDraft}
+                    onChangeText={setHandicapDraft}
+                    editable={!savingHandicap}
                     autoFocus
                   />
-                  <TouchableOpacity onPress={() => setEditingMyHandicap(false)} hitSlop={8} className="px-1">
+                  <TouchableOpacity onPress={() => setEditingHandicapFor(null)} hitSlop={8} className="px-1">
                     <Text className={`text-xs ${t.textTertiary}`}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    className={`px-3 py-1 rounded-lg ${savingMyHandicap ? "bg-green-700/40" : "bg-green-700"}`}
-                    onPress={handleSaveMyHandicap}
-                    disabled={savingMyHandicap}
+                    className={`px-3 py-1 rounded-lg ${savingHandicap ? "bg-green-700/40" : "bg-green-700"}`}
+                    onPress={handleSaveHandicap}
+                    disabled={savingHandicap}
                   >
-                    {savingMyHandicap
+                    {savingHandicap
                       ? <ActivityIndicator size="small" color="white" />
                       : <Text className="text-white text-xs font-semibold">Save</Text>
                     }
@@ -1731,14 +1756,18 @@ export default function ScorecardScreen() {
                 <TouchableOpacity
                   className={`flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}
                   onPress={() => {
-                    setMyHandicapDraft(String(myPlayer!.course_handicap ?? ""));
-                    setEditingMyHandicap(true);
+                    setHandicapDraft(String(selectedPlayer?.course_handicap ?? ""));
+                    setEditingHandicapFor(selectedPlayerId);
                   }}
                   activeOpacity={0.7}
                 >
                   <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
-                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>C.H.</Text>
-                  <Text className={`text-sm font-bold ${t.textPrimary}`}>{myPlayer!.course_handicap}</Text>
+                  <Text className={`flex-1 text-xs ${t.textSecondary}`}>
+                    {scorecard.is_organizer && selectedPlayerId !== myPlayer?.round_player_id
+                      ? `${selectedPlayer?.display_name.split(" ")[0]} C.H.`
+                      : "C.H."}
+                  </Text>
+                  <Text className={`text-sm font-bold ${t.textPrimary}`}>{selectedPlayer?.course_handicap}</Text>
                   <Ionicons name="pencil-outline" size={13} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
               )

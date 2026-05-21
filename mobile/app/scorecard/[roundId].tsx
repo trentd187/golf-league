@@ -674,13 +674,11 @@ export default function ScorecardScreen() {
 
   // Scramble: all players play from the same ball — individual scorecards don't apply.
   const isScramble = scorecard.scoring_format === "scramble";
-  // When show_group_on_scorecard is disabled, force individual view so the user only
-  // sees their own scores regardless of group size.
   const effectiveViewMode =
-    group.players.length === 1 || !settings.show_group_on_scorecard
+    group.players.length === 1
       ? "individual"
       : viewMode;
-  const showToggle = !isScramble && group.players.length > 1 && settings.show_group_on_scorecard;
+  const showToggle = !isScramble && group.players.length > 1;
 
   // Resolve the selected player, falling back to the first player if stale.
   const selectedPlayer =
@@ -706,6 +704,11 @@ export default function ScorecardScreen() {
     if (b.user_id === scorecard.caller_user_id) return 1;
     return 0;
   });
+  // visiblePlayers: when show_group_on_scorecard is off, both Advanced and Basic
+  // views remain available but only the current user's data is shown in each.
+  const visiblePlayers = settings.show_group_on_scorecard
+    ? sortedPlayers
+    : sortedPlayers.filter((p) => p.user_id === scorecard.caller_user_id);
   // canEditSelectedHandicap: show the C.H. edit affordance for the currently selected player.
   // Organizers can edit any player's handicap; regular players only their own.
   // Hidden while the initial handicap entry section is still visible.
@@ -736,7 +739,7 @@ export default function ScorecardScreen() {
   const siColW         = 32;
   const playerColW     = 64;
 
-  const totalGroupWidth = leftColW + parColW + siColW + group.players.length * playerColW;
+  const totalGroupWidth = leftColW + parColW + siColW + visiblePlayers.length * playerColW;
 
   // Build hole rows. Without tee data, generate placeholders with blank par/SI.
   // For back-nine rounds, startHole is 10 so holes are numbered 10–18.
@@ -801,7 +804,7 @@ export default function ScorecardScreen() {
           </Text>
         </View>
 
-        {/* Individual / Group toggle — non-scramble, 2+ players only */}
+        {/* Advanced / Basic toggle — non-scramble, 2+ players only */}
         {showToggle && (
           <View className={`flex-row rounded-lg overflow-hidden border ${t.border}`}>
             <TouchableOpacity
@@ -809,7 +812,7 @@ export default function ScorecardScreen() {
               className={`px-3 py-1.5 ${viewMode === "individual" ? "bg-green-700" : t.surface}`}
             >
               <Text className={`text-xs font-semibold ${viewMode === "individual" ? "text-white" : t.textSecondary}`}>
-                Individual
+                Advanced
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -817,7 +820,7 @@ export default function ScorecardScreen() {
               className={`px-3 py-1.5 ${viewMode === "group" ? "bg-green-700" : t.surface}`}
             >
               <Text className={`text-xs font-semibold ${viewMode === "group" ? "text-white" : t.textSecondary}`}>
-                Group
+                Basic
               </Text>
             </TouchableOpacity>
           </View>
@@ -915,7 +918,7 @@ export default function ScorecardScreen() {
         {effectiveViewMode === "individual" && (
           <View className="mt-4 gap-2">
             <View className="flex-row gap-2 px-4 flex-wrap">
-              {sortedPlayers.map((p) => {
+              {visiblePlayers.map((p) => {
                 const isSelected = selectedPlayerId === p.round_player_id;
                 const isMe = p.user_id === scorecard.caller_user_id;
                 return (
@@ -1020,7 +1023,7 @@ export default function ScorecardScreen() {
                 <Text style={{ width: leftColW }} className={`text-xs font-bold text-center ${t.textTertiary}`}>H</Text>
                 <Text style={{ width: parColW }}  className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
                 <Text style={{ width: siColW }}   className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
-                {sortedPlayers.map((p) => {
+                {visiblePlayers.map((p) => {
                   const status = saveStatus[p.round_player_id] ?? "idle";
                   const isMe = p.user_id === scorecard.caller_user_id;
                   return (
@@ -1072,7 +1075,7 @@ export default function ScorecardScreen() {
                     <Text style={{ width: siColW }} className={`text-xs text-center ${t.textTertiary}`}>
                       {hole.stroke_index || "—"}
                     </Text>
-                    {sortedPlayers.map((player, playerIdx) => {
+                    {visiblePlayers.map((player, playerIdx) => {
                       const val   = scores[player.round_player_id]?.[hole.hole_number] ?? "";
                       const gross = parseInt(val, 10);
                       const color = (hole.par && !isNaN(gross))
@@ -1080,7 +1083,7 @@ export default function ScorecardScreen() {
                         : t.textPrimary;
                       const isLastCell =
                         idx === holeRows.length - 1 &&
-                        playerIdx === group.players.length - 1;
+                        playerIdx === visiblePlayers.length - 1;
                       return (
                         <View key={player.round_player_id} style={{ width: playerColW }} className="items-center px-1">
                           <TextInput
@@ -1100,7 +1103,7 @@ export default function ScorecardScreen() {
                               }))
                             }
                             onSubmitEditing={() =>
-                              focusNext(idx, playerIdx, group.players.length, holeRows.length)
+                              focusNext(idx, playerIdx, visiblePlayers.length, holeRows.length)
                             }
                             onBlur={() => autoSavePlayer(player.round_player_id)}
                             editable={canEditPlayer(player.round_player_id) && !savingHandicaps && !needsHandicap}
@@ -1122,7 +1125,7 @@ export default function ScorecardScreen() {
                       {holeRangeTotal(holeRows, {}, 1, 9).par || "—"}
                     </Text>
                     <View style={{ width: siColW }} />
-                    {sortedPlayers.map((player) => {
+                    {visiblePlayers.map((player) => {
                       const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 1, 9);
                       return (
                         <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
@@ -1143,7 +1146,7 @@ export default function ScorecardScreen() {
                     {holeRangeTotal(holeRows, {}, 10, 18).par || "—"}
                   </Text>
                   <View style={{ width: siColW }} />
-                  {sortedPlayers.map((player) => {
+                  {visiblePlayers.map((player) => {
                     const { score } = holeRangeTotal(holeRows, scores[player.round_player_id] ?? {}, 10, 18);
                     return (
                       <Text key={player.round_player_id} style={{ width: playerColW }} className={`text-sm font-semibold text-center ${t.textSecondary}`}>
@@ -1161,7 +1164,7 @@ export default function ScorecardScreen() {
                   {scorecard.holes.reduce((sum, h) => sum + h.par, 0) || "—"}
                 </Text>
                 <View style={{ width: siColW }} />
-                {sortedPlayers.map((player) => {
+                {visiblePlayers.map((player) => {
                   const playerInputs = scores[player.round_player_id] ?? {};
                   let total = 0, count = 0;
                   for (const v of Object.values(playerInputs)) {

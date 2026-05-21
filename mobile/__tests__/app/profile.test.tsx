@@ -391,7 +391,7 @@ it("calls settings mutation when a stat toggle is switched", async () => {
   const { Switch } = require("react-native");
   const switches = UNSAFE_getAllByType(Switch);
 
-  // switches[0] is the Group Visibility toggle; switches[1] is the first stat (FIR).
+  // switches[0] is the Player Visibility toggle; switches[1] is the first stat (FIR).
   // Toggling FIR off should call mutate with fir_enabled: false.
   await act(async () => {
     fireEvent(switches[1], "valueChange", false);
@@ -519,13 +519,13 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
   });
 });
 
-// ─── Group Visibility toggle ───────────────────────────────────────────────────
+// ─── Player Visibility toggle ───────────────────────────────────────────────────
 
-it("renders Group Visibility section heading and description", () => {
+it("renders Player Visibility section heading and description", () => {
   const { getByText } = render(<ProfileScreen />);
-  expect(getByText("Group Visibility")).toBeTruthy();
-  expect(getByText("Show group on scorecard")).toBeTruthy();
-  expect(getByText("All players in your group are visible")).toBeTruthy();
+  expect(getByText("Player Visibility")).toBeTruthy();
+  expect(getByText("Show other players on scorecard")).toBeTruthy();
+  expect(getByText("Other players in your group are visible")).toBeTruthy();
 });
 
 it("shows solo description when show_group_on_scorecard is false", () => {

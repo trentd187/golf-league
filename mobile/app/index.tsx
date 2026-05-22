@@ -43,7 +43,7 @@ export default function Index() {
   if (loading) return <View className="flex-1" />;
 
   return session ? (
-    <Redirect href="/(tabs)" />
+    <Redirect href="/(tabs)/events" />
   ) : (
     <Redirect href="/sign-in" />
   );

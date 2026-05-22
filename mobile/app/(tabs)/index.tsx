@@ -1,10 +1,20 @@
 // app/(tabs)/index.tsx
-// Redirects the root tab route (/(tabs)) to Events, which is now the default landing tab.
-// Expo Router always resolves index.tsx first when navigating to /(tabs) — this redirect
-// ensures the user lands on Events instead of a blank or removed Home screen.
+// Safety-net redirect for any navigation that lands on /(tabs) without a sub-path.
+// The primary paths (sign-in, oauth-callback, app/index) navigate directly to
+// /(tabs)/events now, so this screen is rarely hit. When it is, useEffect defers
+// the navigation by one render cycle — avoiding the rapid mount→Redirect→unmount
+// sequence that triggers RetryableMountingLayerException on Android Fabric.
 
-import { Redirect } from "expo-router";
+import { useEffect } from "react";
+import { View } from "react-native";
+import { useRouter } from "expo-router";
 
 export default function Index() {
-  return <Redirect href="/(tabs)/events" />;
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/(tabs)/events");
+  }, [router]);
+
+  return <View className="flex-1" />;
 }

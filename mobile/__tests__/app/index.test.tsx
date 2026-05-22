@@ -60,7 +60,7 @@ it("redirects to /(tabs) when a valid session is found", async () => {
   render(<Index />);
 
   await waitFor(() => {
-    expect(mockRedirect).toHaveBeenCalledWith("/(tabs)");
+    expect(mockRedirect).toHaveBeenCalledWith("/(tabs)/events");
   });
   expect(signOutMock).not.toHaveBeenCalled();
 });

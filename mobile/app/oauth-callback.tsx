@@ -22,14 +22,14 @@ export default function OAuthCallback() {
     // Check if Supabase already finished the code exchange (fast path).
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        router.replace("/(tabs)");
+        router.replace("/(tabs)/events");
       }
     });
 
     // Listen for the SIGNED_IN event fired after Supabase completes the PKCE exchange.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_IN" && session) {
-        router.replace("/(tabs)");
+        router.replace("/(tabs)/events");
       }
     });
 

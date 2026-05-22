@@ -117,7 +117,7 @@ export default function SignIn() {
           showErrorAlert(sessionError.message);
         } else {
           getTelemetryClient().info("auth.google.success", "Google OAuth sign-in succeeded");
-          router.replace("/(tabs)");
+          router.replace("/(tabs)/events");
         }
       }
     } catch (err) {
@@ -169,7 +169,7 @@ export default function SignIn() {
       setInlineError(error.message);
     } else {
       getTelemetryClient().info("auth.otp.verified", "OTP verification succeeded");
-      router.replace("/(tabs)");
+      router.replace("/(tabs)/events");
     }
   };
 

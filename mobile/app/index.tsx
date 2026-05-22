@@ -6,6 +6,7 @@
 // screen, all users pass through here first on app load.
 
 import { useEffect, useState } from "react";
+import { View } from "react-native";
 import { Redirect } from "expo-router";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/utils/supabase";
@@ -17,8 +18,12 @@ export default function Index() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (error) {
+        // Stale or revoked refresh token in storage — clear it so the next launch is clean.
+        void supabase.auth.signOut();
+      }
+      setSession(error ? null : session);
       setLoading(false);
     });
 
@@ -32,7 +37,10 @@ export default function Index() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (loading) return null;
+  // Return a stable View (not null) during loading — returning null creates an empty
+  // React fiber that, when immediately replaced by <Redirect>, causes
+  // RetryableMountingLayerException in Android Fabric dev builds.
+  if (loading) return <View className="flex-1" />;
 
   return session ? (
     <Redirect href="/(tabs)" />

@@ -1,5 +1,5 @@
 // themes/index.ts
-// Defines the 3 UI themes available in the app: Light, Dark, and Grey.
+// Defines the 3 UI themes available in the app: Light, Dark, and High Contrast.
 //
 // Architecture — why all class strings must live here as literals:
 //   Tailwind's JIT compiler scans source files at build time to discover which
@@ -15,7 +15,7 @@
 
 // ThemeName is the union of valid theme identifier strings — used as the
 // persisted key in SecureStore and as the THEMES map key.
-export type ThemeName = "light" | "dark" | "grey";
+export type ThemeName = "light" | "dark" | "high-contrast";
 
 // Theme defines the shape of a single theme object. Every UI surface in the
 // app maps to one of these slots.
@@ -96,26 +96,26 @@ const dark: Theme = {
   },
 };
 
-// Grey — neutral palette.
-//   screen = neutral-300, surface = neutral-200 (lighter = elevated),
-//   surfaceSunken = neutral-300 (matches screen → appears inset on neutral-200 cards).
-const grey: Theme = {
-  screen:            "bg-neutral-300",
-  surface:           "bg-neutral-200",
-  surfaceSunken:     "bg-neutral-300",
-  border:            "border-neutral-400",
-  divider:           "border-neutral-400",
-  borderInput:       "border-neutral-500",
-  textPrimary:       "text-neutral-900",
-  textSecondary:     "text-neutral-600",
-  textTertiary:      "text-neutral-500",
-  primaryBg:         "bg-neutral-800",
-  primaryBgDisabled: "bg-neutral-500",
+// High Contrast — inspired by Windows Night Sky Contrast.
+//   Pure black background with yellow accents on interactive elements and vivid
+//   green action buttons. Maximum legibility for accessibility-focused users.
+const highContrast: Theme = {
+  screen:            "bg-black",
+  surface:           "bg-zinc-900",
+  surfaceSunken:     "bg-black",
+  border:            "border-yellow-400",
+  divider:           "border-zinc-800",
+  borderInput:       "border-yellow-400",
+  textPrimary:       "text-white",
+  textSecondary:     "text-zinc-200",
+  textTertiary:      "text-zinc-500",
+  primaryBg:         "bg-green-500",
+  primaryBgDisabled: "bg-zinc-700",
   colors: {
-    tabBarBg:       "#d4d4d4", // neutral-300 — matches screen
-    tabBarBorder:   "#a3a3a3", // neutral-400
-    tabBarActive:   "#171717", // neutral-900 — near-black for strong contrast
-    tabBarInactive: "#737373", // neutral-500
+    tabBarBg:       "#000000",
+    tabBarBorder:   "#facc15", // yellow-400
+    tabBarActive:   "#facc15", // yellow-400 — Night Sky accent
+    tabBarInactive: "#71717a", // zinc-500
   },
 };
 
@@ -123,12 +123,12 @@ const grey: Theme = {
 
 // THEMES maps ThemeName → Theme. Used by the store to look up the full theme
 // after rehydrating the persisted themeName from SecureStore.
-export const THEMES: Record<ThemeName, Theme> = { light, dark, grey };
+export const THEMES: Record<ThemeName, Theme> = { light, dark, "high-contrast": highContrast };
 
 // THEME_META provides display metadata for the theme picker UI in the Profile screen.
 // `swatch` is a representative hex that conveys the feel of each theme at a glance.
 export const THEME_META: Array<{ name: ThemeName; label: string; swatch: string }> = [
-  { name: "light", label: "Light", swatch: "#e5e7eb" }, // gray-200 — clean, airy
-  { name: "dark",  label: "Dark",  swatch: "#1f2937" }, // gray-800 — dark surface
-  { name: "grey",  label: "Grey",  swatch: "#737373" }, // neutral-500 — clearly grey
+  { name: "light",          label: "Light",         swatch: "#e5e7eb" }, // gray-200 — clean, airy
+  { name: "dark",           label: "Dark",          swatch: "#1f2937" }, // gray-800 — dark surface
+  { name: "high-contrast",  label: "High Contrast", swatch: "#facc15" }, // yellow-400 — Night Sky accent
 ];

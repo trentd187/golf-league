@@ -24,6 +24,10 @@ const mockInputEl = {
 
 (globalThis as unknown as Record<string, unknown>).document = {
   createElement: jest.fn(() => mockInputEl),
+  // addEventListener/removeEventListener are required by React Native's HoverState.js
+  // when Platform.OS === 'web'. Without them the Text component crashes on first render.
+  addEventListener: jest.fn(),
+  removeEventListener: jest.fn(),
 };
 
 // --- Mocks ---
@@ -160,9 +164,11 @@ beforeEach(() => {
   mockCapturedOnSuccess = undefined;
   mockUseQuery.mockReturnValue({ data: undefined, isLoading: false });
   mockUseMutation.mockReturnValue({ mutate: mockMutate, isPending: false });
-  // Restore document.createElement mock after clearAllMocks resets it.
+  // Restore document mock after clearAllMocks resets it.
   (globalThis as unknown as Record<string, unknown>).document = {
     createElement: jest.fn(() => mockInputEl),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
   };
   // Reset input state between tests.
   mockInputEl.type = "";

@@ -151,7 +151,7 @@ func defaultScorecardSettings() models.ScorecardSettings {
 		TeeShotDistanceEnabled:   false,
 		StatOrder:                defaultStatOrder,
 		ScorePosition:            "last",
-		ShowGroupOnScorecard:     true,
+		ShowGroupOnScorecard:     false,
 	}
 }
 

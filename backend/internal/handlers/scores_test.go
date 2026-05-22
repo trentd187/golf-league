@@ -19,10 +19,12 @@
 package handlers_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -238,6 +240,31 @@ func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestSetPlayerHandicap_NoUserID verifies that missing auth returns 401.
+// UUID and body validation pass; uuid.Parse("") on the empty userID local fails.
+func TestSetPlayerHandicap_NoUserID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/handicap",
+		handlers.SetPlayerHandicap(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/handicap",
+		map[string]int{"course_handicap": 10})
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestUpsertPlayerScores_NoUserID verifies that missing auth returns 401.
+func TestUpsertPlayerScores_NoUserID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/scores",
+		handlers.UpsertPlayerScores(nil))
+
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/players/"+validUUID+"/scores",
+		map[string]any{"scores": []map[string]int{{"hole_number": 1, "gross_score": 4}}})
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 // TestUpsertHoleStats_NoUserID verifies that a missing auth context returns 401.
 // UUID and body validation both pass; the handler then parses c.Locals("userID")
 // which is absent, so uuid.Parse("") fails → 401 before reaching the service.
@@ -250,4 +277,68 @@ func TestUpsertHoleStats_NoUserID(t *testing.T) {
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
 		map[string]any{"stats": []map[string]any{{"hole_number": 1, "gir": "hit"}}})
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// ─── writeScoreError status mapping ──────────────────────────────────────────
+
+// TestWriteScoreError_StatusMapping locks in the status code each known service
+// error maps to. Tests here are pure Tier 1: no DB, no service call.
+func TestWriteScoreError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{"validation error", &services.ValidationError{Field: "hole_number", Message: "bad"}, http.StatusBadRequest},
+		{"round not found", services.ErrRoundNotFound, http.StatusNotFound},
+		{"round player not found", services.ErrRoundPlayerNotFound, http.StatusNotFound},
+		{"score forbidden", services.ErrScoreForbidden, http.StatusForbidden},
+		{"round not active", services.ErrRoundNotActive, http.StatusForbidden},
+		{"handicap required", services.ErrHandicapRequired, http.StatusUnprocessableEntity},
+		{"unrecognised → 500", errors.New("database exploded"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteScoreErrorExported(c, tc.err, "test.tag", "fallback")
+			})
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
+}
+
+// TestWriteScoreError_ErrorDetailFor5xx verifies that 5xx responses populate
+// c.Locals("error_detail") so the Loki http.error log line includes the cause.
+func TestWriteScoreError_ErrorDetailFor5xx(t *testing.T) {
+	app, captured := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+		return handlers.WriteScoreErrorExported(c, errors.New("disk on fire"), "score.upsert", "failed")
+	})
+	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, "score.upsert: disk on fire", *captured)
+}
+
+// TestWriteScoreError_NoDetailFor4xx asserts that expected 4xx errors do not
+// set error_detail, keeping Loki clean of normal client-side errors.
+func TestWriteScoreError_NoDetailFor4xx(t *testing.T) {
+	errs := []error{
+		&services.ValidationError{Field: "x", Message: "bad"},
+		services.ErrRoundNotFound,
+		services.ErrRoundPlayerNotFound,
+		services.ErrScoreForbidden,
+		services.ErrRoundNotActive,
+		services.ErrHandicapRequired,
+	}
+	for _, e := range errs {
+		t.Run(e.Error(), func(t *testing.T) {
+			app, captured := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteScoreErrorExported(c, e, "test.tag", "fallback")
+			})
+			_, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Empty(t, *captured, "4xx errors must not populate error_detail")
+		})
+	}
 }

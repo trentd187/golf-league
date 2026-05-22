@@ -20,15 +20,19 @@
 package handlers_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trentd187/golf-league/internal/handlers"
+	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/services"
 )
 
@@ -400,4 +404,90 @@ func TestUpdateMemberRole_InvalidRole(t *testing.T) {
 	resp := doJSON(t, app, http.MethodPatch, "/events/"+validUUID+"/members/"+validUUID+"/role",
 		map[string]any{"role": "superadmin"})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── writeEventError status mapping ──────────────────────────────────────────
+
+// TestWriteEventError_StatusMapping locks in the status code each known service
+// error maps to. Tier 1 only — no DB, no service call.
+func TestWriteEventError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{"validation", &services.ValidationError{Field: "x", Message: "bad"}, http.StatusBadRequest},
+		{"invalid role", services.ErrInvalidRole, http.StatusBadRequest},
+		{"last organizer", services.ErrLastOrganizer, http.StatusBadRequest},
+		{"event not found", services.ErrEventNotFound, http.StatusNotFound},
+		{"user not found", services.ErrUserNotFound, http.StatusNotFound},
+		{"member not found", services.ErrMemberNotFound, http.StatusNotFound},
+		{"join request not found", services.ErrJoinRequestNotFound, http.StatusNotFound},
+		{"event forbidden", services.ErrEventForbidden, http.StatusForbidden},
+		{"event not member", services.ErrEventNotMember, http.StatusForbidden},
+		{"event not public", services.ErrEventNotPublic, http.StatusForbidden},
+		{"member already exists", services.ErrMemberAlreadyExists, http.StatusConflict},
+		{"unrecognised → 500", errors.New("unexpected"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteEventErrorExported(c, tc.err, "test.tag", "fallback")
+			})
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
+}
+
+// ─── Pure helper functions ────────────────────────────────────────────────────
+
+func TestFormatOptionalDate_Nil(t *testing.T) {
+	assert.Nil(t, handlers.FormatOptionalDateExported(nil))
+}
+
+func TestFormatOptionalDate_Value(t *testing.T) {
+	ts := time.Date(2026, 5, 21, 14, 0, 0, 0, time.UTC)
+	got := handlers.FormatOptionalDateExported(&ts)
+	require.NotNil(t, got)
+	assert.Equal(t, "2026-05-21", *got)
+}
+
+func TestBuildEventResponse_Fields(t *testing.T) {
+	event := models.Event{
+		ID:        uuid.MustParse(validUUID),
+		Name:      "Test Event",
+		EventType: models.EventTypeLeague,
+		Status:    models.EventStatusActive,
+		IsPublic:  true,
+		CreatedAt: time.Now(),
+	}
+	item := services.EventListItem{
+		Event:       event,
+		Creator:     models.User{DisplayName: "Alice"},
+		MemberCount: 3,
+	}
+	got := handlers.BuildEventResponseExported(item)
+	assert.Equal(t, validUUID, got.ID)
+	assert.Equal(t, "Test Event", got.Name)
+	assert.Equal(t, "Alice", got.CreatorName)
+	assert.Equal(t, int64(3), got.MemberCount)
+}
+
+func TestBuildMemberResponse_Fields(t *testing.T) {
+	player := models.EventPlayer{
+		Role:      models.EventPlayerRoleOrganizer,
+		Status:    models.EventPlayerStatusRegistered,
+		CreatedAt: time.Now(),
+	}
+	user := models.User{
+		ID:          uuid.MustParse(validUUID),
+		DisplayName: "Bob",
+		Email:       "bob@example.com",
+	}
+	got := handlers.BuildMemberResponseExported(services.EventMemberItem{Player: player, User: user})
+	assert.Equal(t, validUUID, got.UserID)
+	assert.Equal(t, "Bob", got.DisplayName)
+	assert.Equal(t, "organizer", got.Role)
 }

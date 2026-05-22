@@ -217,8 +217,8 @@ func TestUserService_GetScorecardSettings_NoRowReturnsDefaults(t *testing.T) {
 	assert.False(t, data.TeeShotClubEnabled)
 	assert.Equal(t, "last", data.ScorePosition)
 	assert.NotEmpty(t, data.StatOrder)
-	// show_group_on_scorecard defaults to true (show group view by default).
-	assert.True(t, data.ShowGroupOnScorecard)
+	// show_group_on_scorecard defaults to false (private-first: only your own scores shown by default).
+	assert.False(t, data.ShowGroupOnScorecard)
 }
 
 // TestUserService_UpsertScorecardSettings_SavesAndReturns verifies that settings

@@ -23,6 +23,7 @@
 package handlers_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -245,4 +246,30 @@ func TestUpsertScorecardSettings_InvalidScorePosition(t *testing.T) {
 		"show_group_on_scorecard":     true,
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── writeUserError status mapping ───────────────────────────────────────────
+
+// TestWriteUserError_StatusMapping covers the remaining sentinel error → HTTP
+// status mappings not already exercised by the follow/ValidationError tests above.
+func TestWriteUserError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{"user not found", services.ErrUserNotFound, http.StatusNotFound},
+		{"already following", services.ErrAlreadyFollowing, http.StatusConflict},
+		{"unrecognised → 500", errors.New("unexpected"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteUserErrorExported(c, tc.err, "test.tag", "fallback")
+			})
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
 }

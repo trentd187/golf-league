@@ -22,10 +22,12 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trentd187/golf-league/internal/handlers"
+	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/services"
 )
 
@@ -460,4 +462,74 @@ func TestWriteCourseError_NoDetailFor4xx(t *testing.T) {
 			assert.Empty(t, *captured, "expected 4xx errors should not populate error_detail")
 		})
 	}
+}
+
+// ─── Pure builder functions ───────────────────────────────────────────────────
+
+func TestBuildHoleResponses_Empty(t *testing.T) {
+	got := handlers.BuildHoleResponsesExported(nil)
+	assert.Empty(t, got)
+}
+
+func TestBuildHoleResponses_Values(t *testing.T) {
+	yardage := 420
+	holes := []models.Hole{
+		{HoleNumber: 1, Par: 4, StrokeIndex: 1, Yardage: &yardage},
+		{HoleNumber: 2, Par: 3, StrokeIndex: 9, Yardage: nil},
+	}
+	got := handlers.BuildHoleResponsesExported(holes)
+	require.Len(t, got, 2)
+	assert.Equal(t, 1, got[0].HoleNumber)
+	assert.Equal(t, &yardage, got[0].Yardage)
+	assert.Nil(t, got[1].Yardage)
+}
+
+func TestBuildTeeResponse_Fields(t *testing.T) {
+	tee := models.Tee{
+		ID:           uuid.MustParse(validUUID),
+		Name:         "Blue",
+		Gender:       models.TeeGenderUnisex,
+		CourseRating: 72.4,
+		SlopeRating:  131,
+		Par:          72,
+	}
+	got := handlers.BuildTeeResponseExported(tee, nil)
+	assert.Equal(t, validUUID, got.ID)
+	assert.Equal(t, "Blue", got.Name)
+	assert.Equal(t, 72.4, got.CourseRating)
+	assert.Empty(t, got.Holes)
+}
+
+func TestBuildCourseDetail_NoTees(t *testing.T) {
+	course := models.Course{
+		ID:        uuid.MustParse(validUUID),
+		Name:      "Pebble Beach",
+		City:      "Pebble Beach",
+		State:     "CA",
+		HoleCount: 18,
+	}
+	got := handlers.BuildCourseDetailExported(course)
+	assert.Equal(t, "Pebble Beach", got.Name)
+	assert.False(t, got.HasHoles)
+	assert.Empty(t, got.Tees)
+}
+
+func TestBuildCourseDetail_WithHoles(t *testing.T) {
+	yardage := 400
+	course := models.Course{
+		ID:        uuid.MustParse(validUUID),
+		Name:      "Augusta",
+		HoleCount: 18,
+		Tees: []models.Tee{
+			{
+				ID:    uuid.New(),
+				Name:  "Masters",
+				Holes: []models.Hole{{HoleNumber: 1, Par: 4, StrokeIndex: 1, Yardage: &yardage}},
+			},
+		},
+	}
+	got := handlers.BuildCourseDetailExported(course)
+	assert.True(t, got.HasHoles)
+	require.Len(t, got.Tees, 1)
+	require.Len(t, got.Tees[0].Holes, 1)
 }

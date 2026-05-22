@@ -522,6 +522,16 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
 // ─── Player Visibility toggle ───────────────────────────────────────────────────
 
 it("renders Player Visibility section heading and description", () => {
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: { fir_enabled: true, gir_enabled: true, putts_enabled: true,
+        first_putt_distance_enabled: true, putt_distance_made_enabled: true,
+        approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false,
+        stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+        score_position: "last" as const, show_group_on_scorecard: true }, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
   const { getByText } = render(<ProfileScreen />);
   expect(getByText("Player Visibility")).toBeTruthy();
   expect(getByText("Show other players on scorecard")).toBeTruthy();

@@ -63,8 +63,10 @@ jest.mock("@/hooks/useUser", () => ({
   }),
 }));
 
+// mockSignOut is module-level so sign-out tests can assert calls and control resolved/rejected.
+const mockSignOut = jest.fn();
 jest.mock("@/hooks/useAuth", () => ({
-  useAuth: () => ({ signOut: jest.fn(), getToken: jest.fn().mockResolvedValue("test-token") }),
+  useAuth: () => ({ signOut: mockSignOut, getToken: jest.fn().mockResolvedValue("test-token") }),
 }));
 
 jest.mock("@/utils/api", () => ({
@@ -589,4 +591,108 @@ it("calls settings mutation when group visibility toggle is switched off", async
     fireEvent(getByTestId("show-group-toggle"), "valueChange", false);
   });
   expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, show_group_on_scorecard: false });
+});
+
+// ─── Sign-out section ─────────────────────────────────────────────────────────
+
+it("pressing Sign Out shows Alert.alert confirmation on native", () => {
+  const { getByText } = render(<ProfileScreen />);
+  fireEvent.press(getByText("Sign Out"));
+  expect(alertSpy).toHaveBeenCalledWith(
+    "Sign Out",
+    "Are you sure you want to sign out?",
+    expect.arrayContaining([expect.objectContaining({ text: "Sign Out" })])
+  );
+});
+
+it("confirming native sign-out calls signOut and navigates to /sign-in", async () => {
+  mockSignOut.mockResolvedValue(undefined);
+  const mockReplace = jest.fn();
+  require("expo-router").useRouter.mockReturnValue({ replace: mockReplace, push: jest.fn() });
+
+  const { getByText } = render(<ProfileScreen />);
+  fireEvent.press(getByText("Sign Out"));
+
+  const buttons = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  const signOutBtn = buttons.find((b) => b.text === "Sign Out");
+  await act(async () => { signOutBtn?.onPress?.(); });
+
+  await waitFor(() => {
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(mockReplace).toHaveBeenCalledWith("/sign-in");
+  });
+});
+
+// Web sign-out branches — override Platform.OS to 'web' within this block.
+describe("web sign-out (Platform.OS = web)", () => {
+  const RN = require("react-native");
+  let _originalOS: string;
+
+  beforeEach(() => {
+    _originalOS = RN.Platform.OS;
+    Object.defineProperty(RN.Platform, "OS", { value: "web", configurable: true, writable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(RN.Platform, "OS", { value: _originalOS, configurable: true, writable: true });
+  });
+
+  it("calls window.confirm instead of Alert.alert on web", () => {
+    // window.confirm doesn't exist in the RN test env — install a mock directly.
+    (globalThis as unknown as Record<string, unknown>).window = {
+      ...(typeof window !== "undefined" ? window : {}),
+      confirm: jest.fn().mockReturnValue(false),
+    };
+    const { getByText } = render(<ProfileScreen />);
+    fireEvent.press(getByText("Sign Out"));
+    expect((window as unknown as { confirm: jest.Mock }).confirm)
+      .toHaveBeenCalledWith("Are you sure you want to sign out?");
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not sign out when window.confirm returns false", async () => {
+    (globalThis as unknown as Record<string, unknown>).window = {
+      ...(typeof window !== "undefined" ? window : {}),
+      confirm: jest.fn().mockReturnValue(false),
+    };
+    const { getByText } = render(<ProfileScreen />);
+    fireEvent.press(getByText("Sign Out"));
+    await act(async () => {});
+    expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it("signs out and navigates when window.confirm returns true", async () => {
+    (globalThis as unknown as Record<string, unknown>).window = {
+      ...(typeof window !== "undefined" ? window : {}),
+      confirm: jest.fn().mockReturnValue(true),
+    };
+    mockSignOut.mockResolvedValue(undefined);
+    const mockReplace = jest.fn();
+    require("expo-router").useRouter.mockReturnValue({ replace: mockReplace, push: jest.fn() });
+
+    const { getByText } = render(<ProfileScreen />);
+    await act(async () => { fireEvent.press(getByText("Sign Out")); });
+
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalled();
+      expect(mockReplace).toHaveBeenCalledWith("/sign-in");
+    });
+  });
+
+  it("calls window.alert when sign-out throws on web", async () => {
+    const mockWindowAlert = jest.fn();
+    (globalThis as unknown as Record<string, unknown>).window = {
+      ...(typeof window !== "undefined" ? window : {}),
+      confirm: jest.fn().mockReturnValue(true),
+      alert: mockWindowAlert,
+    };
+    mockSignOut.mockRejectedValue(new Error("network error"));
+
+    const { getByText } = render(<ProfileScreen />);
+    await act(async () => { fireEvent.press(getByText("Sign Out")); });
+
+    await waitFor(() => {
+      expect(mockWindowAlert).toHaveBeenCalledWith("Could not sign out. Please try again.");
+    });
+  });
 });

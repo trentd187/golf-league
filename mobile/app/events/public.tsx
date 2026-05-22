@@ -14,7 +14,6 @@ import {
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
 } from "react-native";
 
 import { useRouter, useFocusEffect } from "expo-router";
@@ -26,6 +25,7 @@ import { apiFetch } from "@/utils/api";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge } from "@/components/badges";
 import { apiToDisplay } from "@/components/DateInput";
+import { showAlert, showConfirm } from "@/utils/alerts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,21 +100,17 @@ export default function PublicEventsScreen() {
       queryClient.invalidateQueries({ queryKey: ["events"] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not request to join", err.message, [{ text: "OK" }]);
+      showAlert("Could not request to join", err.message);
     },
   });
 
   const handleRequestJoin = (event: PublicEvent) => {
-    Alert.alert(
+    showConfirm(
       `Request to join "${event.name}"?`,
       "An organizer will review your request before you're added.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Request",
-          onPress: () => requestJoinMutation.mutate(event.id),
-        },
-      ]
+      () => requestJoinMutation.mutate(event.id),
+      "Request",
+      "Cancel",
     );
   };
 

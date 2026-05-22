@@ -25,7 +25,6 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   RefreshControl,
   KeyboardAvoidingView,
   Platform,
@@ -42,6 +41,7 @@ import { apiFetch } from "@/utils/api";
 import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
+import { showAlert } from "@/utils/alerts";
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -595,7 +595,7 @@ export default function ScorecardScreen() {
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["round", roundId] });
     } catch {
-      Alert.alert("Error", "Could not save handicaps. Check your connection and try again.");
+      showAlert("Error", "Could not save handicaps. Check your connection and try again.");
     } finally {
       setSavingHandicaps(false);
     }
@@ -608,7 +608,7 @@ export default function ScorecardScreen() {
     if (!targetId || !group) return;
     const hNum = Number.parseInt(handicapDraft, 10);
     if (Number.isNaN(hNum) || hNum < 0) {
-      Alert.alert("Invalid", "Enter a valid course handicap (0 or more).");
+      showAlert("Invalid", "Enter a valid course handicap (0 or more).");
       return;
     }
     setSavingHandicap(true);
@@ -629,7 +629,7 @@ export default function ScorecardScreen() {
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["round", roundId] });
     } catch {
-      Alert.alert("Error", "Could not update handicap. Please try again.");
+      showAlert("Error", "Could not update handicap. Please try again.");
     } finally {
       setSavingHandicap(false);
     }

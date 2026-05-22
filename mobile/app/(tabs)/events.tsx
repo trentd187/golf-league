@@ -19,7 +19,6 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -34,6 +33,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { showAlert } from "@/utils/alerts";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge, StatusChip } from "@/components/badges";
@@ -315,14 +315,14 @@ export default function EventsScreen() {
       setNewIsPublic(false);
     },
     onError: (err: Error) => {
-      Alert.alert("Something went wrong", err.message, [{ text: "OK" }]);
+      showAlert("Something went wrong", err.message);
     },
   });
 
   const handleCreate = () => {
     const trimmedName = newName.trim();
     if (!trimmedName) {
-      Alert.alert("Name required", "Please enter a name for the event.", [{ text: "OK" }]);
+      showAlert("Name required", "Please enter a name for the event.");
       return;
     }
     // displayToApi returns "" for empty — use || undefined to omit the field rather than
@@ -332,7 +332,7 @@ export default function EventsScreen() {
     const allowanceStr = newHandicapAllowance.trim();
     const allowanceNum = allowanceStr ? parseFloat(allowanceStr) : undefined;
     if (allowanceNum !== undefined && (isNaN(allowanceNum) || allowanceNum < 0 || allowanceNum > 100)) {
-      Alert.alert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.", [{ text: "OK" }]);
+      showAlert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.");
       return;
     }
     createEventMutation.mutate({

@@ -12,9 +12,7 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
-  Alert,
   Modal,
-
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +22,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
 import type { CourseSummary } from "@/types/courses";
 
@@ -107,7 +106,7 @@ export default function CoursesScreen() {
       router.push(`/courses/${created.id}`);
     },
     onError: (err: Error) => {
-      Alert.alert("Error", err.message);
+      showAlert("Error", err.message);
     },
   });
 

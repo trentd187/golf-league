@@ -43,6 +43,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
 import { getTelemetryClient } from "@/utils/telemetry";
+import { showAlert } from "@/utils/alerts";
 import {
   type ScorecardSettings,
   DEFAULT_SCORECARD_SETTINGS,
@@ -229,7 +230,7 @@ export default function ProfileScreen() {
           getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
             message: (err as Error)?.message,
           });
-          Alert.alert("Upload failed", (err as Error)?.message ?? "Could not upload photo.");
+          window.alert(`Upload failed: ${(err as Error)?.message ?? "Could not upload photo."}`);
         } finally {
           setUploadingPhoto(false);
         }
@@ -306,11 +307,7 @@ export default function ProfileScreen() {
       await supabase.auth.refreshSession();
       setEditing(false);
     } catch (err) {
-      Alert.alert(
-        "Something went wrong",
-        (err as Error)?.message ?? "Could not save your name. Please try again.",
-        [{ text: "OK" }]
-      );
+      showAlert("Something went wrong", (err as Error)?.message ?? "Could not save your name. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -321,26 +318,35 @@ export default function ProfileScreen() {
     setDisplayNameInput("");
   };
 
+  const performSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOut();
+      router.replace("/sign-in");
+    } catch {
+      if (Platform.OS === "web") {
+        window.alert("Could not sign out. Please try again.");
+      } else {
+        Alert.alert("Something went wrong", "Could not sign out. Please try again.", [
+          { text: "OK" },
+        ]);
+      }
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   const handleSignOut = () => {
+    // Alert.alert is a no-op in react-native-web — use window.confirm() on web instead.
+    if (Platform.OS === "web") {
+      if (window.confirm("Are you sure you want to sign out?")) {
+        void performSignOut();
+      }
+      return;
+    }
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign Out",
-        style: "destructive",
-        onPress: async () => {
-          setSigningOut(true);
-          try {
-            await signOut();
-            router.replace("/sign-in");
-          } catch {
-            Alert.alert("Something went wrong", "Could not sign out. Please try again.", [
-              { text: "OK" },
-            ]);
-          } finally {
-            setSigningOut(false);
-          }
-        },
-      },
+      { text: "Sign Out", style: "destructive", onPress: () => void performSignOut() },
     ]);
   };
 

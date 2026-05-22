@@ -13,7 +13,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   RefreshControl,
   Modal,
   TextInput,
@@ -30,6 +29,7 @@ import ModalHeader from "@/components/ModalHeader";
 import HoleDataGrid from "@/components/HoleDataGrid";
 import TeeForm from "@/components/TeeForm";
 import type { CourseDetail, TeeDetail } from "@/types/courses";
+import { showAlert, showConfirm } from "@/utils/alerts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -120,42 +120,39 @@ export default function CourseDetailScreen() {
       invalidateCourse();
       setEditCourseVisible(false);
     },
-    onError: (err: Error) => Alert.alert("Error", err.message),
+    onError: (err: Error) => showAlert("Error", err.message),
   });
 
   // ── Tee delete ─────────────────────────────────────────────────────────────
+  const confirmDeleteTee = async (tee: TeeDetail) => {
+    setDeletingTeeId(tee.id);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `${API_URL}/api/v1/courses/${id}/tees/${tee.id}`,
+        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showAlert("Error", (body as { error?: string }).error ?? "Could not delete tee.");
+        return;
+      }
+      if (expandedTeeId === tee.id) setExpandedTeeId(null);
+      invalidateCourse();
+    } catch {
+      showAlert("Error", "Check your connection and try again.");
+    } finally {
+      setDeletingTeeId(null);
+    }
+  };
+
   const deleteTee = (tee: TeeDetail) => {
-    Alert.alert(
+    showConfirm(
       `Delete "${tee.name}" tee?`,
       "This will also delete all hole data for this tee. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            setDeletingTeeId(tee.id);
-            try {
-              const token = await getToken();
-              const res = await fetch(
-                `${API_URL}/api/v1/courses/${id}/tees/${tee.id}`,
-                { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
-              );
-              if (!res.ok) {
-                const body = await res.json().catch(() => ({}));
-                Alert.alert("Error", (body as { error?: string }).error ?? "Could not delete tee.");
-                return;
-              }
-              if (expandedTeeId === tee.id) setExpandedTeeId(null);
-              invalidateCourse();
-            } catch {
-              Alert.alert("Error", "Check your connection and try again.");
-            } finally {
-              setDeletingTeeId(null);
-            }
-          },
-        },
-      ],
+      () => { void confirmDeleteTee(tee); },
+      "Delete",
+      "Cancel",
     );
   };
 
@@ -170,13 +167,13 @@ export default function CourseDetailScreen() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        Alert.alert("Refresh failed", (body as { error?: string }).error ?? "Could not refresh.");
+        showAlert("Refresh failed", (body as { error?: string }).error ?? "Could not refresh.");
         return;
       }
       invalidateCourse();
-      Alert.alert("Refreshed", "Course data updated from external source.");
+      showAlert("Refreshed", "Course data updated from external source.");
     } catch {
-      Alert.alert("Refresh failed", "Check your connection and try again.");
+      showAlert("Refresh failed", "Check your connection and try again.");
     } finally {
       setRefreshingCourse(false);
     }

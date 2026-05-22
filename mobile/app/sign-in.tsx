@@ -21,7 +21,6 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   ScrollView,
   Platform,
@@ -31,6 +30,7 @@ import * as AuthSession from "expo-auth-session";
 import { supabase } from "@/utils/supabase";
 import { useTheme } from "@/hooks/useTheme";
 import { getTelemetryClient } from "@/utils/telemetry";
+import { showAlert } from "@/utils/alerts";
 
 // Required for OAuth redirects to complete correctly in Expo — safe to call unconditionally.
 WebBrowser.maybeCompleteAuthSession();
@@ -48,7 +48,7 @@ export default function SignIn() {
   // --- Helpers ---
 
   const showErrorAlert = (message: string) => {
-    Alert.alert("Something went wrong", message, [{ text: "OK" }]);
+    showAlert("Something went wrong", message);
   };
 
   // --- Google OAuth ---

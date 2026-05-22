@@ -14,10 +14,13 @@
 package handlers_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -186,4 +189,68 @@ func TestRemoveGroupMember_InvalidUserID(t *testing.T) {
 			"/rounds/"+validUUID+"/groups/"+validUUID+"/members/bad-id", nil), -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── writeRoundError status mapping ──────────────────────────────────────────
+
+// TestWriteRoundError_StatusMapping locks in the status code each known service
+// error maps to. Tier 1 only — no DB, no service call.
+func TestWriteRoundError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{"validation", &services.ValidationError{Field: "x", Message: "bad"}, http.StatusBadRequest},
+		{"round not found", services.ErrRoundNotFound, http.StatusNotFound},
+		{"group not found", services.ErrGroupNotFound, http.StatusNotFound},
+		{"course not found", services.ErrCourseNotFound, http.StatusNotFound},
+		{"tee not found", services.ErrTeeNotFound, http.StatusNotFound},
+		{"player not event member", services.ErrPlayerNotEventMember, http.StatusNotFound},
+		{"player not in round", services.ErrPlayerNotInRound, http.StatusNotFound},
+		{"round forbidden", services.ErrRoundForbidden, http.StatusForbidden},
+		{"group full", services.ErrGroupFull, http.StatusConflict},
+		{"player already in group", services.ErrPlayerAlreadyInGroup, http.StatusConflict},
+		{"unrecognised → 500", errors.New("unexpected"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := captureErrorDetail(http.MethodGet, "/x", func(c *fiber.Ctx) error {
+				return handlers.WriteRoundErrorExported(c, tc.err, "test.tag", "fallback")
+			})
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
+}
+
+// ─── Pure helper functions ────────────────────────────────────────────────────
+
+func TestFormatTeeTime_Nil(t *testing.T) {
+	assert.Nil(t, handlers.FormatTeeTimeExported(nil))
+}
+
+func TestFormatTeeTime_Value(t *testing.T) {
+	ts := time.Date(2026, 5, 21, 14, 30, 0, 0, time.UTC)
+	got := handlers.FormatTeeTimeExported(&ts)
+	require.NotNil(t, got)
+	assert.Equal(t, "2:30 PM", *got)
+}
+
+func TestToGroupResponse_Empty(t *testing.T) {
+	got := handlers.ToGroupResponseExported("id-1", 1, nil, nil, 1, nil)
+	assert.Equal(t, "id-1", got.ID)
+	assert.Equal(t, 1, got.GroupNumber)
+	assert.Empty(t, got.Players)
+	assert.Nil(t, got.TeeTime)
+}
+
+func TestToGroupResponse_WithPlayers(t *testing.T) {
+	players := []services.GroupPlayerResult{
+		{UserID: "u1", RoundPlayerID: "rp1", DisplayName: "Alice", Email: "a@example.com"},
+	}
+	got := handlers.ToGroupResponseExported("id-2", 2, nil, nil, 1, players)
+	require.Len(t, got.Players, 1)
+	assert.Equal(t, "Alice", got.Players[0].DisplayName)
 }

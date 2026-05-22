@@ -70,7 +70,7 @@ export const DEFAULT_SCORECARD_SETTINGS: ScorecardSettings = {
   tee_shot_distance_enabled:   false,
   stat_order:                  ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
   score_position:              "last",
-  show_group_on_scorecard:     true,
+  show_group_on_scorecard:     false,
 };
 
 export interface ScorecardPlayer {

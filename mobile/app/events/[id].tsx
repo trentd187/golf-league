@@ -25,7 +25,6 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Switch,
@@ -61,6 +60,7 @@ import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal"
 import UserAvatar from "@/components/UserAvatar";
 import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
+import { showAlert, showConfirm } from "@/utils/alerts";
 import StatsCards from "@/components/StatsCards";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -331,7 +331,7 @@ export default function EventDetailScreen() {
       setEditModalVisible(false);
     },
     onError: (err: Error) => {
-      Alert.alert("Update failed", err.message, [{ text: "OK" }]);
+      showAlert("Update failed", err.message);
     },
   });
 
@@ -358,7 +358,7 @@ export default function EventDetailScreen() {
       setMemberSearch("");
     },
     onError: (err: Error) => {
-      Alert.alert("Could not add member", err.message, [{ text: "OK" }]);
+      showAlert("Could not add member", err.message);
     },
   });
 
@@ -402,7 +402,7 @@ export default function EventDetailScreen() {
       setGroupTeeTimes([""]);
     },
     onError: (err: Error) => {
-      Alert.alert("Could not schedule round", err.message, [{ text: "OK" }]);
+      showAlert("Could not schedule round", err.message);
     },
   });
 
@@ -427,7 +427,7 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["events"] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not end event", err.message, [{ text: "OK" }]);
+      showAlert("Could not end event", err.message);
     },
   });
 
@@ -448,7 +448,7 @@ export default function EventDetailScreen() {
       router.back();
     },
     onError: (err: Error) => {
-      Alert.alert("Could not delete event", err.message, [{ text: "OK" }]);
+      showAlert("Could not delete event", err.message);
     },
   });
 
@@ -471,7 +471,7 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["event", id, "join-requests"] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not handle request", err.message, [{ text: "OK" }]);
+      showAlert("Could not handle request", err.message);
     },
   });
 
@@ -493,7 +493,7 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["event", id] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not update role", err.message, [{ text: "OK" }]);
+      showAlert("Could not update role", err.message);
     },
   });
 
@@ -512,7 +512,7 @@ export default function EventDetailScreen() {
 
   const handleSaveEdit = () => {
     if (!editName.trim()) {
-      Alert.alert("Name required", "Event name cannot be empty.", [{ text: "OK" }]);
+      showAlert("Name required", "Event name cannot be empty.");
       return;
     }
     const allowanceStr = editHandicapAllowance.trim();
@@ -523,7 +523,7 @@ export default function EventDetailScreen() {
     } else {
       const parsed = parseFloat(allowanceStr);
       if (isNaN(parsed) || parsed < 0 || parsed > 100) {
-        Alert.alert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.", [{ text: "OK" }]);
+        showAlert("Invalid allowance", "Handicap allowance must be a number between 0 and 100.");
         return;
       }
       allowanceVal = parsed;
@@ -539,50 +539,40 @@ export default function EventDetailScreen() {
   };
 
   const handleEndEvent = () => {
-    Alert.alert(
+    showConfirm(
       "End Event",
       "Mark this event as completed? This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "End Event",
-          style: "destructive",
-          onPress: () => endEventMutation.mutate(),
-        },
-      ]
+      () => endEventMutation.mutate(),
+      "End Event",
+      "Cancel",
     );
   };
 
   const handleDeleteEvent = () => {
-    Alert.alert(
+    showConfirm(
       "Delete event?",
       `"${event?.name}" and all its rounds will be permanently deleted. This cannot be undone.`,
-      [
-        { text: "Keep", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => deleteEventMutation.mutate(),
-        },
-      ]
+      () => deleteEventMutation.mutate(),
+      "Delete",
+      "Keep",
     );
   };
 
   const handleScheduleRound = () => {
     if (!roundName.trim()) {
-      Alert.alert("Name required", "Please enter a name for this round.", [{ text: "OK" }]);
+      showAlert("Name required", "Please enter a name for this round.");
       return;
     }
     if (!selectedCourse) {
-      Alert.alert("Course required", "Please select a golf course.", [{ text: "OK" }]);
+      showAlert("Course required", "Please select a golf course.");
       return;
     }
     if (selectedCourse.tees.length > 0 && !selectedTeeId) {
-      Alert.alert("Tee required", "Please select a tee set for this course.", [{ text: "OK" }]);
+      showAlert("Tee required", "Please select a tee set for this course.");
       return;
     }
     if (!roundDate.trim()) {
-      Alert.alert("Date required", "Please enter the round date (MM-DD-YY).", [{ text: "OK" }]);
+      showAlert("Date required", "Please enter the round date (MM-DD-YY).");
       return;
     }
 
@@ -891,10 +881,13 @@ export default function EventDetailScreen() {
                         const message = newRole === "organizer"
                           ? `${member.display_name} will be able to manage this event.`
                           : `${member.display_name} will become a regular player.`;
-                        Alert.alert(action, message, [
-                          { text: "Cancel", style: "cancel" },
-                          { text: "Confirm", onPress: () => updateMemberRoleMutation.mutate({ userId: member.user_id, role: newRole }) },
-                        ]);
+                        showConfirm(
+                          action,
+                          message,
+                          () => updateMemberRoleMutation.mutate({ userId: member.user_id, role: newRole }),
+                          "Confirm",
+                          "Cancel",
+                        );
                       }}
                     >
                       <Ionicons

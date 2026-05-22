@@ -7,3 +7,17 @@ package handlers
 // status mapping and the error_detail visibility hook directly, without
 // having to fabricate a service call that returns each error variant.
 var WriteCourseErrorExported = writeCourseError
+var WriteScoreErrorExported = writeScoreError
+var WriteRoundErrorExported = writeRoundError
+var WriteEventErrorExported = writeEventError
+var WriteUserErrorExported = writeUserError
+
+// Pure helper functions — no fiber context required.
+var FormatOptionalDateExported = formatOptionalDate
+var FormatTeeTimeExported = formatTeeTime
+var ToGroupResponseExported = toGroupResponse
+var BuildEventResponseExported = buildEventResponse
+var BuildMemberResponseExported = buildMemberResponse
+var BuildHoleResponsesExported = buildHoleResponses
+var BuildTeeResponseExported = buildTeeResponse
+var BuildCourseDetailExported = buildCourseDetail

@@ -36,7 +36,6 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
@@ -58,6 +57,7 @@ import UserSearchList, { UserSummary } from "@/components/UserSearchList";
 // format pill grid as rows without duplicating JSX.
 import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
+import { showAlert, showConfirm } from "@/utils/alerts";
 import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import type { Scorecard } from "@/types/scorecard";
@@ -262,7 +262,7 @@ export default function RoundDetailScreen() {
       setMemberSearch("");
     },
     onError: (err: Error) => {
-      Alert.alert("Could not add player", err.message, [{ text: "OK" }]);
+      showAlert("Could not add player", err.message);
     },
   });
 
@@ -285,7 +285,7 @@ export default function RoundDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not remove player", err.message, [{ text: "OK" }]);
+      showAlert("Could not remove player", err.message);
     },
   });
 
@@ -323,7 +323,7 @@ export default function RoundDetailScreen() {
       setEditModalVisible(false);
     },
     onError: (err: Error) => {
-      Alert.alert("Could not update round", err.message, [{ text: "OK" }]);
+      showAlert("Could not update round", err.message);
     },
   });
 
@@ -344,7 +344,7 @@ export default function RoundDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not add group", err.message, [{ text: "OK" }]);
+      showAlert("Could not add group", err.message);
     },
   });
 
@@ -368,7 +368,7 @@ export default function RoundDetailScreen() {
       setTeeTimePickerOpen(false);
     },
     onError: (err: Error) => {
-      Alert.alert("Could not update group", err.message, [{ text: "OK" }]);
+      showAlert("Could not update group", err.message);
     },
   });
 
@@ -388,7 +388,7 @@ export default function RoundDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
     },
     onError: (err: Error) => {
-      Alert.alert("Could not delete group", err.message, [{ text: "OK" }]);
+      showAlert("Could not delete group", err.message);
     },
   });
 
@@ -411,7 +411,7 @@ export default function RoundDetailScreen() {
       router.back();
     },
     onError: (err: Error) => {
-      Alert.alert("Could not delete round", err.message, [{ text: "OK" }]);
+      showAlert("Could not delete round", err.message);
     },
   });
 
@@ -438,22 +438,17 @@ export default function RoundDetailScreen() {
       }
     },
     onError: (err: Error) => {
-      Alert.alert("Could not end round", err.message, [{ text: "OK" }]);
+      showAlert("Could not end round", err.message);
     },
   });
 
   const handleEndRound = () => {
-    Alert.alert(
+    showConfirm(
       "End Round?",
       "This will mark the round as completed for all groups.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "End Round",
-          style: "destructive",
-          onPress: () => endRoundMutation.mutate(),
-        },
-      ]
+      () => endRoundMutation.mutate(),
+      "End Round",
+      "Cancel",
     );
   };
 
@@ -480,21 +475,17 @@ export default function RoundDetailScreen() {
       }
     },
     onError: (err: Error) => {
-      Alert.alert("Could not reactivate round", err.message, [{ text: "OK" }]);
+      showAlert("Could not reactivate round", err.message);
     },
   });
 
   const handleReactivateRound = () => {
-    Alert.alert(
+    showConfirm(
       "Reactivate Round?",
       "This will reopen the round and allow score entry again.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Reactivate",
-          onPress: () => reactivateRoundMutation.mutate(),
-        },
-      ]
+      () => reactivateRoundMutation.mutate(),
+      "Reactivate",
+      "Cancel",
     );
   };
 
@@ -530,7 +521,7 @@ export default function RoundDetailScreen() {
       }
     },
     onError: (err: Error) => {
-      Alert.alert("Could not start round", err.message, [{ text: "OK" }]);
+      showAlert("Could not start round", err.message);
     },
   });
 
@@ -558,33 +549,22 @@ export default function RoundDetailScreen() {
   };
 
   const handleDeleteGroup = (group: RoundGroup) => {
-    Alert.alert(
+    showConfirm(
       "Delete group?",
       `Delete Group ${group.group_number}? Players will remain registered in the round.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => deleteGroupMutation.mutate(group.id),
-        },
-      ]
+      () => deleteGroupMutation.mutate(group.id),
+      "Delete",
+      "Cancel",
     );
   };
 
   const handleRemovePlayer = (group: RoundGroup, player: GroupMember) => {
-    Alert.alert(
+    showConfirm(
       "Remove player?",
       `Remove ${player.display_name} from Group ${group.group_number}?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () =>
-            removePlayerMutation.mutate({ groupId: group.id, userId: player.user_id }),
-        },
-      ]
+      () => removePlayerMutation.mutate({ groupId: group.id, userId: player.user_id }),
+      "Remove",
+      "Cancel",
     );
   };
 
@@ -601,11 +581,11 @@ export default function RoundDetailScreen() {
 
   const handleSaveEdit = () => {
     if (!editName.trim()) {
-      Alert.alert("Name required", "Round name cannot be empty.", [{ text: "OK" }]);
+      showAlert("Name required", "Round name cannot be empty.");
       return;
     }
     if (editNewCourse && editNewCourse.tees.length > 0 && !editNewTeeId) {
-      Alert.alert("Tee required", "Please select a tee set for the new course.", [{ text: "OK" }]);
+      showAlert("Tee required", "Please select a tee set for the new course.");
       return;
     }
 
@@ -634,17 +614,12 @@ export default function RoundDetailScreen() {
   };
 
   const handleDeleteRound = () => {
-    Alert.alert(
+    showConfirm(
       "Delete round?",
       `"${round?.name}" and all its group assignments will be permanently deleted.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => deleteRoundMutation.mutate(),
-        },
-      ]
+      () => deleteRoundMutation.mutate(),
+      "Delete",
+      "Cancel",
     );
   };
 

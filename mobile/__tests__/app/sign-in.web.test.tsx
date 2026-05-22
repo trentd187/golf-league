@@ -5,7 +5,7 @@
 
 import React from "react";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
-import { Alert, Platform } from "react-native";
+import { Platform } from "react-native";
 
 // Mutate Platform.OS to 'web' before tests run. sign-in.tsx reads Platform.OS
 // inside handleGoogleOAuth (a function body), so the value at call-time is 'web'.
@@ -15,8 +15,11 @@ beforeAll(() => { (Platform as unknown as { OS: string }).OS = "web"; });
 afterAll(() => { (Platform as unknown as { OS: string }).OS = "ios"; });
 
 // window.location.origin is used to build the OAuth redirectTo URL on web.
+// window.alert is called by showAlert() on web instead of Alert.alert.
+const mockWindowAlert = jest.fn();
 (globalThis as unknown as Record<string, unknown>).window = {
   location: { origin: "https://golf-web.up.railway.app" },
+  alert: mockWindowAlert,
 };
 
 // --- Mocks ---
@@ -77,8 +80,6 @@ jest.mock("@/hooks/useTheme", () => ({
 import SignIn from "@/app/sign-in";
 import { supabase } from "@/utils/supabase";
 
-const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-
 beforeEach(() => {
   jest.clearAllMocks();
   (supabase.auth.signInWithOAuth as jest.Mock).mockResolvedValue({ error: null });
@@ -118,10 +119,8 @@ it("logs a warn and shows an alert when web signInWithOAuth returns an error", a
       "Google OAuth sign-in failed",
       { message: "OAuth provider unavailable" }
     );
-    expect(alertSpy).toHaveBeenCalledWith(
-      "Something went wrong",
-      "OAuth provider unavailable",
-      [{ text: "OK" }]
+    expect(mockWindowAlert).toHaveBeenCalledWith(
+      "Something went wrong: OAuth provider unavailable"
     );
   });
 });

@@ -7,6 +7,7 @@
 //
 // Endpoints:
 //
+//	POST   /api/v1/rounds                                     → create eventless round
 //	GET    /api/v1/rounds                                     → my rounds
 //	GET    /api/v1/rounds/:roundId                            → round detail
 //	PATCH  /api/v1/rounds/:roundId                            → update round
@@ -49,15 +50,16 @@ type GroupResponse struct {
 }
 
 // RoundDetailResponse is the full round payload returned by GET /api/v1/rounds/:roundId.
+// EventID is null for eventless (casual) rounds.
 type RoundDetailResponse struct {
-	ID            string `json:"id"`
-	EventID       string `json:"event_id"`
-	Name          string `json:"name"`
-	CourseName    string `json:"course_name"`
-	ScheduledDate string `json:"scheduled_date"` // "YYYY-MM-DD"
-	Status        string `json:"status"`
-	ScoringFormat string `json:"scoring_format"`
-	RoundNumber   int    `json:"round_number"`
+	ID            string  `json:"id"`
+	EventID       *string `json:"event_id"` // null for eventless rounds
+	Name          string  `json:"name"`
+	CourseName    string  `json:"course_name"`
+	ScheduledDate string  `json:"scheduled_date"` // "YYYY-MM-DD"
+	Status        string  `json:"status"`
+	ScoringFormat string  `json:"scoring_format"`
+	RoundNumber   int     `json:"round_number"`
 	// IsOrganizer is computed server-side so the client skips a separate permission query.
 	IsOrganizer bool            `json:"is_organizer"`
 	Groups      []GroupResponse `json:"groups"`
@@ -65,11 +67,12 @@ type RoundDetailResponse struct {
 
 // MyRoundResponse extends a round summary with event context so the Rounds tab
 // can display both round name and event name without a second query.
+// EventID and EventName are null for eventless (casual) rounds.
 type MyRoundResponse struct {
 	ID            string  `json:"id"`
 	Name          string  `json:"name"`
-	EventID       string  `json:"event_id"`
-	EventName     string  `json:"event_name"`
+	EventID       *string `json:"event_id"`   // null for eventless rounds
+	EventName     *string `json:"event_name"` // null for eventless rounds
 	CourseName    string  `json:"course_name"`
 	TeeName       string  `json:"tee_name"`
 	TeePar        int     `json:"tee_par"`
@@ -80,6 +83,17 @@ type MyRoundResponse struct {
 	ScoringFormat string  `json:"scoring_format"`
 	RoundNumber   int     `json:"round_number"`
 	GroupCount    int     `json:"group_count"`
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// uuidPtrStr converts a *uuid.UUID to *string; returns nil when the input is nil.
+func uuidPtrStr(u *uuid.UUID) *string {
+	if u == nil {
+		return nil
+	}
+	s := u.String()
+	return &s
 }
 
 // ─── Request types ────────────────────────────────────────────────────────────
@@ -109,6 +123,17 @@ type UpdateGroupRequest struct {
 // AddGroupMemberRequest is the JSON body for POST .../groups/:groupId/members.
 type AddGroupMemberRequest struct {
 	UserID string `json:"user_id"` // UUID of the event member to add
+}
+
+// CreateEventlessRoundRequest is the JSON body for POST /api/v1/rounds.
+// ScheduledDate is required. Either CourseID or CourseName must be provided.
+type CreateEventlessRoundRequest struct {
+	Name          string  `json:"name"`
+	ScheduledDate string  `json:"scheduled_date"` // "YYYY-MM-DD" required
+	CourseID      *string `json:"course_id"`      // UUID string; preferred over CourseName
+	DefaultTeeID  *string `json:"default_tee_id"` // UUID string; required when CourseID is set
+	CourseName    string  `json:"course_name"`    // fallback find-or-create
+	ScoringFormat *string `json:"scoring_format"` // defaults to "stroke" in service
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -222,7 +247,7 @@ func GetMyRounds(svc *services.RoundService) fiber.Handler {
 			out[i] = MyRoundResponse{
 				ID:            r.Round.ID.String(),
 				Name:          r.Round.Name,
-				EventID:       r.Round.EventID.String(),
+				EventID:       uuidPtrStr(r.Round.EventID),
 				EventName:     r.EventName,
 				CourseName:    r.CourseName,
 				TeeName:       r.TeeName,
@@ -268,7 +293,7 @@ func GetRound(svc *services.RoundService) fiber.Handler {
 
 		return c.JSON(RoundDetailResponse{
 			ID:            result.Round.ID.String(),
-			EventID:       result.Round.EventID.String(),
+			EventID:       uuidPtrStr(result.Round.EventID),
 			Name:          result.Round.Name,
 			CourseName:    result.Round.Course.Name,
 			ScheduledDate: result.Round.ScheduledDate.UTC().Format("2006-01-02"),
@@ -495,5 +520,54 @@ func RemoveGroupMember(svc *services.RoundService) fiber.Handler {
 			return writeRoundError(c, err, "round.remove_group_member", "failed to remove player")
 		}
 		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
+// CreateEventlessRound returns a handler for POST /api/v1/rounds.
+// Creates a standalone round not associated with any event. The caller is
+// automatically added to Group 1. Requires scheduled_date and either course_id
+// or course_name. Returns 201 with the round ID so the client can navigate directly.
+func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, _, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+
+		var req CreateEventlessRoundRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		if req.ScheduledDate == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date is required"})
+		}
+		if req.CourseID == nil && req.CourseName == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "course_id or course_name is required"})
+		}
+		if req.CourseID != nil {
+			if _, err := uuid.Parse(*req.CourseID); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course_id"})
+			}
+		}
+
+		result, err := svc.CreateEventlessRound(c.UserContext(), callerID, services.CreateEventlessRoundInput{
+			Name:          req.Name,
+			ScheduledDate: req.ScheduledDate,
+			ScoringFormat: req.ScoringFormat,
+			CourseID:      req.CourseID,
+			DefaultTeeID:  req.DefaultTeeID,
+			CourseName:    req.CourseName,
+		})
+		if err != nil {
+			return writeRoundError(c, err, "round.create_eventless", "failed to create round")
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"id":             result.Round.ID.String(),
+			"name":           result.Round.Name,
+			"scheduled_date": result.Round.ScheduledDate.UTC().Format("2006-01-02"),
+			"status":         string(result.Round.Status),
+			"scoring_format": string(result.Round.ScoringFormat),
+		})
 	}
 }

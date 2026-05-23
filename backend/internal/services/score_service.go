@@ -166,16 +166,23 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 	}
 
 	var round models.Round
-	if err := s.DB.WithContext(ctx).Select("event_id", "status").First(&round, "id = ?", roundID).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Select("event_id", "status", "created_by").First(&round, "id = ?", roundID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrRoundNotFound
 		}
 		return false, fmt.Errorf("load round for permission check: %w", err)
 	}
 
-	isOrg, err := s.EventSvc.IsOrganizer(ctx, round.EventID, callerID, callerRole)
-	if err != nil {
-		return false, fmt.Errorf("check organizer: %w", err)
+	var isOrg bool
+	if round.EventID != nil {
+		var err error
+		isOrg, err = s.EventSvc.IsOrganizer(ctx, *round.EventID, callerID, callerRole)
+		if err != nil {
+			return false, fmt.Errorf("check organizer: %w", err)
+		}
+	} else {
+		// Eventless round: creator is the organizer.
+		isOrg = round.CreatedBy != nil && *round.CreatedBy == callerID
 	}
 	if isOrg {
 		return true, nil
@@ -193,18 +200,27 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		return false, nil
 	}
 
-	// Resolve caller → EventPlayer → RoundPlayer → GroupPlayer.
-	var callerEP models.EventPlayer
-	if err := s.DB.WithContext(ctx).
-		Where("event_id = ? AND user_id = ?", round.EventID, callerID).
-		First(&callerEP).Error; err != nil {
-		return false, nil
-	}
+	// Resolve caller → RoundPlayer → GroupPlayer.
+	// For event-linked rounds look up via EventPlayer; for eventless use user_id directly.
 	var callerRP models.RoundPlayer
-	if err := s.DB.WithContext(ctx).
-		Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
-		First(&callerRP).Error; err != nil {
-		return false, nil
+	if round.EventID != nil {
+		var callerEP models.EventPlayer
+		if err := s.DB.WithContext(ctx).
+			Where("event_id = ? AND user_id = ?", *round.EventID, callerID).
+			First(&callerEP).Error; err != nil {
+			return false, nil
+		}
+		if err := s.DB.WithContext(ctx).
+			Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
+			First(&callerRP).Error; err != nil {
+			return false, nil
+		}
+	} else {
+		if err := s.DB.WithContext(ctx).
+			Where("round_id = ? AND user_id = ?", roundID, callerID).
+			First(&callerRP).Error; err != nil {
+			return false, nil
+		}
 	}
 	var callerGP models.GroupPlayer
 	err2 := s.DB.WithContext(ctx).
@@ -231,9 +247,15 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		return nil, fmt.Errorf("load round: %w", err)
 	}
 
-	isOrg, err := s.EventSvc.IsOrganizer(ctx, round.EventID, callerID, callerRole)
-	if err != nil {
-		return nil, fmt.Errorf("check organizer: %w", err)
+	var isOrg bool
+	if round.EventID != nil {
+		var err error
+		isOrg, err = s.EventSvc.IsOrganizer(ctx, *round.EventID, callerID, callerRole)
+		if err != nil {
+			return nil, fmt.Errorf("check organizer: %w", err)
+		}
+	} else {
+		isOrg = round.CreatedBy != nil && *round.CreatedBy == callerID
 	}
 
 	effectiveHoleCount := round.Course.HoleCount

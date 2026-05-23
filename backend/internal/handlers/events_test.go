@@ -8,6 +8,8 @@
 //   - Missing/invalid userID local → 401 (uuid.Parse fails on empty string)
 //   - Invalid UUID in a URL param → 400 (uuid.Parse fails before DB lookup)
 //   - CreateEvent body validation: missing name, invalid event_type, bad date → 400
+//   - AddEventMember/HandleJoinRequest/ScheduleEventRound bad body → 400
+//   - AddEventMember invalid user_id in body → 400
 //
 // Paths that require a real DB (Tier 2):
 //   - EventService.IsOrganizer, DB lookups, actual creates/updates/deletes
@@ -23,6 +25,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -490,4 +493,58 @@ func TestBuildMemberResponse_Fields(t *testing.T) {
 	assert.Equal(t, validUUID, got.UserID)
 	assert.Equal(t, "Bob", got.DisplayName)
 	assert.Equal(t, "organizer", got.Role)
+}
+
+// ─── Body-parse and target-user-ID Tier 1 paths ──────────────────────────────
+
+// TestHandleJoinRequest_InvalidBody verifies that a non-JSON body returns 400
+// after auth/event/target-user checks pass but before any service call.
+func TestHandleJoinRequest_InvalidBody(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPatch, "/events/:id/join-requests/:userId",
+		handlers.HandleJoinRequest(nilEventSvc()))
+	req := httptest.NewRequest(http.MethodPatch,
+		"/events/"+validUUID+"/join-requests/"+validUUID,
+		strings.NewReader("not-json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestAddEventMember_InvalidBody verifies that a non-JSON body returns 400
+// after auth/event checks pass but before any service call.
+func TestAddEventMember_InvalidBody(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, "/events/:id/members",
+		handlers.AddEventMember(nilEventSvc()))
+	req := httptest.NewRequest(http.MethodPost,
+		"/events/"+validUUID+"/members",
+		strings.NewReader("not-json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestAddEventMember_InvalidTargetUserID verifies that a malformed user_id in the
+// request body returns 400 after body parsing succeeds but before any service call.
+func TestAddEventMember_InvalidTargetUserID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, "/events/:id/members",
+		handlers.AddEventMember(nilEventSvc()))
+	resp := doJSON(t, app, http.MethodPost, "/events/"+validUUID+"/members",
+		map[string]any{"user_id": "not-a-uuid"})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestScheduleEventRound_InvalidBody verifies that a non-JSON body returns 400
+// after auth/event checks pass but before any service call.
+func TestScheduleEventRound_InvalidBody(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, scheduleRoundRoute,
+		handlers.ScheduleEventRound(nil))
+	req := httptest.NewRequest(http.MethodPost,
+		"/events/"+validUUID+"/rounds",
+		strings.NewReader("not-json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

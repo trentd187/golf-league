@@ -72,8 +72,9 @@ func seedActiveRound(t *testing.T, db *gorm.DB, courseID uuid.UUID) {
 		tee = seedTee(t, db, courseID)
 	}
 
+	eid := event.ID
 	round := models.Round{
-		EventID:       event.ID,
+		EventID:       &eid,
 		CourseID:      courseID,
 		DefaultTeeID:  tee.ID,
 		ScheduledDate: time.Now(),
@@ -789,8 +790,9 @@ func TestCourseService_Refresh_PreservesTeesReferencedByNonActiveRound(t *testin
 	require.NoError(t, db.Create(&user).Error)
 	event := models.Event{Name: "Test Event", EventType: models.EventTypeCasual, CreatedBy: user.ID}
 	require.NoError(t, db.Create(&event).Error)
+	eid2 := event.ID
 	round := models.Round{
-		EventID:       event.ID,
+		EventID:       &eid2,
 		CourseID:      c.ID,
 		DefaultTeeID:  tee.ID, // <-- FK we must not break
 		ScheduledDate: time.Now(),

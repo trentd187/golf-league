@@ -11,6 +11,7 @@ var WriteScoreErrorExported = writeScoreError
 var WriteRoundErrorExported = writeRoundError
 var WriteEventErrorExported = writeEventError
 var WriteUserErrorExported = writeUserError
+var UUIDPtrStrExported = uuidPtrStr
 
 // Pure helper functions — no fiber context required.
 var FormatOptionalDateExported = formatOptionalDate

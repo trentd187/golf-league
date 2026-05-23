@@ -65,6 +65,21 @@ func TestGetMe_NoAuth_Unauthorized(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+// TestGetMe_InvalidUserIDLocal verifies that a malformed userID local returns 401
+// before any service call.
+func TestGetMe_InvalidUserIDLocal(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("userID", "not-a-uuid")
+		return c.Next()
+	})
+	app.Get("/api/v1/me", handlers.GetMe(nilUserSvc()))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/me", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 // ─── SearchUsers ──────────────────────────────────────────────────────────────
 
 func TestSearchUsers_MissingAuth(t *testing.T) {
@@ -191,6 +206,22 @@ func TestGetUserRounds_InvalidUserID(t *testing.T) {
 
 func TestGetScorecardSettings_NoAuth(t *testing.T) {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(nilUserSvc()))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/me/scorecard-settings", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestGetScorecardSettings_InvalidUserID verifies that a malformed userID local
+// (non-UUID string) returns 401 before any service call.
+func TestGetScorecardSettings_InvalidUserID(t *testing.T) {
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("userID", "not-a-uuid")
+		return c.Next()
+	})
 	app.Get("/users/me/scorecard-settings", handlers.GetScorecardSettings(nilUserSvc()))
 
 	req := httptest.NewRequest(http.MethodGet, "/users/me/scorecard-settings", nil)

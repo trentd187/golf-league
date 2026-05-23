@@ -1,5 +1,5 @@
 // app/rounds/create.tsx
-// New-round creation screen — accessible from the "+" button on the My Rounds tab.
+// New-round creation screen — accessible from the "Create" button on the My Rounds tab.
 // Creates an eventless (casual) round via POST /api/v1/rounds. The calling user
 // is auto-added to Group 1 by the backend. On success the screen navigates to
 // the new round's detail page (router.replace so back-nav returns to My Rounds,
@@ -23,13 +23,14 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
+import { useRoundForm } from "@/hooks/useRoundForm";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import { showAlert } from "@/utils/alerts";
+import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import DateInput, { displayToApi } from "@/components/DateInput";
-import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
-import { chunk } from "@/utils/array";
-import { SCORING_FORMATS } from "@/utils/scoringFormats";
+import CoursePickerModal from "@/components/CoursePickerModal";
+import RoundFormFields from "@/components/RoundFormFields";
 
 export default function CreateRoundScreen() {
   const t = useTheme();
@@ -39,45 +40,31 @@ export default function CreateRoundScreen() {
 
   const [roundName, setRoundName] = useState("");
   const [scheduledDate, setScheduledDate] = useState("");
-  const [scoringFormat, setScoringFormat] = useState("stroke");
-  const [selectedCourse, setSelectedCourse] = useState<PickedCourse | null>(null);
-  const [selectedTeeId, setSelectedTeeId] = useState<string | null>(null);
-  const [coursePickerVisible, setCoursePickerVisible] = useState(false);
+
+  const form = useRoundForm();
 
   const createMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
 
-      // Validate required fields client-side first.
-      if (!scheduledDate) {
-        throw new Error("Please enter a date.");
-      }
+      if (!scheduledDate) throw new Error("Please enter a date.");
       const apiDate = displayToApi(scheduledDate);
-      if (!apiDate) {
-        throw new Error("Invalid date — use MM-DD-YY format.");
-      }
-      if (!selectedCourse) {
-        throw new Error("Please select a golf course.");
-      }
-      if (selectedCourse.tees.length > 0 && !selectedTeeId) {
+      if (!apiDate) throw new Error("Invalid date — use MM-DD-YY format.");
+      if (!form.selectedCourse) throw new Error("Please select a golf course.");
+      if (form.selectedCourse.tees.length > 0 && !form.selectedTeeId) {
         throw new Error("Please select a tee set for this course.");
       }
 
-      // Build payload — prefer explicit IDs when the course has tees.
       const payload: Record<string, unknown> = {
         scheduled_date: apiDate,
-        scoring_format: scoringFormat,
+        ...buildRoundCoursePayload(
+          form.selectedCourse,
+          form.selectedTeeId,
+          form.nineHoleSelection,
+          form.scoringFormat,
+        ),
       };
-      if (roundName.trim()) {
-        payload.name = roundName.trim();
-      }
-      if (selectedTeeId) {
-        payload.course_id = selectedCourse.id;
-        payload.default_tee_id = selectedTeeId;
-      } else {
-        // No tees configured — backend will find-or-create a default tee.
-        payload.course_name = selectedCourse.name;
-      }
+      if (roundName.trim()) payload.name = roundName.trim();
 
       const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
         method: "POST",
@@ -140,104 +127,22 @@ export default function CreateRoundScreen() {
           />
         </View>
 
-        {/* ── Course picker ────────────────────────────────────────────────── */}
-        <View className="mb-4">
-          <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-            Course <Text className="text-red-500">*</Text>
-          </Text>
-          <TouchableOpacity
-            className={`border rounded-xl px-4 py-3 flex-row items-center gap-3 ${t.borderInput} ${t.surfaceSunken}`}
-            onPress={() => setCoursePickerVisible(true)}
-            disabled={isPending}
-            activeOpacity={0.7}
-          >
-            <View className="flex-1">
-              {selectedCourse ? (
-                <>
-                  <Text className={`text-base ${t.textPrimary}`}>{selectedCourse.name}</Text>
-                  {(selectedCourse.city || selectedCourse.state) && (
-                    <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
-                      {[selectedCourse.city, selectedCourse.state].filter(Boolean).join(", ")}
-                    </Text>
-                  )}
-                </>
-              ) : (
-                <Text className={`text-base ${t.textTertiary}`}>Search for a course…</Text>
-              )}
-            </View>
-            {selectedCourse ? (
-              <TouchableOpacity
-                onPress={() => { setSelectedCourse(null); setSelectedTeeId(null); }}
-                hitSlop={8}
-                disabled={isPending}
-              >
-                <Ionicons name="close-circle" size={18} color={t.colors.tabBarInactive} />
-              </TouchableOpacity>
-            ) : (
-              <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* ── Tee picker — only shown when the course has tees ────────────── */}
-        {selectedCourse && selectedCourse.tees.length > 0 && (
-          <View className="mb-4">
-            <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-              Tee <Text className="text-red-500">*</Text>
-            </Text>
-            <View className="gap-2">
-              {chunk(selectedCourse.tees, 2).map((row, rowIdx) => (
-                <View key={rowIdx} className="flex-row gap-2">
-                  {row.map((tee) => {
-                    const selected = selectedTeeId === tee.id;
-                    return (
-                      <TouchableOpacity
-                        key={tee.id}
-                        className={`flex-1 rounded-xl py-2.5 px-2 items-center border ${
-                          selected
-                            ? `${t.primaryBg} border-transparent`
-                            : `${t.surface} ${t.borderInput}`
-                        }`}
-                        onPress={() => setSelectedTeeId(tee.id)}
-                        disabled={isPending}
-                      >
-                        <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
-                          {tee.name}
-                        </Text>
-                        <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
-                          Par {tee.par} · Slope {tee.slope_rating} · {tee.course_rating}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-
-        {/* Info chip when the course has no tees */}
-        {selectedCourse && selectedCourse.tees.length === 0 && (
-          <View className={`mb-4 flex-row items-center gap-2 rounded-xl px-3 py-2.5 border ${t.border}`}>
-            <Ionicons name="information-circle-outline" size={16} color={t.colors.tabBarInactive} />
-            <Text className={`text-xs flex-1 ${t.textTertiary}`}>
-              No tees configured — a default tee will be created automatically.
-            </Text>
-          </View>
-        )}
-
-        {/* Warning when the course has no hole data */}
-        {selectedCourse && !selectedCourse.has_holes && (
-          <View className="mb-4 flex-row items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3">
-            <Ionicons name="warning-outline" size={16} color="#d97706" />
-            <Text className="text-xs text-amber-700 flex-1">
-              This course has no hole data. Par and stroke index won{"'"}t be available on the scorecard.
-            </Text>
-          </View>
-        )}
+        {/* ── Course, tee, nine-hole, scoring format ───────────────────────── */}
+        <RoundFormFields
+          selectedCourse={form.selectedCourse}
+          selectedTeeId={form.selectedTeeId}
+          nineHoleSelection={form.nineHoleSelection}
+          scoringFormat={form.scoringFormat}
+          isPending={isPending}
+          onOpenCoursePicker={() => form.setCoursePickerVisible(true)}
+          onClearCourse={() => { form.setSelectedCourse(null); form.setSelectedTeeId(null); }}
+          onSelectTee={form.setSelectedTeeId}
+          onChangeNineHoles={form.setNineHoleSelection}
+          onChangeScoringFormat={form.setScoringFormat}
+        />
 
         {/* ── Date ─────────────────────────────────────────────────────────── */}
-        <View className="mb-6">
+        <View className="mb-8">
           <DateInput
             label="Date"
             required
@@ -246,38 +151,6 @@ export default function CreateRoundScreen() {
             disabled={isPending}
             returnKeyType="done"
           />
-        </View>
-
-        {/* ── Scoring format ───────────────────────────────────────────────── */}
-        <View className="mb-8">
-          <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-            Scoring Format
-          </Text>
-          <View className="gap-2">
-            {chunk(SCORING_FORMATS, 2).map((row, rowIdx) => (
-              <View key={rowIdx} className="flex-row gap-2">
-                {row.map((fmt) => {
-                  const selected = scoringFormat === fmt.value;
-                  return (
-                    <TouchableOpacity
-                      key={fmt.value}
-                      className={`flex-1 rounded-xl py-3 items-center border ${
-                        selected
-                          ? `${t.primaryBg} border-transparent`
-                          : `${t.surface} ${t.borderInput}`
-                      }`}
-                      onPress={() => setScoringFormat(fmt.value)}
-                      disabled={isPending}
-                    >
-                      <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
-                        {fmt.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ))}
-          </View>
         </View>
 
         {/* ── Submit button ────────────────────────────────────────────────── */}
@@ -296,12 +169,13 @@ export default function CreateRoundScreen() {
       </ScrollView>
 
       <CoursePickerModal
-        visible={coursePickerVisible}
-        onClose={() => setCoursePickerVisible(false)}
+        visible={form.coursePickerVisible}
+        onClose={() => form.setCoursePickerVisible(false)}
         onSelect={(course) => {
-          setSelectedCourse(course);
-          setSelectedTeeId(null);
-          setCoursePickerVisible(false);
+          form.setSelectedCourse(course);
+          form.setSelectedTeeId(null);
+          form.setNineHoleSelection("18");
+          form.setCoursePickerVisible(false);
         }}
       />
     </KeyboardAvoidingView>

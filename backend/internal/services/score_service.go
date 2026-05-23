@@ -294,9 +294,15 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		return nil, fmt.Errorf("load groups: %w", err)
 	}
 
+	// HandicapAllowance is an event-level setting; nil for eventless rounds.
+	var handicapAllowance *float64
+	if round.Event != nil {
+		handicapAllowance = round.Event.HandicapAllowance
+	}
+
 	groupData := make([]ScorecardGroupData, 0, len(groups))
 	for _, g := range groups {
-		players, err := s.assembleGroupPlayers(ctx, g.ID, round.Event.HandicapAllowance, effectiveHoleCount)
+		players, err := s.assembleGroupPlayers(ctx, g.ID, handicapAllowance, effectiveHoleCount)
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +320,7 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		ScoringFormat:     string(round.ScoringFormat),
 		CallerUserID:      callerID.String(),
 		IsOrganizer:       isOrg,
-		HandicapAllowance: round.Event.HandicapAllowance,
+		HandicapAllowance: handicapAllowance,
 		NineHoleSelection: round.NineHoleSelection,
 		Holes:             holeRows,
 		Groups:            groupData,

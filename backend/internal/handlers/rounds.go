@@ -128,12 +128,13 @@ type AddGroupMemberRequest struct {
 // CreateEventlessRoundRequest is the JSON body for POST /api/v1/rounds.
 // ScheduledDate is required. Either CourseID or CourseName must be provided.
 type CreateEventlessRoundRequest struct {
-	Name          string  `json:"name"`
-	ScheduledDate string  `json:"scheduled_date"` // "YYYY-MM-DD" required
-	CourseID      *string `json:"course_id"`      // UUID string; preferred over CourseName
-	DefaultTeeID  *string `json:"default_tee_id"` // UUID string; required when CourseID is set
-	CourseName    string  `json:"course_name"`    // fallback find-or-create
-	ScoringFormat *string `json:"scoring_format"` // defaults to "stroke" in service
+	Name              string  `json:"name"`
+	ScheduledDate     string  `json:"scheduled_date"`      // "YYYY-MM-DD" required
+	CourseID          *string `json:"course_id"`           // UUID string; preferred over CourseName
+	DefaultTeeID      *string `json:"default_tee_id"`      // UUID string; required when CourseID is set
+	CourseName        string  `json:"course_name"`         // fallback find-or-create
+	ScoringFormat     *string `json:"scoring_format"`      // defaults to "stroke" in service
+	NineHoleSelection *string `json:"nine_hole_selection"` // "front" or "back"; nil = full round
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -551,12 +552,13 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.CreateEventlessRound(c.UserContext(), callerID, services.CreateEventlessRoundInput{
-			Name:          req.Name,
-			ScheduledDate: req.ScheduledDate,
-			ScoringFormat: req.ScoringFormat,
-			CourseID:      req.CourseID,
-			DefaultTeeID:  req.DefaultTeeID,
-			CourseName:    req.CourseName,
+			Name:              req.Name,
+			ScheduledDate:     req.ScheduledDate,
+			ScoringFormat:     req.ScoringFormat,
+			CourseID:          req.CourseID,
+			DefaultTeeID:      req.DefaultTeeID,
+			CourseName:        req.CourseName,
+			NineHoleSelection: req.NineHoleSelection,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.create_eventless", "failed to create round")

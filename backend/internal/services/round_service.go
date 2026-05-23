@@ -934,12 +934,13 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 // Either CourseID (UUID string) or CourseName must be provided.
 // DefaultTeeID is optional; if omitted the first tee for the course is used.
 type CreateEventlessRoundInput struct {
-	Name          string
-	ScheduledDate string // "YYYY-MM-DD" required
-	ScoringFormat *string
-	CourseID      *string
-	DefaultTeeID  *string
-	CourseName    string
+	Name              string
+	ScheduledDate     string // "YYYY-MM-DD" required
+	ScoringFormat     *string
+	CourseID          *string
+	DefaultTeeID      *string
+	CourseName        string
+	NineHoleSelection *string // "front" or "back"; nil = full round
 }
 
 // CreateEventlessRound creates a standalone round with no event association.
@@ -958,6 +959,12 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 	scheduledDate, err := time.Parse("2006-01-02", in.ScheduledDate)
 	if err != nil {
 		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date must be YYYY-MM-DD"}
+	}
+	if in.NineHoleSelection != nil {
+		sel := *in.NineHoleSelection
+		if sel != "front" && sel != "back" {
+			return ScheduleRoundResult{}, &ValidationError{Field: "nine_hole_selection", Message: `nine_hole_selection must be "front" or "back"`}
+		}
 	}
 
 	scoringFormat := models.ScoringFormatStroke
@@ -1039,15 +1046,16 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 		courseName = course.Name
 
 		createdRound = models.Round{
-			EventID:       nil,
-			CreatedBy:     &callerID,
-			CourseID:      course.ID,
-			DefaultTeeID:  teeID,
-			Name:          roundName,
-			RoundNumber:   1,
-			ScheduledDate: scheduledDate,
-			Status:        models.RoundStatusScheduled,
-			ScoringFormat: scoringFormat,
+			EventID:           nil,
+			CreatedBy:         &callerID,
+			CourseID:          course.ID,
+			DefaultTeeID:      teeID,
+			Name:              roundName,
+			RoundNumber:       1,
+			ScheduledDate:     scheduledDate,
+			Status:            models.RoundStatusScheduled,
+			ScoringFormat:     scoringFormat,
+			NineHoleSelection: in.NineHoleSelection,
 		}
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)

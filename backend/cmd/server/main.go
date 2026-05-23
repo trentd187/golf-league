@@ -149,8 +149,9 @@ func main() {
 	api.Patch("/events/:id/join-requests/:userId", handlers.HandleJoinRequest(eventService))
 
 	// Round routes — round IDs are globally unique, so these are top-level.
-	// GET /rounds must be registered before /rounds/:roundId so Fiber's router
-	// doesn't treat "rounds" as a roundId parameter.
+	// GET and POST /rounds must be registered before /rounds/:roundId so Fiber's
+	// router doesn't treat "rounds" as a roundId parameter.
+	api.Post("/rounds", handlers.CreateEventlessRound(roundService))
 	api.Get("/rounds", handlers.GetMyRounds(roundService))
 	api.Get("/rounds/:roundId", handlers.GetRound(roundService))
 	api.Patch("/rounds/:roundId", handlers.UpdateRound(roundService))

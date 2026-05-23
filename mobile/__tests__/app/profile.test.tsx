@@ -1,5 +1,6 @@
 // __tests__/app/profile.test.tsx
-// Tests for the ProfileScreen's name-save, avatar-upload, and following-list flows.
+// Tests for the ProfileScreen's name-save, avatar-upload, and scorecard settings flows.
+// Following/player-search tests live in __tests__/app/(tabs)/friends.test.tsx.
 //
 // Covers:
 //   - refreshSession is called after a successful display name save (bug fix:
@@ -8,10 +9,7 @@
 //   - refreshSession is NOT called when updateUser returns an error
 //   - Avatar upload saves to custom_avatar_url (not avatar_url) so Google OAuth
 //     re-logins cannot overwrite user-uploaded photos
-//   - Following section shows a loading spinner while the query is in flight
-//   - Following section shows an empty-state message when the list is empty
-//   - Following section renders a row per followed player with name and round count
-//   - Tapping a following row navigates to that user's profile
+//   - Scorecard stats and score-position mutation paths
 
 import React from "react";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
@@ -76,15 +74,6 @@ jest.mock("@/utils/api", () => ({
 jest.mock("@/constants/api", () => ({
   API_URL: "http://localhost:8080",
 }));
-
-jest.mock("@/components/UserAvatar", () => {
-  const { View, Text } = require("react-native");
-  return ({ displayName }: { displayName: string }) => (
-    <View>
-      <Text>{displayName}</Text>
-    </View>
-  );
-});
 
 jest.mock("@/hooks/useMe", () => ({
   useMe: () => ({ data: { role: "user" } }),
@@ -297,58 +286,6 @@ it("does not call refreshSession when updateUser returns an error", async () => 
   });
 });
 
-// ─── Following section ────────────────────────────────────────────────────────
-
-it("shows a loading spinner while the following list is fetching", () => {
-  mockUseQuery.mockReturnValue({ data: undefined, isLoading: true });
-
-  const { UNSAFE_getByType } = render(<ProfileScreen />);
-  const { ActivityIndicator } = require("react-native");
-  expect(UNSAFE_getByType(ActivityIndicator)).toBeTruthy();
-});
-
-it("shows an empty-state message when following nobody", () => {
-  mockUseQuery.mockReturnValue({ data: [], isLoading: false });
-
-  const { getByText } = render(<ProfileScreen />);
-  expect(getByText("You're not following anyone yet.")).toBeTruthy();
-});
-
-it("renders a row for each followed player", () => {
-  mockUseQuery.mockReturnValue({
-    data: [
-      { id: "u1", display_name: "Alice Fairway", avatar_url: null, rounds_played: 5 },
-      { id: "u2", display_name: "Bob Bunker", avatar_url: null, rounds_played: 1 },
-    ],
-    isLoading: false,
-  });
-
-  const { getAllByText, getByText } = render(<ProfileScreen />);
-  expect(getAllByText("Alice Fairway").length).toBeGreaterThanOrEqual(1);
-  expect(getAllByText("Bob Bunker").length).toBeGreaterThanOrEqual(1);
-  // Singular "round" for 1 round, plural "rounds" for 5
-  expect(getByText("5 rounds played")).toBeTruthy();
-  expect(getByText("1 round played")).toBeTruthy();
-});
-
-it("navigates to the player profile when a following row is tapped", async () => {
-  const mockPush = jest.fn();
-  // Override the router mock just for this test via jest.requireMock.
-  const routerMock = require("expo-router");
-  routerMock.useRouter.mockReturnValue({ replace: jest.fn(), push: mockPush });
-
-  mockUseQuery.mockReturnValue({
-    data: [{ id: "u1", display_name: "Alice Fairway", avatar_url: null, rounds_played: 3 }],
-    isLoading: false,
-  });
-
-  const { getAllByText } = render(<ProfileScreen />);
-  await act(async () => {
-    fireEvent.press(getAllByText("Alice Fairway")[0]);
-  });
-  expect(mockPush).toHaveBeenCalledWith("/users/u1");
-});
-
 // ─── Scorecard Stats section ──────────────────────────────────────────────────
 
 it("renders Scorecard Stats section with all 8 stat labels", () => {
@@ -410,10 +347,10 @@ it("settings queryFn fetches from the correct endpoint with auth header", async 
   });
 
   render(<ProfileScreen />);
-  // mockCapturedQueryFns[1] is the scorecard-settings queryFn (index 0 is the following query).
+  // mockCapturedQueryFns[0] is the scorecard-settings queryFn (the only query profile renders).
   const settingsQueryFn = mockCapturedQueryFns.find(
     (fn) => fn.toString().includes("scorecard-settings")
-  ) ?? mockCapturedQueryFns[1];
+  ) ?? mockCapturedQueryFns[0];
   expect(settingsQueryFn).toBeDefined();
 
   const result = await settingsQueryFn!();

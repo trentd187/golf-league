@@ -1,9 +1,11 @@
 // app/(tabs)/rounds.tsx
-// The Rounds tab — shows all rounds in events the authenticated user is a member of.
+// The Rounds tab — shows all rounds the authenticated user is a member of.
+// Covers both event-linked rounds and eventless (casual) rounds created via
+// the "+" button in the header, which navigates to /rounds/create.
 //
-// Rounds are split into two visual sections:
+// Rounds are split into three visual sections:
 //   1. Active — rounds currently in progress (status = "active")
-//   2. Scheduled — upcoming rounds (status = "scheduled")
+//   2. Upcoming — scheduled rounds (status = "scheduled")
 //   3. Completed — finished rounds (status = "completed")
 //
 // All three are returned by GET /api/v1/rounds, ordered by scheduled_date DESC.
@@ -38,8 +40,8 @@ import { formatLabel } from "@/utils/scoringFormats";
 type MyRound = {
   id: string;
   name: string;
-  event_id: string;
-  event_name: string;
+  event_id: string | null;   // null for eventless (casual) rounds
+  event_name: string | null; // null for eventless (casual) rounds
   course_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
   status: string;         // "scheduled" | "active" | "completed"
@@ -66,10 +68,12 @@ function RoundCard({ round, onPress }: { round: MyRound; onPress: () => void }) 
         <RoundStatusChip status={round.status} />
       </View>
 
-      {/* Event name — context for which league/tournament this round belongs to */}
-      <Text className={`text-xs mb-2 ${t.textTertiary}`} numberOfLines={1}>
-        {round.event_name}
-      </Text>
+      {/* Event name — only shown for event-linked rounds */}
+      {round.event_name && (
+        <Text className={`text-xs mb-2 ${t.textTertiary}`} numberOfLines={1}>
+          {round.event_name}
+        </Text>
+      )}
 
       <View className="flex-row items-center gap-1 mb-1">
         <Ionicons name="golf-outline" size={13} color={t.colors.tabBarInactive} />
@@ -184,12 +188,26 @@ export default function RoundsScreen() {
 
   if (rounds.length === 0) {
     return (
-      <View className={`flex-1 ${t.screen} items-center justify-center gap-4 px-8`}>
-        <Ionicons name="flag-outline" size={64} color={t.colors.tabBarActive} />
-        <Text className={`text-xl font-bold ${t.textPrimary}`}>No Rounds Yet</Text>
-        <Text className={`text-base text-center ${t.textSecondary}`}>
-          Rounds you are part of will appear here once an organizer schedules them.
-        </Text>
+      <View className={`flex-1 ${t.screen}`}>
+        {/* Header row with title + create button, mirrored from the list view */}
+        <View className="flex-row items-center justify-between px-5 pt-16 pb-2">
+          <Text className={`text-2xl font-bold ${t.textPrimary}`}>My Rounds</Text>
+          <TouchableOpacity
+            className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
+            onPress={() => router.push("/rounds/create")}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="add" size={18} color="white" />
+            <Text className="text-white font-semibold text-sm">Create</Text>
+          </TouchableOpacity>
+        </View>
+        <View className="flex-1 items-center justify-center gap-4 px-8">
+          <Ionicons name="flag-outline" size={64} color={t.colors.tabBarActive} />
+          <Text className={`text-xl font-bold ${t.textPrimary}`}>No Rounds Yet</Text>
+          <Text className={`text-base text-center ${t.textSecondary}`}>
+            Tap <Text className="font-semibold">+ Create</Text> above to start a casual round, or join an event to play in a league or tournament.
+          </Text>
+        </View>
       </View>
     );
   }
@@ -226,7 +244,17 @@ export default function RoundsScreen() {
         }
         contentContainerStyle={{ padding: 20, paddingTop: 60 }}
         ListHeaderComponent={
-          <Text className={`text-2xl font-bold mb-1 ${t.textPrimary}`}>My Rounds</Text>
+          <View className="flex-row items-center justify-between mb-1">
+            <Text className={`text-2xl font-bold ${t.textPrimary}`}>My Rounds</Text>
+            <TouchableOpacity
+              className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
+              onPress={() => router.push("/rounds/create")}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add" size={18} color="white" />
+              <Text className="text-white font-semibold text-sm">Create</Text>
+            </TouchableOpacity>
+          </View>
         }
         renderItem={({ item }) => {
           if (item.kind === "label") {

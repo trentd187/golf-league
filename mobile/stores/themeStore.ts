@@ -9,15 +9,39 @@
 //   - Only `themeName` (a short string like "dark") is persisted — the full Theme object
 //     is re-derived at runtime from THEMES[themeName], keeping stored data compact.
 //
+// Flash prevention: SecureStore.getItem() (synchronous, SDK 47+) is called at
+// module initialization time so the store is created with the correct theme on its
+// very first render instead of always starting at "light" and then correcting.
+//
 // Usage:
 //   const theme = useThemeStore((s) => s.theme);    // prefer the useTheme() hook instead
 //   const setTheme = useThemeStore((s) => s.setTheme);
 //   setTheme("dark");
 
+import { Platform } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { platformStorage } from "@/utils/platformStorage";
 import { Theme, ThemeName, THEMES } from "@/themes";
+
+// ─── Sync boot read ───────────────────────────────────────────────────────────
+// Read the persisted theme before any component renders. On web SecureStore is
+// unavailable, so we fall back to "light". Any parse failure also falls back.
+function readStoredThemeName(): ThemeName {
+  if (Platform.OS === "web") return "light";
+  try {
+    const raw = SecureStore.getItem("theme-storage");
+    if (raw) {
+      const parsed = JSON.parse(raw) as { state?: { themeName?: string } };
+      const name = parsed?.state?.themeName;
+      if (name && THEMES[name as ThemeName]) return name as ThemeName;
+    }
+  } catch {}
+  return "light";
+}
+
+const bootThemeName = readStoredThemeName();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,10 +70,10 @@ const storageAdapter = createJSONStorage(() => ({
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      // Default to "light" on first launch (before SecureStore is read).
-      // onRehydrateStorage below re-derives the correct theme after hydration.
-      themeName: "light" as ThemeName,
-      theme:     THEMES["light"],
+      // Initialized from the sync boot read above — already the correct theme.
+      // onRehydrateStorage will confirm and set _hasHydrated without a visible redraw.
+      themeName: bootThemeName,
+      theme:     THEMES[bootThemeName],
       _hasHydrated: false,
 
       setTheme: (name: ThemeName) =>

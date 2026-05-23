@@ -554,8 +554,9 @@ func TestEventService_GetRounds_EmptyAndPopulated(t *testing.T) {
 		CourseRating: 72.4, SlopeRating: 130, Par: 72,
 	}
 	require.NoError(t, db.Create(&tee).Error)
+	eid := event.ID
 	round := models.Round{
-		EventID:       event.ID,
+		EventID:       &eid,
 		CourseID:      course.ID,
 		DefaultTeeID:  tee.ID,
 		Name:          "Round 1",

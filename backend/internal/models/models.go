@@ -3,6 +3,7 @@
 // constraints, defaults, and relationships.
 //
 // Hierarchy: User → Event → Round → Score
+// Rounds may also exist without an event (eventless/casual rounds) — event_id is nullable.
 // There is no separate "league" concept — an Event with type "league" IS the league.
 package models
 
@@ -193,11 +194,15 @@ type EventPlayer struct {
 	UpdatedAt       time.Time
 }
 
-// Round represents a single day/round of play within an Event.
+// Round represents a single round of play. It may belong to an Event (event_id set)
+// or be a standalone casual/solo round (event_id nil). For eventless rounds, CreatedBy
+// identifies the organizer.
 type Round struct {
 	ID               uuid.UUID     `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	EventID          uuid.UUID     `gorm:"type:uuid;not null"`
-	Event            Event         `gorm:"foreignKey:EventID"`
+	EventID          *uuid.UUID    `gorm:"type:uuid"` // Nil for eventless rounds
+	Event            *Event        `gorm:"foreignKey:EventID"`
+	CreatedBy        *uuid.UUID    `gorm:"type:uuid"` // Set for eventless rounds; nil for legacy event rounds
+	CreatedByUser    *User         `gorm:"foreignKey:CreatedBy"`
 	CourseID         uuid.UUID     `gorm:"type:uuid;not null"`
 	Course           Course        `gorm:"foreignKey:CourseID"`
 	DefaultTeeID     uuid.UUID     `gorm:"type:uuid;not null"` // Individuals can override in RoundPlayer
@@ -215,18 +220,22 @@ type Round struct {
 	UpdatedAt         time.Time
 }
 
-// RoundPlayer links an EventPlayer to a specific Round and stores per-round results.
-// The uniqueIndex:idx_round_event_player ensures one entry per player per round.
+// RoundPlayer links a player to a specific Round and stores per-round results.
+// For event rounds, EventPlayerID is set (linking to the event membership).
+// For eventless rounds, EventPlayerID is nil and UserID identifies the player directly.
+// UserID is always set (backfilled for existing event-round players via migration 000020).
 type RoundPlayer struct {
-	ID             uuid.UUID   `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	RoundID        uuid.UUID   `gorm:"type:uuid;not null;uniqueIndex:idx_round_event_player"`
-	Round          Round       `gorm:"foreignKey:RoundID"`
-	EventPlayerID  uuid.UUID   `gorm:"type:uuid;not null;uniqueIndex:idx_round_event_player"`
-	EventPlayer    EventPlayer `gorm:"foreignKey:EventPlayerID"`
-	TeeID          *uuid.UUID  `gorm:"type:uuid"` // Optional override; nil = use round's DefaultTee
-	Tee            *Tee        `gorm:"foreignKey:TeeID"`
-	HandicapIndex  *float64    `gorm:"type:decimal(4,1)"` // Player's WHS index at time of round (optional, informational)
-	CourseHandicap *int        // Playing handicap for this specific course and tee
+	ID             uuid.UUID    `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	RoundID        uuid.UUID    `gorm:"type:uuid;not null"`
+	Round          Round        `gorm:"foreignKey:RoundID"`
+	UserID         uuid.UUID    `gorm:"type:uuid;not null"` // Direct user reference; always set
+	User           User         `gorm:"foreignKey:UserID"`
+	EventPlayerID  *uuid.UUID   `gorm:"type:uuid"` // Nil for eventless rounds
+	EventPlayer    *EventPlayer `gorm:"foreignKey:EventPlayerID"`
+	TeeID          *uuid.UUID   `gorm:"type:uuid"` // Optional override; nil = use round's DefaultTee
+	Tee            *Tee         `gorm:"foreignKey:TeeID"`
+	HandicapIndex  *float64     `gorm:"type:decimal(4,1)"` // Player's WHS index at time of round (optional, informational)
+	CourseHandicap *int         // Playing handicap for this specific course and tee
 	FinishPosition *int
 	PointsEarned   *int
 	Status         RoundPlayerStatus `gorm:"type:round_player_status;not null;default:'registered'"`

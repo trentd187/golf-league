@@ -53,12 +53,12 @@ import SectionHeader from "@/components/SectionHeader";
 import ModalHeader from "@/components/ModalHeader";
 // UserSummary is exported from UserSearchList so we can type the query data here.
 import UserSearchList, { UserSummary } from "@/components/UserSearchList";
-// chunk: splits an array into equal-sized sub-arrays — used to render the scoring format
-// pill grid as rows without duplicating JSX.
-import { chunk } from "@/utils/array";
-import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
+import CoursePickerModal from "@/components/CoursePickerModal";
+import RoundFormFields from "@/components/RoundFormFields";
+import { useRoundForm } from "@/hooks/useRoundForm";
+import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import UserAvatar from "@/components/UserAvatar";
-import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
+import { formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
 import { showAlert, showConfirm } from "@/utils/alerts";
 import StatsCards from "@/components/StatsCards";
@@ -163,19 +163,11 @@ export default function EventDetailScreen() {
   const [memberSearch, setMemberSearch] = useState("");
 
   // --- Schedule round form state ---
-  const [roundName, setRoundName]         = useState("");
-  // selectedCourse: the course picked via CoursePickerModal (null = none selected yet).
-  const [selectedCourse, setSelectedCourse] = useState<PickedCourse | null>(null);
-  // selectedTeeId: the tee selected for this round (required when the course has tees).
-  const [selectedTeeId, setSelectedTeeId]   = useState<string | null>(null);
-  // coursePickerVisible: controls the CoursePickerModal.
-  const [coursePickerVisible, setCoursePickerVisible] = useState(false);
-  const [roundDate, setRoundDate]         = useState("");
-  const [scoringFormat, setScoringFormat] = useState("stroke");
-  // nineHoleSelection: "18" = full round, "front" = holes 1–9, "back" = holes 10–18.
-  // Only shown when the selected course has 18 holes.
-  const [nineHoleSelection, setNineHoleSelection] = useState<"18" | "front" | "back">("18");
-  const [groupCount, setGroupCount]         = useState(1);
+  const [roundName, setRoundName] = useState("");
+  const [roundDate, setRoundDate] = useState("");
+  // roundForm: shared course/tee/nine-hole/scoring-format state (see hooks/useRoundForm.ts).
+  const roundForm = useRoundForm();
+  const [groupCount, setGroupCount] = useState(1);
   // groupTeeTimes: one "HH:MM" string per group ("" = no tee time set).
   const [groupTeeTimes, setGroupTeeTimes]   = useState<string[]>([""]);
   // openTeeTimePicker: index of the group whose picker is open, or null when closed.
@@ -368,11 +360,10 @@ export default function EventDetailScreen() {
       scheduled_date: string;
       scoring_format: string;
       groups: { tee_time?: string }[];
-      // Preferred path: explicit UUIDs when the course has managed tees.
       course_id?: string;
       default_tee_id?: string;
-      // Legacy fallback: find-or-create by name when no tees are configured.
       course_name?: string;
+      nine_hole_selection?: string;
     }) => {
       const token = await getToken();
       const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
@@ -393,11 +384,8 @@ export default function EventDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["event", id, "rounds"] });
       setScheduleRoundModalVisible(false);
       setRoundName("");
-      setSelectedCourse(null);
-      setSelectedTeeId(null);
+      roundForm.resetForm();
       setRoundDate("");
-      setScoringFormat("stroke");
-      setNineHoleSelection("18");
       setGroupCount(1);
       setGroupTeeTimes([""]);
     },
@@ -563,11 +551,11 @@ export default function EventDetailScreen() {
       showAlert("Name required", "Please enter a name for this round.");
       return;
     }
-    if (!selectedCourse) {
+    if (!roundForm.selectedCourse) {
       showAlert("Course required", "Please select a golf course.");
       return;
     }
-    if (selectedCourse.tees.length > 0 && !selectedTeeId) {
+    if (roundForm.selectedCourse.tees.length > 0 && !roundForm.selectedTeeId) {
       showAlert("Tee required", "Please select a tee set for this course.");
       return;
     }
@@ -576,38 +564,23 @@ export default function EventDetailScreen() {
       return;
     }
 
-    // Build the payload — use course_id + default_tee_id when a tee is selected (preferred);
-    // fall back to course_name (legacy path) when the course has no tees yet.
+    // Omit tee_time entirely for blank entries so the backend stores TeeTime = null.
     const groups = Array.from({ length: groupCount }, (_, i) => {
-      // Omit tee_time entirely for blank entries so the backend stores TeeTime = null.
       const tt = groupTeeTimes[i]?.trim();
       return tt ? { tee_time: tt } : {};
     });
 
-    // Include nine_hole_selection only when not a full round.
-    const nineHole = nineHoleSelection !== "18" ? { nine_hole_selection: nineHoleSelection } : {};
-
-    if (selectedTeeId) {
-      scheduleRoundMutation.mutate({
-        name:             roundName.trim(),
-        course_id:        selectedCourse.id,
-        default_tee_id:   selectedTeeId,
-        scheduled_date:   displayToApi(roundDate.trim()),
-        scoring_format:   scoringFormat,
-        groups,
-        ...nineHole,
-      });
-    } else {
-      // No tees on this course — backend will find-or-create and attach a default tee.
-      scheduleRoundMutation.mutate({
-        name:           roundName.trim(),
-        course_name:    selectedCourse.name,
-        scheduled_date: displayToApi(roundDate.trim()),
-        scoring_format: scoringFormat,
-        groups,
-        ...nineHole,
-      });
-    }
+    scheduleRoundMutation.mutate({
+      name:           roundName.trim(),
+      scheduled_date: displayToApi(roundDate.trim()),
+      groups,
+      ...buildRoundCoursePayload(
+        roundForm.selectedCourse,
+        roundForm.selectedTeeId,
+        roundForm.nineHoleSelection,
+        roundForm.scoringFormat,
+      ),
+    });
   };
 
   // --- Leaderboard + stats helpers ---
@@ -1337,9 +1310,8 @@ export default function EventDetailScreen() {
         onRequestClose={() => {
           setScheduleRoundModalVisible(false);
           setRoundName("");
-          setSelectedCourse(null);
-          setSelectedTeeId(null);
-          setNineHoleSelection("18");
+          roundForm.resetForm();
+          setRoundDate("");
           setGroupCount(1);
           setGroupTeeTimes([""]);
           setOpenTeeTimePicker(null);
@@ -1357,9 +1329,8 @@ export default function EventDetailScreen() {
                 onClose={() => {
                   setScheduleRoundModalVisible(false);
                   setRoundName("");
-                  setSelectedCourse(null);
-                  setSelectedTeeId(null);
-                  setNineHoleSelection("18");
+                  roundForm.resetForm();
+                  setRoundDate("");
                   setGroupCount(1);
                   setGroupTeeTimes([""]);
                 }}
@@ -1383,138 +1354,19 @@ export default function EventDetailScreen() {
                 />
               </View>
 
-              {/* Course picker — opens CoursePickerModal; shows selected course + tee picker */}
-              <View className="mb-4">
-                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                  Course <Text className="text-red-500">*</Text>
-                </Text>
-                <TouchableOpacity
-                  className={`border rounded-xl px-4 py-3 flex-row items-center gap-3 ${t.borderInput} ${t.surfaceSunken}`}
-                  onPress={() => setCoursePickerVisible(true)}
-                  disabled={scheduleRoundMutation.isPending}
-                  activeOpacity={0.7}
-                >
-                  <View className="flex-1">
-                    {selectedCourse ? (
-                      <>
-                        <Text className={`text-base ${t.textPrimary}`}>{selectedCourse.name}</Text>
-                        {(selectedCourse.city || selectedCourse.state) && (
-                          <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
-                            {[selectedCourse.city, selectedCourse.state].filter(Boolean).join(", ")}
-                          </Text>
-                        )}
-                      </>
-                    ) : (
-                      <Text className={`text-base ${t.textTertiary}`}>Search for a course…</Text>
-                    )}
-                  </View>
-                  {selectedCourse ? (
-                    // Clear button — stops tap propagating so it doesn't reopen the picker
-                    <TouchableOpacity
-                      onPress={() => { setSelectedCourse(null); setSelectedTeeId(null); }}
-                      hitSlop={8}
-                      disabled={scheduleRoundMutation.isPending}
-                    >
-                      <Ionicons name="close-circle" size={18} color={t.colors.tabBarInactive} />
-                    </TouchableOpacity>
-                  ) : (
-                    <Ionicons name="chevron-forward" size={16} color={t.colors.tabBarInactive} />
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              {/* Tee picker — only shown when the selected course has tees */}
-              {selectedCourse && selectedCourse.tees.length > 0 && (
-                <View className="mb-4">
-                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                    Tee <Text className="text-red-500">*</Text>
-                  </Text>
-                  <View className="gap-2">
-                    {chunk(selectedCourse.tees, 2).map((row, rowIdx) => (
-                      <View key={rowIdx} className="flex-row gap-2">
-                        {row.map((tee) => {
-                          const selected = selectedTeeId === tee.id;
-                          return (
-                            <TouchableOpacity
-                              key={tee.id}
-                              className={`flex-1 rounded-xl py-2.5 px-2 items-center border ${
-                                selected
-                                  ? `${t.primaryBg} border-transparent`
-                                  : `${t.surface} ${t.borderInput}`
-                              }`}
-                              onPress={() => setSelectedTeeId(tee.id)}
-                              disabled={scheduleRoundMutation.isPending}
-                            >
-                              <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
-                                {tee.name}
-                              </Text>
-                              <Text className={`text-xs mt-0.5 ${selected ? "text-white/80" : t.textTertiary}`}>
-                                Par {tee.par} · Slope {tee.slope_rating} · {tee.course_rating}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
-
-              {/* Info chip when the course has no tees — backend will attach a default tee */}
-              {selectedCourse && selectedCourse.tees.length === 0 && (
-                <View className={`mb-4 flex-row items-center gap-2 rounded-xl px-3 py-2.5 border ${t.border}`}>
-                  <Ionicons name="information-circle-outline" size={16} color={t.colors.tabBarInactive} />
-                  <Text className={`text-xs flex-1 ${t.textTertiary}`}>
-                    No tees configured — a default tee will be created automatically.
-                  </Text>
-                </View>
-              )}
-
-              {/* Warning chip when the course has no hole data (no par / stroke index).
-                  Non-blocking — the round can still be scheduled, but the organiser is
-                  informed that scorecard data will be missing until holes are entered. */}
-              {selectedCourse && !selectedCourse.has_holes && (
-                <View className="mb-4 flex-row items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3">
-                  <Ionicons name="warning-outline" size={16} color="#d97706" />
-                  <Text className="text-xs text-amber-700 flex-1">
-                    This course has no hole data. Par and stroke index won{"'"}t be available on the scorecard.
-                  </Text>
-                </View>
-              )}
-
-              {/* Nine-hole selector — only for 18-hole courses */}
-              {selectedCourse && selectedCourse.hole_count === 18 && (
-                <View className="mb-4">
-                  <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                    Holes
-                  </Text>
-                  <View className="flex-row gap-2">
-                    {([
-                      { value: "18",    label: "Full 18" },
-                      { value: "front", label: "Front 9" },
-                      { value: "back",  label: "Back 9"  },
-                    ] as const).map((opt) => {
-                      const selected = nineHoleSelection === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          className={`flex-1 rounded-xl py-2.5 items-center border ${
-                            selected
-                              ? `${t.primaryBg} border-transparent`
-                              : `${t.surface} ${t.borderInput}`
-                          }`}
-                          onPress={() => setNineHoleSelection(opt.value)}
-                          disabled={scheduleRoundMutation.isPending}
-                        >
-                          <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
+              {/* ── Course, tee, nine-hole, scoring format ───────────────────── */}
+              <RoundFormFields
+                selectedCourse={roundForm.selectedCourse}
+                selectedTeeId={roundForm.selectedTeeId}
+                nineHoleSelection={roundForm.nineHoleSelection}
+                scoringFormat={roundForm.scoringFormat}
+                isPending={scheduleRoundMutation.isPending}
+                onOpenCoursePicker={() => roundForm.setCoursePickerVisible(true)}
+                onClearCourse={() => { roundForm.setSelectedCourse(null); roundForm.setSelectedTeeId(null); }}
+                onSelectTee={roundForm.setSelectedTeeId}
+                onChangeNineHoles={roundForm.setNineHoleSelection}
+                onChangeScoringFormat={roundForm.setScoringFormat}
+              />
 
               <View className="mb-6">
                 <DateInput
@@ -1525,42 +1377,6 @@ export default function EventDetailScreen() {
                   disabled={scheduleRoundMutation.isPending}
                   returnKeyType="done"
                 />
-              </View>
-
-              {/* Scoring format picker — 2-column pill grid. 5 formats → 3 rows (2, 2, 1). */}
-              <View className="mb-8">
-                <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
-                  Scoring Format
-                </Text>
-                <View className="gap-2">
-                  {chunk(SCORING_FORMATS, 2).map((row, rowIdx) => (
-                    <View key={rowIdx} className="flex-row gap-2">
-                      {row.map((fmt) => {
-                        const selected = scoringFormat === fmt.value;
-                        return (
-                          <TouchableOpacity
-                            key={fmt.value}
-                            className={`flex-1 rounded-xl py-3 items-center border ${
-                              selected
-                                ? `${t.primaryBg} border-transparent`
-                                : `${t.surface} ${t.borderInput}`
-                            }`}
-                            onPress={() => setScoringFormat(fmt.value)}
-                            disabled={scheduleRoundMutation.isPending}
-                          >
-                            <Text
-                              className={`text-sm font-semibold ${
-                                selected ? "text-white" : t.textSecondary
-                              }`}
-                            >
-                              {fmt.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  ))}
-                </View>
               </View>
 
               {/* ── Groups ───────────────────────────────────────────────────── */}
@@ -1720,15 +1536,15 @@ export default function EventDetailScreen() {
       </Modal>
 
       {/* ── Course Picker Modal ─────────────────────────────────────────────── */}
-      {/* Nested inside the Schedule Round modal tree so it layers correctly. */}
+      {/* Rendered outside the Schedule Round modal so it layers correctly on Android. */}
       <CoursePickerModal
-        visible={coursePickerVisible}
-        onClose={() => setCoursePickerVisible(false)}
+        visible={roundForm.coursePickerVisible}
+        onClose={() => roundForm.setCoursePickerVisible(false)}
         onSelect={(course) => {
-          setSelectedCourse(course);
-          // Reset tee selection when the course changes.
-          setSelectedTeeId(null);
-          setCoursePickerVisible(false);
+          roundForm.setSelectedCourse(course);
+          roundForm.setSelectedTeeId(null);
+          roundForm.setNineHoleSelection("18");
+          roundForm.setCoursePickerVisible(false);
         }}
       />
 

@@ -38,12 +38,14 @@ func seedHoles(t *testing.T, db *gorm.DB, teeID uuid.UUID) {
 }
 
 // addRoundPlayer directly inserts a round_player for an event_player.
-// Omit(clause.Associations) prevents GORM from auto-creating phantom records
-// for zero-value association fields (e.g. RoundPlayer.Round, EventPlayer, etc.).
+// Looks up the event_player to populate UserID (required since migration 000020).
+// Omit(clause.Associations) prevents GORM from auto-creating phantom records.
 func addRoundPlayer(t *testing.T, db *gorm.DB, roundID, eventPlayerID uuid.UUID) models.RoundPlayer {
 	t.Helper()
+	var ep models.EventPlayer
+	require.NoError(t, db.First(&ep, "id = ?", eventPlayerID).Error)
 	rp := models.RoundPlayer{
-		RoundID: roundID, EventPlayerID: eventPlayerID,
+		RoundID: roundID, EventPlayerID: &eventPlayerID, UserID: ep.UserID,
 		Status: models.RoundPlayerStatusRegistered,
 	}
 	require.NoError(t, db.Omit(clause.Associations).Create(&rp).Error)

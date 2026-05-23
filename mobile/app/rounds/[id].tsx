@@ -18,7 +18,8 @@
 // Data flow:
 //   GET    /api/v1/rounds/:id                                 → round detail (includes is_organizer)
 //   GET    /api/v1/rounds/:id/scorecard                       → scores + stats (leaderboard/stats tabs; lazy)
-//   GET    /api/v1/events/:eventId/members                    → event members for add-player picker
+//   GET    /api/v1/events/:eventId/members                    → event members for add-player picker (event-linked rounds)
+//   GET    /api/v1/users/following                              → following list for add-player picker (eventless rounds)
 //   PATCH  /api/v1/rounds/:id                                 → edit round fields
 //   DELETE /api/v1/rounds/:id                                 → delete round
 //   POST   /api/v1/rounds/:id/groups                          → add a new empty group
@@ -112,7 +113,7 @@ type RoundGroup = {
 
 type RoundDetail = {
   id: string;
-  event_id: string;
+  event_id: string | null; // null for eventless (casual) rounds
   name: string;
   course_name: string;
   scheduled_date: string; // "YYYY-MM-DD"
@@ -188,18 +189,45 @@ export default function RoundDetailScreen() {
     enabled: !!id,
   });
 
-  const { data: eventMembers } = useQuery<EventMember[]>({
-    queryKey: ["event", round?.event_id, "members"],
+  // availablePlayersQuery: fetches the pool of users that can be added to the round.
+  // Event-linked rounds pull from event membership; eventless rounds pull from the
+  // caller's following list. The query key changes based on event_id so both paths
+  // are cached independently.
+  const { data: availablePlayerSource } = useQuery<UserSummary[]>({
+    queryKey: round?.event_id
+      ? ["event", round.event_id, "members"]
+      : ["users", "following"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to fetch members");
-      return res.json();
+      if (round!.event_id) {
+        const res = await apiFetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error("Failed to fetch event members");
+        const members: EventMember[] = await res.json();
+        return members.map((m) => ({
+          id: m.user_id,
+          display_name: m.display_name,
+          email: m.email,
+          avatar_url: m.avatar_url,
+        }));
+      } else {
+        // Eventless round — use the following list.
+        const res = await apiFetch(`${API_URL}/api/v1/users/following`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error("Failed to fetch following list");
+        const following: Array<{ id: string; display_name: string; avatar_url?: string | null }> = await res.json();
+        return following.map((u) => ({
+          id: u.id,
+          display_name: u.display_name,
+          email: "",
+          avatar_url: u.avatar_url ?? null,
+        }));
+      }
     },
-    // Only fetch when the Add Player modal is open and we have the event_id.
-    enabled: !!selectedGroupId && !!round?.event_id,
+    // Only fetch when the Add Player modal is open and the round is loaded.
+    enabled: !!selectedGroupId && !!round,
   });
 
   // scorecardQuery: fetches scores and per-hole stats for leaderboard + stats tabs.
@@ -229,9 +257,8 @@ export default function RoundDetailScreen() {
     round?.groups.flatMap((g) => g.players.map((p) => p.user_id)) ?? []
   );
   // Returns undefined while loading — UserSearchList shows a spinner for undefined.
-  const availableMembers: UserSummary[] | undefined = eventMembers
-    ?.filter((m) => !assignedUserIds.has(m.user_id))
-    .map((m) => ({ id: m.user_id, display_name: m.display_name, email: m.email, avatar_url: m.avatar_url }));
+  const availableMembers: UserSummary[] | undefined = availablePlayerSource
+    ?.filter((u) => !assignedUserIds.has(u.id));
 
   // --- Mutations ---
 
@@ -1372,7 +1399,11 @@ export default function RoundDetailScreen() {
                 }
               }}
               isPending={addPlayerMutation.isPending}
-              emptyMessage="All event members are already assigned to a group."
+              emptyMessage={
+                round?.event_id
+                  ? "All event members are already assigned to a group."
+                  : "No one to add — follow players to invite them to your rounds."
+              }
             />
           </View>
 

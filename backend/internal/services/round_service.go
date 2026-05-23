@@ -107,9 +107,10 @@ type RoundUpdateResult struct {
 }
 
 // MyRoundResult is one row in a GetMyRounds list.
+// EventName is nil for eventless rounds (no associated event).
 type MyRoundResult struct {
 	Round        models.Round
-	EventName    string
+	EventName    *string
 	CourseName   string
 	TeeName      string
 	TeePar       int
@@ -163,45 +164,52 @@ func NewRoundService(db *gorm.DB, eventSvc *EventService) *RoundService {
 
 // ─── Permission helper ─────────────────────────────────────────────────────────
 
-// IsRoundOrganizer reports whether the caller has organizer rights over the
-// event that owns roundID. Delegates to EventService.IsOrganizer so the
-// permission logic is never forked.
-//
-// Returns (isOrganizer, eventID, error). eventID is uuid.Nil when the round
-// does not exist — callers should return ErrRoundNotFound in that case.
-func (s *RoundService) IsRoundOrganizer(ctx context.Context, roundID, userID uuid.UUID, userRole string) (bool, uuid.UUID, error) {
+// IsRoundOrganizer reports whether the caller has organizer rights over roundID.
+// For event-linked rounds it delegates to EventService.IsOrganizer.
+// For eventless rounds it checks that the caller is the round's creator (or a platform admin).
+// Returns ErrRoundNotFound if the round does not exist.
+func (s *RoundService) IsRoundOrganizer(ctx context.Context, roundID, userID uuid.UUID, userRole string) (bool, error) {
 	var round models.Round
-	if err := s.DB.WithContext(ctx).Select("event_id").First(&round, "id = ?", roundID).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Select("id, event_id, created_by").First(&round, "id = ?", roundID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, uuid.Nil, nil
+			return false, ErrRoundNotFound
 		}
-		return false, uuid.Nil, fmt.Errorf("load round for organizer check: %w", err)
+		return false, fmt.Errorf("load round for organizer check: %w", err)
 	}
-	isOrg, err := s.EventSvc.IsOrganizer(ctx, round.EventID, userID, userRole)
-	return isOrg, round.EventID, err
+	if round.EventID != nil {
+		return s.EventSvc.IsOrganizer(ctx, *round.EventID, userID, userRole)
+	}
+	// Eventless round: platform admins and the creator are organizers.
+	if userRole == string(models.UserRoleAdmin) {
+		return true, nil
+	}
+	return round.CreatedBy != nil && *round.CreatedBy == userID, nil
 }
 
 // ─── Read methods ─────────────────────────────────────────────────────────────
 
-// GetMyRounds returns all rounds in events the user belongs to, ordered by
-// scheduled_date descending.
+// GetMyRounds returns all rounds the user is a player in (both event-linked and
+// eventless), ordered by scheduled_date descending.
 func (s *RoundService) GetMyRounds(ctx context.Context, userID uuid.UUID) ([]MyRoundResult, error) {
-	var eventPlayers []models.EventPlayer
-	if err := s.DB.WithContext(ctx).Select("event_id").Where("user_id = ?", userID).Find(&eventPlayers).Error; err != nil {
-		return nil, fmt.Errorf("load event memberships: %w", err)
+	// Use round_players.user_id directly — covers both event-linked rounds
+	// (backfilled in migration 000020) and eventless rounds.
+	var roundPlayers []models.RoundPlayer
+	if err := s.DB.WithContext(ctx).Select("round_id").Where("user_id = ?", userID).
+		Find(&roundPlayers).Error; err != nil {
+		return nil, fmt.Errorf("load round memberships: %w", err)
 	}
-	if len(eventPlayers) == 0 {
+	if len(roundPlayers) == 0 {
 		return []MyRoundResult{}, nil
 	}
 
-	eventIDs := make([]uuid.UUID, len(eventPlayers))
-	for i, ep := range eventPlayers {
-		eventIDs[i] = ep.EventID
+	roundIDs := make([]uuid.UUID, len(roundPlayers))
+	for i, rp := range roundPlayers {
+		roundIDs[i] = rp.RoundID
 	}
 
 	var rounds []models.Round
 	if err := s.DB.WithContext(ctx).Preload("Course").Preload("Event").Preload("DefaultTee").
-		Where("event_id IN ?", eventIDs).
+		Where("id IN ?", roundIDs).
 		Order("scheduled_date DESC").
 		Find(&rounds).Error; err != nil {
 		return nil, fmt.Errorf("load rounds: %w", err)
@@ -211,10 +219,6 @@ func (s *RoundService) GetMyRounds(ctx context.Context, userID uuid.UUID) ([]MyR
 	}
 
 	// Batch group counts to avoid N+1 queries.
-	roundIDs := make([]uuid.UUID, len(rounds))
-	for i, r := range rounds {
-		roundIDs[i] = r.ID
-	}
 	type countRow struct {
 		RoundID string
 		Count   int
@@ -234,9 +238,14 @@ func (s *RoundService) GetMyRounds(ctx context.Context, userID uuid.UUID) ([]MyR
 
 	out := make([]MyRoundResult, len(rounds))
 	for i, r := range rounds {
+		var eventName *string
+		if r.Event != nil {
+			n := r.Event.Name
+			eventName = &n
+		}
 		out[i] = MyRoundResult{
 			Round:        r,
-			EventName:    r.Event.Name,
+			EventName:    eventName,
 			CourseName:   r.Course.Name,
 			TeeName:      r.DefaultTee.Name,
 			TeePar:       r.DefaultTee.Par,
@@ -259,7 +268,7 @@ func (s *RoundService) Get(ctx context.Context, roundID, callerID uuid.UUID, cal
 		return RoundDetailResult{}, fmt.Errorf("load round: %w", err)
 	}
 
-	isOrg, _, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
 	if err != nil {
 		return RoundDetailResult{}, err
 	}
@@ -413,7 +422,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 		}
 
 		createdRound = models.Round{
-			EventID:           eventID,
+			EventID:           &eventID,
 			CourseID:          course.ID,
 			DefaultTeeID:      teeID,
 			Name:              roundName,
@@ -496,12 +505,12 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		}
 	}
 
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return RoundUpdateResult{}, ErrRoundNotFound
+	}
 	if err != nil {
 		return RoundUpdateResult{}, err
-	}
-	if eventID == uuid.Nil {
-		return RoundUpdateResult{}, ErrRoundNotFound
 	}
 	if !isOrg {
 		return RoundUpdateResult{}, ErrRoundForbidden
@@ -610,28 +619,18 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 // Delete permanently removes a round. ON DELETE CASCADE removes groups and players.
 // Caller must be an organizer.
 func (s *RoundService) Delete(ctx context.Context, roundID, callerID uuid.UUID, callerRole string) error {
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return ErrRoundNotFound
+	}
 	if err != nil {
 		return err
-	}
-	// uuid.Nil means the round was not found (IsRoundOrganizer returns Nil when the
-	// round SELECT misses). Check not-found before forbidden so 404 beats 403.
-	if eventID == uuid.Nil {
-		return ErrRoundNotFound
 	}
 	if !isOrg {
 		return ErrRoundForbidden
 	}
 
-	var round models.Round
-	if err := s.DB.WithContext(ctx).First(&round, "id = ?", roundID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrRoundNotFound
-		}
-		return fmt.Errorf("load round: %w", err)
-	}
-
-	if err := s.DB.WithContext(ctx).Delete(&round).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Delete(&models.Round{}, "id = ?", roundID).Error; err != nil {
 		return fmt.Errorf("delete round: %w", err)
 	}
 	return nil
@@ -640,15 +639,15 @@ func (s *RoundService) Delete(ctx context.Context, roundID, callerID uuid.UUID, 
 // CreateGroup creates a new empty tee-time group numbered one higher than the
 // current maximum. Organizer-only.
 func (s *RoundService) CreateGroup(ctx context.Context, roundID, callerID uuid.UUID, callerRole string) (GroupMutationResult, error) {
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return GroupMutationResult{}, ErrRoundNotFound
+	}
 	if err != nil {
 		return GroupMutationResult{}, err
 	}
 	if !isOrg {
 		return GroupMutationResult{}, ErrRoundForbidden
-	}
-	if eventID == uuid.Nil {
-		return GroupMutationResult{}, ErrRoundNotFound
 	}
 
 	var maxGroupNum int
@@ -685,15 +684,15 @@ func (s *RoundService) UpdateGroup(ctx context.Context, roundID, groupID, caller
 		}
 	}
 
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return GroupMutationResult{}, ErrRoundNotFound
+	}
 	if err != nil {
 		return GroupMutationResult{}, err
 	}
 	if !isOrg {
 		return GroupMutationResult{}, ErrRoundForbidden
-	}
-	if eventID == uuid.Nil {
-		return GroupMutationResult{}, ErrRoundNotFound
 	}
 
 	var group models.Group
@@ -741,15 +740,15 @@ func (s *RoundService) UpdateGroup(ctx context.Context, roundID, groupID, caller
 // round_players are intentionally kept so players remain registered and can be
 // reassigned. Organizer-only.
 func (s *RoundService) DeleteGroup(ctx context.Context, roundID, groupID, callerID uuid.UUID, callerRole string) error {
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return ErrRoundNotFound
+	}
 	if err != nil {
 		return err
 	}
 	if !isOrg {
 		return ErrRoundForbidden
-	}
-	if eventID == uuid.Nil {
-		return ErrRoundNotFound
 	}
 
 	var group models.Group
@@ -766,19 +765,27 @@ func (s *RoundService) DeleteGroup(ctx context.Context, roundID, groupID, caller
 	return nil
 }
 
-// AddGroupMember adds an event member to a tee-time group, creating a RoundPlayer
-// if none exists. Enforces 4-player max and prevents duplicate group assignment.
+// AddGroupMember adds a player to a tee-time group, creating a RoundPlayer if
+// none exists. Enforces 4-player max and prevents duplicate group assignment.
+// For event-linked rounds the target must be an event member.
+// For eventless rounds any user may be added (subject to organizer permission).
 // Organizer-only.
 func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, callerID, targetUserID uuid.UUID, callerRole string) (GroupMutationResult, error) {
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return GroupMutationResult{}, ErrRoundNotFound
+	}
 	if err != nil {
 		return GroupMutationResult{}, err
 	}
 	if !isOrg {
 		return GroupMutationResult{}, ErrRoundForbidden
 	}
-	if eventID == uuid.Nil {
-		return GroupMutationResult{}, ErrRoundNotFound
+
+	// Load round to determine event-linked vs eventless.
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Select("id, event_id").First(&round, "id = ?", roundID).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("load round: %w", err)
 	}
 
 	var group models.Group
@@ -795,27 +802,43 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 		return GroupMutationResult{}, ErrGroupFull
 	}
 
-	var eventPlayer models.EventPlayer
-	if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", eventID, targetUserID).
-		First(&eventPlayer).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return GroupMutationResult{}, ErrPlayerNotEventMember
-		}
-		return GroupMutationResult{}, fmt.Errorf("load event player: %w", err)
-	}
-
-	// Find-or-create RoundPlayer — a player may join multiple groups over time,
-	// but has exactly one RoundPlayer record per round.
+	// Find-or-create RoundPlayer — a player has exactly one RoundPlayer record per round.
 	var roundPlayer models.RoundPlayer
-	if err := s.DB.WithContext(ctx).Where("round_id = ? AND event_player_id = ?", roundID, eventPlayer.ID).
-		First(&roundPlayer).Error; err != nil {
-		roundPlayer = models.RoundPlayer{
-			RoundID:       roundID,
-			EventPlayerID: eventPlayer.ID,
-			Status:        models.RoundPlayerStatusRegistered,
+	if round.EventID != nil {
+		// Event-linked round: target must be an event member.
+		var eventPlayer models.EventPlayer
+		if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
+			First(&eventPlayer).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return GroupMutationResult{}, ErrPlayerNotEventMember
+			}
+			return GroupMutationResult{}, fmt.Errorf("load event player: %w", err)
 		}
-		if err := s.DB.WithContext(ctx).Create(&roundPlayer).Error; err != nil {
-			return GroupMutationResult{}, fmt.Errorf("create round player: %w", err)
+		epID := eventPlayer.ID
+		if err := s.DB.WithContext(ctx).Where("round_id = ? AND event_player_id = ?", roundID, epID).
+			First(&roundPlayer).Error; err != nil {
+			roundPlayer = models.RoundPlayer{
+				RoundID:       roundID,
+				UserID:        targetUserID,
+				EventPlayerID: &epID,
+				Status:        models.RoundPlayerStatusRegistered,
+			}
+			if err := s.DB.WithContext(ctx).Create(&roundPlayer).Error; err != nil {
+				return GroupMutationResult{}, fmt.Errorf("create round player: %w", err)
+			}
+		}
+	} else {
+		// Eventless round: create RoundPlayer by user_id directly.
+		if err := s.DB.WithContext(ctx).Where("round_id = ? AND user_id = ?", roundID, targetUserID).
+			First(&roundPlayer).Error; err != nil {
+			roundPlayer = models.RoundPlayer{
+				RoundID: roundID,
+				UserID:  targetUserID,
+				Status:  models.RoundPlayerStatusRegistered,
+			}
+			if err := s.DB.WithContext(ctx).Create(&roundPlayer).Error; err != nil {
+				return GroupMutationResult{}, fmt.Errorf("create round player: %w", err)
+			}
 		}
 	}
 
@@ -845,15 +868,21 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 // The GroupPlayer join row is removed automatically via ON DELETE CASCADE.
 // Organizer-only.
 func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, callerID, targetUserID uuid.UUID, callerRole string) error {
-	isOrg, eventID, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return ErrRoundNotFound
+	}
 	if err != nil {
 		return err
 	}
 	if !isOrg {
 		return ErrRoundForbidden
 	}
-	if eventID == uuid.Nil {
-		return ErrRoundNotFound
+
+	// Load round to determine event-linked vs eventless.
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Select("id, event_id").First(&round, "id = ?", roundID).Error; err != nil {
+		return fmt.Errorf("load round: %w", err)
 	}
 
 	var group models.Group
@@ -864,22 +893,32 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 		return fmt.Errorf("load group: %w", err)
 	}
 
-	var eventPlayer models.EventPlayer
-	if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", eventID, targetUserID).
-		First(&eventPlayer).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrPlayerNotEventMember
-		}
-		return fmt.Errorf("load event player: %w", err)
-	}
-
+	// Look up RoundPlayer via event_player (event rounds) or user_id directly (eventless).
 	var roundPlayer models.RoundPlayer
-	if err := s.DB.WithContext(ctx).Where("round_id = ? AND event_player_id = ?", roundID, eventPlayer.ID).
-		First(&roundPlayer).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrPlayerNotInRound
+	if round.EventID != nil {
+		var eventPlayer models.EventPlayer
+		if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
+			First(&eventPlayer).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPlayerNotEventMember
+			}
+			return fmt.Errorf("load event player: %w", err)
 		}
-		return fmt.Errorf("load round player: %w", err)
+		if err := s.DB.WithContext(ctx).Where("round_id = ? AND event_player_id = ?", roundID, eventPlayer.ID).
+			First(&roundPlayer).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPlayerNotInRound
+			}
+			return fmt.Errorf("load round player: %w", err)
+		}
+	} else {
+		if err := s.DB.WithContext(ctx).Where("round_id = ? AND user_id = ?", roundID, targetUserID).
+			First(&roundPlayer).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPlayerNotInRound
+			}
+			return fmt.Errorf("load round player: %w", err)
+		}
 	}
 
 	// Deleting RoundPlayer cascades to GroupPlayer via ON DELETE CASCADE.
@@ -889,11 +928,188 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 	return nil
 }
 
+// ─── Eventless rounds ─────────────────────────────────────────────────────────
+
+// CreateEventlessRoundInput is the payload for CreateEventlessRound.
+// Either CourseID (UUID string) or CourseName must be provided.
+// DefaultTeeID is optional; if omitted the first tee for the course is used.
+type CreateEventlessRoundInput struct {
+	Name              string
+	ScheduledDate     string // "YYYY-MM-DD" required
+	ScoringFormat     *string
+	CourseID          *string
+	DefaultTeeID      *string
+	CourseName        string
+	NineHoleSelection *string // "front" or "back"; nil = full round
+}
+
+// CreateEventlessRound creates a standalone round with no event association.
+// The caller is automatically added to Group 1. Uses the same course-lookup
+// logic as Schedule.
+func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.UUID, in CreateEventlessRoundInput) (ScheduleRoundResult, error) {
+	if in.CourseID == nil && in.CourseName == "" {
+		return ScheduleRoundResult{}, &ValidationError{Field: "course", Message: "course_id or course_name is required"}
+	}
+	if in.CourseID != nil && in.DefaultTeeID == nil {
+		return ScheduleRoundResult{}, &ValidationError{Field: "default_tee_id", Message: "default_tee_id is required when course_id is provided"}
+	}
+	if in.ScheduledDate == "" {
+		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date is required"}
+	}
+	scheduledDate, err := time.Parse("2006-01-02", in.ScheduledDate)
+	if err != nil {
+		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date must be YYYY-MM-DD"}
+	}
+	if in.NineHoleSelection != nil {
+		sel := *in.NineHoleSelection
+		if sel != "front" && sel != "back" {
+			return ScheduleRoundResult{}, &ValidationError{Field: "nine_hole_selection", Message: `nine_hole_selection must be "front" or "back"`}
+		}
+	}
+
+	scoringFormat := models.ScoringFormatStroke
+	if in.ScoringFormat != nil && *in.ScoringFormat != "" {
+		scoringFormat = models.ScoringFormat(*in.ScoringFormat)
+	}
+
+	roundName := in.Name
+	if roundName == "" {
+		roundName = "Round"
+	}
+
+	var createdRound models.Round
+	var courseName string
+
+	txErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var course models.Course
+		var teeID uuid.UUID
+
+		if in.CourseID != nil {
+			courseUUID, err := uuid.Parse(*in.CourseID)
+			if err != nil {
+				return &ValidationError{Field: "course_id", Message: "invalid course_id"}
+			}
+			if err := tx.First(&course, "id = ?", courseUUID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrCourseNotFound
+				}
+				return fmt.Errorf("load course: %w", err)
+			}
+			teeUUID, err := uuid.Parse(*in.DefaultTeeID)
+			if err != nil {
+				return &ValidationError{Field: "default_tee_id", Message: "invalid default_tee_id"}
+			}
+			var tee models.Tee
+			if err := tx.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrTeeNotFound
+				}
+				return fmt.Errorf("load tee: %w", err)
+			}
+			teeID = teeUUID
+		} else {
+			if err := tx.Where("name ILIKE ?", in.CourseName).First(&course).Error; err != nil {
+				course = models.Course{Name: in.CourseName, HoleCount: 18}
+				if err := tx.Create(&course).Error; err != nil {
+					return fmt.Errorf("create course: %w", err)
+				}
+				defaultTee := models.Tee{
+					CourseID:     course.ID,
+					Name:         "Default",
+					Gender:       models.TeeGenderUnisex,
+					CourseRating: 72.0,
+					SlopeRating:  113,
+					Par:          72,
+				}
+				if err := tx.Create(&defaultTee).Error; err != nil {
+					return fmt.Errorf("create default tee: %w", err)
+				}
+				teeID = defaultTee.ID
+			} else {
+				var tee models.Tee
+				if err := tx.Where("course_id = ?", course.ID).First(&tee).Error; err != nil {
+					tee = models.Tee{
+						CourseID:     course.ID,
+						Name:         "Default",
+						Gender:       models.TeeGenderUnisex,
+						CourseRating: 72.0,
+						SlopeRating:  113,
+						Par:          72,
+					}
+					if err := tx.Create(&tee).Error; err != nil {
+						return fmt.Errorf("create default tee: %w", err)
+					}
+				}
+				teeID = tee.ID
+			}
+		}
+		courseName = course.Name
+
+		createdRound = models.Round{
+			EventID:           nil,
+			CreatedBy:         &callerID,
+			CourseID:          course.ID,
+			DefaultTeeID:      teeID,
+			Name:              roundName,
+			RoundNumber:       1,
+			ScheduledDate:     scheduledDate,
+			Status:            models.RoundStatusScheduled,
+			ScoringFormat:     scoringFormat,
+			NineHoleSelection: in.NineHoleSelection,
+		}
+		if err := tx.Create(&createdRound).Error; err != nil {
+			return fmt.Errorf("create round: %w", err)
+		}
+
+		// Auto-create Group 1 and add the creator to it.
+		group := models.Group{
+			RoundID:      createdRound.ID,
+			GroupNumber:  1,
+			StartingHole: 1,
+		}
+		if err := tx.Create(&group).Error; err != nil {
+			return fmt.Errorf("create group: %w", err)
+		}
+
+		rp := models.RoundPlayer{
+			RoundID: createdRound.ID,
+			UserID:  callerID,
+			Status:  models.RoundPlayerStatusRegistered,
+		}
+		if err := tx.Create(&rp).Error; err != nil {
+			return fmt.Errorf("create round player: %w", err)
+		}
+
+		gp := models.GroupPlayer{GroupID: group.ID, RoundPlayerID: rp.ID}
+		if err := tx.Create(&gp).Error; err != nil {
+			return fmt.Errorf("create group player: %w", err)
+		}
+
+		return nil
+	})
+
+	if txErr != nil {
+		var ve *ValidationError
+		if errors.As(txErr, &ve) ||
+			errors.Is(txErr, ErrCourseNotFound) ||
+			errors.Is(txErr, ErrTeeNotFound) {
+			return ScheduleRoundResult{}, txErr
+		}
+		return ScheduleRoundResult{}, fmt.Errorf("create eventless round: %w", txErr)
+	}
+
+	return ScheduleRoundResult{
+		Round:      createdRound,
+		CourseName: courseName,
+		GroupCount: 1,
+	}, nil
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 // loadGroupPlayers fetches the current players for a group via a raw join.
-// Raw join is more reliable than deep GORM Preload chains for this
-// multi-table hierarchy (group_players → round_players → event_players → users).
+// Uses rp.user_id directly — works for both event-linked and eventless rounds
+// after migration 000020 backfilled user_id on all existing round_players.
 func (s *RoundService) loadGroupPlayers(ctx context.Context, groupID uuid.UUID) ([]GroupPlayerResult, error) {
 	type playerRow struct {
 		RoundPlayerID string
@@ -906,8 +1122,7 @@ func (s *RoundService) loadGroupPlayers(ctx context.Context, groupID uuid.UUID) 
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
 		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
-		Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
-		Joins("JOIN users u ON u.id = ep.user_id").
+		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("gp.group_id = ?", groupID).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load group players: %w", err)

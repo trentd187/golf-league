@@ -166,16 +166,23 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 	}
 
 	var round models.Round
-	if err := s.DB.WithContext(ctx).Select("event_id", "status").First(&round, "id = ?", roundID).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Select("event_id", "status", "created_by").First(&round, "id = ?", roundID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrRoundNotFound
 		}
 		return false, fmt.Errorf("load round for permission check: %w", err)
 	}
 
-	isOrg, err := s.EventSvc.IsOrganizer(ctx, round.EventID, callerID, callerRole)
-	if err != nil {
-		return false, fmt.Errorf("check organizer: %w", err)
+	var isOrg bool
+	if round.EventID != nil {
+		var err error
+		isOrg, err = s.EventSvc.IsOrganizer(ctx, *round.EventID, callerID, callerRole)
+		if err != nil {
+			return false, fmt.Errorf("check organizer: %w", err)
+		}
+	} else {
+		// Eventless round: creator is the organizer.
+		isOrg = round.CreatedBy != nil && *round.CreatedBy == callerID
 	}
 	if isOrg {
 		return true, nil
@@ -193,18 +200,27 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		return false, nil
 	}
 
-	// Resolve caller → EventPlayer → RoundPlayer → GroupPlayer.
-	var callerEP models.EventPlayer
-	if err := s.DB.WithContext(ctx).
-		Where("event_id = ? AND user_id = ?", round.EventID, callerID).
-		First(&callerEP).Error; err != nil {
-		return false, nil
-	}
+	// Resolve caller → RoundPlayer → GroupPlayer.
+	// For event-linked rounds look up via EventPlayer; for eventless use user_id directly.
 	var callerRP models.RoundPlayer
-	if err := s.DB.WithContext(ctx).
-		Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
-		First(&callerRP).Error; err != nil {
-		return false, nil
+	if round.EventID != nil {
+		var callerEP models.EventPlayer
+		if err := s.DB.WithContext(ctx).
+			Where("event_id = ? AND user_id = ?", *round.EventID, callerID).
+			First(&callerEP).Error; err != nil {
+			return false, nil
+		}
+		if err := s.DB.WithContext(ctx).
+			Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
+			First(&callerRP).Error; err != nil {
+			return false, nil
+		}
+	} else {
+		if err := s.DB.WithContext(ctx).
+			Where("round_id = ? AND user_id = ?", roundID, callerID).
+			First(&callerRP).Error; err != nil {
+			return false, nil
+		}
 	}
 	var callerGP models.GroupPlayer
 	err2 := s.DB.WithContext(ctx).
@@ -231,9 +247,15 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		return nil, fmt.Errorf("load round: %w", err)
 	}
 
-	isOrg, err := s.EventSvc.IsOrganizer(ctx, round.EventID, callerID, callerRole)
-	if err != nil {
-		return nil, fmt.Errorf("check organizer: %w", err)
+	var isOrg bool
+	if round.EventID != nil {
+		var err error
+		isOrg, err = s.EventSvc.IsOrganizer(ctx, *round.EventID, callerID, callerRole)
+		if err != nil {
+			return nil, fmt.Errorf("check organizer: %w", err)
+		}
+	} else {
+		isOrg = round.CreatedBy != nil && *round.CreatedBy == callerID
 	}
 
 	effectiveHoleCount := round.Course.HoleCount
@@ -272,9 +294,15 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		return nil, fmt.Errorf("load groups: %w", err)
 	}
 
+	// HandicapAllowance is an event-level setting; nil for eventless rounds.
+	var handicapAllowance *float64
+	if round.Event != nil {
+		handicapAllowance = round.Event.HandicapAllowance
+	}
+
 	groupData := make([]ScorecardGroupData, 0, len(groups))
 	for _, g := range groups {
-		players, err := s.assembleGroupPlayers(ctx, g.ID, round.Event.HandicapAllowance, effectiveHoleCount)
+		players, err := s.assembleGroupPlayers(ctx, g.ID, handicapAllowance, effectiveHoleCount)
 		if err != nil {
 			return nil, err
 		}
@@ -292,15 +320,17 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		ScoringFormat:     string(round.ScoringFormat),
 		CallerUserID:      callerID.String(),
 		IsOrganizer:       isOrg,
-		HandicapAllowance: round.Event.HandicapAllowance,
+		HandicapAllowance: handicapAllowance,
 		NineHoleSelection: round.NineHoleSelection,
 		Holes:             holeRows,
 		Groups:            groupData,
 	}, nil
 }
 
-// assembleGroupPlayers joins group_players → round_players → event_players → users
+// assembleGroupPlayers joins group_players → round_players → users
 // and loads each player's scores and hole stats.
+// Uses rp.user_id directly — works for both event-linked and eventless rounds
+// after migration 000020 set user_id NOT NULL on all round_players.
 func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UUID, allowance *float64, effectiveHoleCount int) ([]ScorecardPlayerData, error) {
 	type playerRow struct {
 		RoundPlayerID  string
@@ -313,8 +343,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
 		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
-		Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
-		Joins("JOIN users u ON u.id = ep.user_id").
+		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("gp.group_id = ?", groupID).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load group players: %w", err)

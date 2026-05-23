@@ -86,23 +86,28 @@ func scheduleRound(t *testing.T, svc *services.RoundService, eventID, callerID u
 
 func TestRoundService_IsRoundOrganizer_AdminAlwaysTrue(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	svc := services.NewRoundService(db, services.NewEventService(db))
+	eventSvc := services.NewEventService(db)
+	svc := services.NewRoundService(db, eventSvc)
 
-	// Admin gets true even for a non-existent round — no DB hit for the event check.
-	// (The round lookup still runs; we just use a random UUID that won't be found.)
-	_, _, err := svc.IsRoundOrganizer(context.Background(), uuid.New(), uuid.New(), "admin")
-	// Admin short-circuits at EventService.IsOrganizer — error only if DB is down.
+	// Seed a real round so the admin path (after DB lookup) can be verified.
+	organizer := seedUser(t, db, "orgAdmin")
+	event := seedEvent(t, eventSvc, organizer.ID)
+	course, tee := seedCourseWithTee(t, db, "Admin Course")
+	result := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	// Admin is always an organizer for any existing round.
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, uuid.New(), "admin")
 	require.NoError(t, err)
+	assert.True(t, isOrg)
 }
 
 func TestRoundService_IsRoundOrganizer_RoundNotFound(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	svc := services.NewRoundService(db, services.NewEventService(db))
 
-	isOrg, eventID, err := svc.IsRoundOrganizer(context.Background(), uuid.New(), uuid.New(), "user")
-	require.NoError(t, err)
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), uuid.New(), uuid.New(), "user")
+	require.ErrorIs(t, err, services.ErrRoundNotFound)
 	assert.False(t, isOrg)
-	assert.Equal(t, uuid.Nil, eventID)
 }
 
 func TestRoundService_IsRoundOrganizer_OrganizerReturnsTrue(t *testing.T) {
@@ -115,7 +120,7 @@ func TestRoundService_IsRoundOrganizer_OrganizerReturnsTrue(t *testing.T) {
 	course, tee := seedCourseWithTee(t, db, "Augusta")
 	result := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
 
-	isOrg, _, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, organizer.ID, "user")
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, organizer.ID, "user")
 	require.NoError(t, err)
 	assert.True(t, isOrg)
 }
@@ -132,7 +137,7 @@ func TestRoundService_IsRoundOrganizer_NonOrganizerReturnsFalse(t *testing.T) {
 	course, tee := seedCourseWithTee(t, db, "Pebble Beach")
 	result := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
 
-	isOrg, _, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, member.ID, "user")
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, member.ID, "user")
 	require.NoError(t, err)
 	assert.False(t, isOrg)
 }
@@ -654,12 +659,157 @@ func TestRoundService_GetMyRounds_ReturnsOwnRounds(t *testing.T) {
 	organizer := seedUser(t, db, "org20")
 	event := seedEvent(t, eventSvc, organizer.ID)
 	course, tee := seedCourseWithTee(t, db, "Olympic Club")
-	scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
-	scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+	r1 := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+	r2 := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	// GetMyRounds uses round_players.user_id — a user only sees rounds they are
+	// actually playing in. Add the organizer as a round player to each round directly.
+	// (Schedule creates groups but does not auto-add the organizer as a player.)
+	// seedEvent auto-creates the organizer event_player; look it up rather than re-inserting.
+	var orgEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&orgEP).Error)
+	rp1 := addRoundPlayer(t, db, r1.Round.ID, orgEP.ID)
+	rp2 := addRoundPlayer(t, db, r2.Round.ID, orgEP.ID)
+	require.NotEmpty(t, rp1.ID)
+	require.NotEmpty(t, rp2.ID)
 
 	results, err := svc.GetMyRounds(context.Background(), organizer.ID)
 	require.NoError(t, err)
 	assert.Len(t, results, 2)
+}
+
+// ─── CreateEventlessRound ─────────────────────────────────────────────────────
+
+func TestRoundService_CreateEventlessRound_WithCourseName(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elCreator1")
+
+	result, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseName:    "Winged Foot",
+		ScheduledDate: "2025-08-01",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Round", result.Round.Name)
+	assert.Equal(t, "Winged Foot", result.CourseName)
+	assert.Nil(t, result.Round.EventID)
+	require.NotNil(t, result.Round.CreatedBy)
+	assert.Equal(t, creator.ID, *result.Round.CreatedBy)
+
+	// Creator must be in Group 1 as a round_player.
+	var rp models.RoundPlayer
+	require.NoError(t, db.Where("round_id = ? AND user_id = ?", result.Round.ID, creator.ID).First(&rp).Error)
+	var gp models.GroupPlayer
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).First(&gp).Error)
+	var group models.Group
+	require.NoError(t, db.First(&group, "id = ?", gp.GroupID).Error)
+	assert.Equal(t, 1, group.GroupNumber)
+}
+
+func TestRoundService_CreateEventlessRound_WithExistingCourseName(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elCreator2")
+
+	// Pre-seed the course so the ILIKE match path is taken.
+	existingCourse, _ := seedCourseWithTee(t, db, "Shinnecock Hills")
+
+	result, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseName:    "Shinnecock Hills",
+		ScheduledDate: "2025-08-01",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, existingCourse.ID, result.Round.CourseID)
+	assert.Nil(t, result.Round.EventID)
+}
+
+func TestRoundService_CreateEventlessRound_WithCourseID(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elCreator3")
+	course, tee := seedCourseWithTee(t, db, "Merion")
+
+	courseIDStr := course.ID.String()
+	teeIDStr := tee.ID.String()
+	result, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseID:      &courseIDStr,
+		DefaultTeeID:  &teeIDStr,
+		ScheduledDate: "2025-08-01",
+		Name:          "Solo Round",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Solo Round", result.Round.Name)
+	assert.Equal(t, course.ID, result.Round.CourseID)
+	assert.Equal(t, tee.ID, result.Round.DefaultTeeID)
+	assert.Nil(t, result.Round.EventID)
+}
+
+func TestRoundService_CreateEventlessRound_CourseNotFound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elCreator4")
+
+	unknownID := uuid.New().String()
+	teeID := uuid.New().String()
+	_, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseID:      &unknownID,
+		DefaultTeeID:  &teeID,
+		ScheduledDate: "2025-08-01",
+	})
+	require.ErrorIs(t, err, services.ErrCourseNotFound)
+}
+
+func TestRoundService_CreateEventlessRound_TeeNotFound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elCreator5")
+	course, _ := seedCourseWithTee(t, db, "Baltusrol")
+
+	courseIDStr := course.ID.String()
+	wrongTeeID := uuid.New().String()
+	_, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseID:      &courseIDStr,
+		DefaultTeeID:  &wrongTeeID,
+		ScheduledDate: "2025-08-01",
+	})
+	require.ErrorIs(t, err, services.ErrTeeNotFound)
+}
+
+// TestRoundService_IsRoundOrganizer_EventlessCreatorIsOrganizer verifies that
+// the creator of an eventless round is its organizer.
+func TestRoundService_IsRoundOrganizer_EventlessCreatorIsOrganizer(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elOrg1")
+
+	result, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseName:    "Oakland Hills",
+		ScheduledDate: "2025-08-01",
+	})
+	require.NoError(t, err)
+
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, creator.ID, "user")
+	require.NoError(t, err)
+	assert.True(t, isOrg)
+}
+
+// TestRoundService_IsRoundOrganizer_EventlessNonCreatorNotOrganizer verifies
+// that a user who is not the creator of an eventless round is not an organizer.
+func TestRoundService_IsRoundOrganizer_EventlessNonCreatorNotOrganizer(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewRoundService(db, services.NewEventService(db))
+	creator := seedUser(t, db, "elOrg2")
+	other := seedUser(t, db, "elOther2")
+
+	result, err := svc.CreateEventlessRound(context.Background(), creator.ID, services.CreateEventlessRoundInput{
+		CourseName:    "Oakmont",
+		ScheduledDate: "2025-08-01",
+	})
+	require.NoError(t, err)
+
+	isOrg, err := svc.IsRoundOrganizer(context.Background(), result.Round.ID, other.ID, "user")
+	require.NoError(t, err)
+	assert.False(t, isOrg)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

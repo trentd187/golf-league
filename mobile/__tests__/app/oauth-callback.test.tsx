@@ -59,7 +59,7 @@ it("redirects to /(tabs) when getSession already has a session (fast path)", asy
   render(<OAuthCallback />);
 
   await waitFor(() => {
-    expect(mockReplace).toHaveBeenCalledWith("/(tabs)");
+    expect(mockReplace).toHaveBeenCalledWith("/(tabs)/events");
   });
 });
 
@@ -72,7 +72,7 @@ it("redirects to /(tabs) when SIGNED_IN event fires", async () => {
   capturedAuthCallback?.("SIGNED_IN", { user: { id: "u1" } });
 
   await waitFor(() => {
-    expect(mockReplace).toHaveBeenCalledWith("/(tabs)");
+    expect(mockReplace).toHaveBeenCalledWith("/(tabs)/events");
   });
 });
 

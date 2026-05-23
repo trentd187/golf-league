@@ -9,7 +9,7 @@ Verify both coverage ratchets locally before the pre-commit hook fails.
 
 ## What this skill does
 
-1. Runs Go coverage for `internal/handlers` + `internal/middleware`, parses the total %, compares to `.go-coverage-baseline`.
+1. Runs Go coverage for `internal/handlers` + `internal/middleware` + `internal/services`, parses the total %, compares to `.go-coverage-baseline`.
 2. Runs Jest mobile coverage, parses the Statements %, compares to `.mobile-coverage-baseline`.
 3. Reports both deltas. If either dropped, suggests the most likely cause (new untested handler, inline screen logic, missing bug-fix test) — does NOT auto-add tests.
 
@@ -31,7 +31,7 @@ From the `backend/` directory. `-count=1` is REQUIRED — without it the test ca
 ```bash
 cd /c/Users/trent/git-repos/golf-league/backend && \
 go test -count=1 \
-  -coverpkg=github.com/trentd187/golf-league/internal/handlers,github.com/trentd187/golf-league/internal/middleware \
+  -coverpkg=github.com/trentd187/golf-league/internal/handlers,github.com/trentd187/golf-league/internal/middleware,github.com/trentd187/golf-league/internal/services \
   -coverprofile=coverage.out ./... && \
 go tool cover -func=coverage.out | grep "^total:"
 ```

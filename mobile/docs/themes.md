@@ -1,6 +1,6 @@
 # Theme System
 
-The app supports 3 switchable themes (Light, Dark, Grey/neutral) persisted across restarts in SecureStore. **All new screens and components must use theme tokens, not hardcoded color classes.**
+The app supports 3 switchable themes (Light, Dark, High Contrast) persisted across restarts in SecureStore. **All new screens and components must use theme tokens, not hardcoded color classes.**
 
 ## Architecture — three layers
 

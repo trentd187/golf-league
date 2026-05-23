@@ -34,7 +34,8 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, scoreTextColor } from "@/utils/stats";
+import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, buildScoreHistory, scoreTextColor } from "@/utils/stats";
+import ScoreHistoryChart from "@/components/ScoreHistoryChart";
 import ModalHeader from "@/components/ModalHeader";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 // import HandicapSection from "@/components/HandicapSection"; // hidden pending GHIN review
@@ -604,8 +605,9 @@ export default function StatsScreen() {
     .map((q) => q.data)
     .filter((sc): sc is Scorecard => sc !== undefined);
 
-  const stats    = useMemo(() => buildMyStats(scorecards, filteredRounds),  [scorecards, filteredRounds]);
-  const girBands = useMemo(() => buildGirByBand(scorecards),                [scorecards]);
+  const stats        = useMemo(() => buildMyStats(scorecards, filteredRounds),       [scorecards, filteredRounds]);
+  const girBands     = useMemo(() => buildGirByBand(scorecards),                     [scorecards]);
+  const scoreHistory = useMemo(() => buildScoreHistory(scorecards, filteredRounds),  [scorecards, filteredRounds]);
 
   // Scoring summary for the Scores tab: avg, high, and low from the same
   // 18-hole-equivalent gross scores that buildMyStats computed (paired 9s included).
@@ -804,14 +806,7 @@ export default function StatsScreen() {
             </>
           ) : (
             <>
-              {/* Scoring history chart — placeholder until chart library is chosen */}
-              <View
-                className={`${t.surface} rounded-2xl border ${t.border} items-center justify-center mb-4 gap-2`}
-                style={{ height: 180 }}
-              >
-                <Ionicons name="trending-up-outline" size={36} color={t.colors.tabBarInactive} />
-                <Text className={`text-sm ${t.textSecondary}`}>Scoring history chart coming soon</Text>
-              </View>
+              <ScoreHistoryChart points={scoreHistory} />
 
               {/* Per-round score list */}
               <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 ${t.textTertiary}`}>

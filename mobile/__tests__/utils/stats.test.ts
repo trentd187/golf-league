@@ -2,7 +2,7 @@
 // Unit tests for buildStats(), buildRoundStats(), buildMyStats(), findMyPlayer(),
 // and handicapConsistencyLabel() in utils/stats.ts. All functions are pure — no mocking needed.
 
-import { buildStats, buildRoundStats, buildMyStats, buildGirByBand, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
+import { buildStats, buildRoundStats, buildMyStats, buildGirByBand, buildScoreHistory, findMyPlayer, handicapConsistencyLabel } from "@/utils/stats";
 import type { Scorecard, ScorecardPlayer, ScorecardHole } from "@/types/scorecard";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -587,6 +587,82 @@ describe("buildGirByBand", () => {
     const result = buildGirByBand([sc], "bob");
     expect(result[0].total).toBe(1);
     expect(result[0].girPercent).toBeCloseTo(0);
+  });
+});
+
+// ─── buildScoreHistory ────────────────────────────────────────────────────────
+
+describe("buildScoreHistory", () => {
+  it("returns [] for empty input", () => {
+    expect(buildScoreHistory([], [])).toEqual([]);
+  });
+
+  it("returns one point for an 18-hole round with correct scoreToPar and holeCount", () => {
+    // makeScorecard default holes: 18 holes with pars cycling 3/4/5 (sum = 72)
+    const player = makePlayer({ total_gross: 75, total_net: null });
+    const sc = makeScorecard({ round_id: "r1", player });
+    const rounds = [{ id: "r1", scheduled_date: "2026-03-01" }];
+    const result = buildScoreHistory([sc], rounds);
+    expect(result).toHaveLength(1);
+    expect(result[0].scoreToPar).toBe(75 - 72);
+    expect(result[0].holeCount).toBe(18);
+    expect(result[0].date).toBe("2026-03-01");
+    expect(result[0].netScoreToPar).toBeNull();
+  });
+
+  it("computes netScoreToPar when total_net is present", () => {
+    const player = makePlayer({ total_gross: 75, total_net: 68 });
+    const sc = makeScorecard({ round_id: "r1", player });
+    const rounds = [{ id: "r1", scheduled_date: "2026-03-01" }];
+    const [point] = buildScoreHistory([sc], rounds);
+    // 18-hole default par = 72; net 68 - 72 = -4
+    expect(point.netScoreToPar).toBe(68 - 72);
+  });
+
+  it("sets holeCount to 9 for a 9-hole round", () => {
+    const nineHoles = Array.from({ length: 9 }, (_, i) => makeHole(i + 1, 4)); // par 36
+    const player = makePlayer({ total_gross: 40, total_net: null });
+    const sc = makeScorecard({
+      round_id: "r1",
+      nine_hole_selection: "front",
+      holes: nineHoles,
+      player,
+    });
+    const rounds = [{ id: "r1", scheduled_date: "2026-03-01" }];
+    const [point] = buildScoreHistory([sc], rounds);
+    expect(point.holeCount).toBe(9);
+    expect(point.scoreToPar).toBe(40 - 36);
+  });
+
+  it("sorts multiple rounds oldest-first for left-to-right chart order", () => {
+    const p1 = makePlayer({ total_gross: 80 });
+    const p2 = makePlayer({ total_gross: 75 });
+    const sc1 = makeScorecard({ round_id: "r1", player: p1 });
+    const sc2 = makeScorecard({ round_id: "r2", player: p2 });
+    const rounds = [
+      { id: "r1", scheduled_date: "2026-05-10" },
+      { id: "r2", scheduled_date: "2026-03-01" },
+    ];
+    const result = buildScoreHistory([sc1, sc2], rounds);
+    expect(result[0].date).toBe("2026-03-01");
+    expect(result[1].date).toBe("2026-05-10");
+  });
+
+  it("excludes a scorecard whose round_id is not in the rounds list", () => {
+    const player = makePlayer({ total_gross: 80 });
+    const sc = makeScorecard({ round_id: "unknown", player });
+    expect(buildScoreHistory([sc], [{ id: "r1", scheduled_date: "2026-01-01" }])).toHaveLength(0);
+  });
+
+  it("excludes a scorecard where the caller has no player entry", () => {
+    const sc = makeScorecard({ round_id: "r1", caller_user_id: "nobody" });
+    expect(buildScoreHistory([sc], [{ id: "r1", scheduled_date: "2026-01-01" }])).toHaveLength(0);
+  });
+
+  it("excludes a scorecard where total_gross is null", () => {
+    const player = makePlayer({ total_gross: null });
+    const sc = makeScorecard({ round_id: "r1", player });
+    expect(buildScoreHistory([sc], [{ id: "r1", scheduled_date: "2026-01-01" }])).toHaveLength(0);
   });
 });
 

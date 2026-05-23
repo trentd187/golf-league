@@ -428,6 +428,41 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
   };
 }
 
+// ScorePoint is one data point for the score history chart.
+// scoreToPar = total_gross - sum(holes[].par); negative means under par.
+// netScoreToPar uses total_net instead; null when no handicap was set.
+export type ScorePoint = {
+  date: string;
+  scoreToPar: number;
+  netScoreToPar: number | null;
+  holeCount: 9 | 18;
+};
+
+// buildScoreHistory builds the score-to-par series used by the scoring history
+// chart. Each completed scorecard where the caller has a gross score becomes one
+// point. 9-hole rounds are kept as separate points (holeCount: 9) so the chart
+// can filter or visually distinguish them without losing their dates.
+export function buildScoreHistory(scorecards: Scorecard[], rounds: RoundRef[]): ScorePoint[] {
+  const roundMap = new Map(rounds.map((r) => [r.id, r]));
+  const points: ScorePoint[] = [];
+
+  for (const sc of scorecards) {
+    const r = roundMap.get(sc.round_id);
+    if (!r) continue;
+    const player = findMyPlayer(sc);
+    if (player?.total_gross == null) continue;
+    const totalPar = sc.holes.reduce((sum, h) => sum + h.par, 0);
+    points.push({
+      date: r.scheduled_date,
+      scoreToPar: player.total_gross - totalPar,
+      netScoreToPar: player.total_net != null ? player.total_net - totalPar : null,
+      holeCount: sc.nine_hole_selection !== null ? 9 : 18,
+    });
+  }
+
+  return points.sort((a, b) => a.date.localeCompare(b.date));
+}
+
 // ─── GIR by approach yardage band ────────────────────────────────────────────
 
 // GirBandData holds aggregated GIR stats for one approach yardage band.

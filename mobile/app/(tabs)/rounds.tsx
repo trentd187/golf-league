@@ -193,17 +193,19 @@ export default function RoundsScreen() {
         <View className="flex-row items-center justify-between px-5 pt-16 pb-2">
           <Text className={`text-2xl font-bold ${t.textPrimary}`}>My Rounds</Text>
           <TouchableOpacity
+            className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
             onPress={() => router.push("/rounds/create")}
             activeOpacity={0.7}
           >
-            <Ionicons name="add-circle-outline" size={28} color={t.colors.tabBarActive} />
+            <Ionicons name="add" size={18} color="white" />
+            <Text className="text-white font-semibold text-sm">+ Create</Text>
           </TouchableOpacity>
         </View>
         <View className="flex-1 items-center justify-center gap-4 px-8">
           <Ionicons name="flag-outline" size={64} color={t.colors.tabBarActive} />
           <Text className={`text-xl font-bold ${t.textPrimary}`}>No Rounds Yet</Text>
           <Text className={`text-base text-center ${t.textSecondary}`}>
-            Tap the <Text className="font-semibold">+</Text> button above to start a casual round, or join an event to play in a league or tournament.
+            Tap <Text className="font-semibold">+ Create</Text> above to start a casual round, or join an event to play in a league or tournament.
           </Text>
         </View>
       </View>
@@ -245,10 +247,12 @@ export default function RoundsScreen() {
           <View className="flex-row items-center justify-between mb-1">
             <Text className={`text-2xl font-bold ${t.textPrimary}`}>My Rounds</Text>
             <TouchableOpacity
+              className={`${t.primaryBg} rounded-xl px-4 py-2 flex-row items-center gap-2`}
               onPress={() => router.push("/rounds/create")}
               activeOpacity={0.7}
             >
-              <Ionicons name="add-circle-outline" size={28} color={t.colors.tabBarActive} />
+              <Ionicons name="add" size={18} color="white" />
+              <Text className="text-white font-semibold text-sm">+ Create</Text>
             </TouchableOpacity>
           </View>
         }

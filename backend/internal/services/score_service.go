@@ -321,8 +321,10 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 	}, nil
 }
 
-// assembleGroupPlayers joins group_players → round_players → event_players → users
+// assembleGroupPlayers joins group_players → round_players → users
 // and loads each player's scores and hole stats.
+// Uses rp.user_id directly — works for both event-linked and eventless rounds
+// after migration 000020 set user_id NOT NULL on all round_players.
 func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UUID, allowance *float64, effectiveHoleCount int) ([]ScorecardPlayerData, error) {
 	type playerRow struct {
 		RoundPlayerID  string
@@ -335,8 +337,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
 		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
-		Joins("JOIN event_players ep ON ep.id = rp.event_player_id").
-		Joins("JOIN users u ON u.id = ep.user_id").
+		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("gp.group_id = ?", groupID).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load group players: %w", err)

@@ -198,7 +198,7 @@ export default function RoundsScreen() {
             activeOpacity={0.7}
           >
             <Ionicons name="add" size={18} color="white" />
-            <Text className="text-white font-semibold text-sm">+ Create</Text>
+            <Text className="text-white font-semibold text-sm">Create</Text>
           </TouchableOpacity>
         </View>
         <View className="flex-1 items-center justify-center gap-4 px-8">
@@ -252,7 +252,7 @@ export default function RoundsScreen() {
               activeOpacity={0.7}
             >
               <Ionicons name="add" size={18} color="white" />
-              <Text className="text-white font-semibold text-sm">+ Create</Text>
+              <Text className="text-white font-semibold text-sm">Create</Text>
             </TouchableOpacity>
           </View>
         }

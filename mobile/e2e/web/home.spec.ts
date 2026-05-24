@@ -25,6 +25,9 @@ test("unauthenticated root redirects to sign-in content", async ({ page }) => {
   // The sign-in screen is the expected landing for unauthenticated users.
   // Wait for either the brand text or the Google button to appear.
   await expect(
-    page.getByText("Golf Stuff In Here").or(page.getByText("Continue with Google"))
+    page
+      .getByText("Golf Stuff In Here")
+      .or(page.getByText("Continue with Google"))
+      .first()
   ).toBeVisible({ timeout: 10_000 });
 });

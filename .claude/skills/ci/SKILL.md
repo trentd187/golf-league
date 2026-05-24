@@ -52,7 +52,7 @@ go tool cover -func=coverage.out | grep "^total:"
 `-count=1` is REQUIRED — without it the test cache replays a stale profile and produces a wrong number. Then enforce the ratchet:
 
 ```bash
-cd /c/Users/trent/git-repos/golf-league && bash scripts/check-go-coverage.sh
+cd /c/Users/trent/git-repos/golf-league/backend && bash ../scripts/check-go-coverage.sh
 ```
 
 Pass = script exits 0. FAIL = script exits non-zero (prints the delta and the baseline). Report the percentage delta.

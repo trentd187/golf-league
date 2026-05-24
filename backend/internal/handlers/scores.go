@@ -45,22 +45,22 @@ type UpsertHoleStatsRequest struct {
 func writeScoreError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: ve.Message})
 	}
 	switch {
 	case errors.Is(err, services.ErrRoundNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "round not found"})
 	case errors.Is(err, services.ErrRoundPlayerNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round player not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "round player not found"})
 	case errors.Is(err, services.ErrScoreForbidden):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized to modify scores for this player"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "not authorized to modify scores for this player"})
 	case errors.Is(err, services.ErrRoundNotActive):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "round is not active — scores can only be entered while the round is in progress"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "round is not active — scores can only be entered while the round is in progress"})
 	case errors.Is(err, services.ErrHandicapRequired):
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "handicap must be set before entering scores for this round"})
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{jsonKeyError: "handicap must be set before entering scores for this round"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ func GetRoundScorecard(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round ID"})
 		}
 
 		// Auth is enforced by middleware; callerID falls back to uuid.Nil on parse
@@ -95,23 +95,23 @@ func SetPlayerHandicap(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round ID"})
 		}
 		roundPlayerID, err := uuid.Parse(c.Params("roundPlayerId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round player ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round player ID"})
 		}
 
 		var req SetHandicapRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
 		userIDStr, _ := c.Locals("userID").(string)
 		userRole, _ := c.Locals("userRole").(string)
 		callerID, err := uuid.Parse(userIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		if err := svc.SetHandicap(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.CourseHandicap); err != nil {
@@ -127,23 +127,23 @@ func UpsertPlayerScores(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round ID"})
 		}
 		roundPlayerID, err := uuid.Parse(c.Params("roundPlayerId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round player ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round player ID"})
 		}
 
 		var req UpsertScoresRequest
 		if err := c.BodyParser(&req); err != nil || len(req.Scores) == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scores array is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "scores array is required"})
 		}
 
 		userIDStr, _ := c.Locals("userID").(string)
 		userRole, _ := c.Locals("userRole").(string)
 		callerID, err := uuid.Parse(userIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		saved, err := svc.UpsertScores(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.Scores)
@@ -160,23 +160,23 @@ func UpsertHoleStats(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round ID"})
 		}
 		roundPlayerID, err := uuid.Parse(c.Params("roundPlayerId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round player ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round player ID"})
 		}
 
 		var req UpsertHoleStatsRequest
 		if err := c.BodyParser(&req); err != nil || len(req.Stats) == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "stats array is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "stats array is required"})
 		}
 
 		userIDStr, _ := c.Locals("userID").(string)
 		userRole, _ := c.Locals("userRole").(string)
 		callerID, err := uuid.Parse(userIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		saved, err := svc.UpsertHoleStats(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.Stats)

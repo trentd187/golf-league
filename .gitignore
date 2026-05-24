@@ -8,6 +8,8 @@ backend/coverage.out
 # Environment
 .env
 **/.env
+# QA variables file — contains Railway dev URL and test JWT; never commit
+backend/qa/variables.env
 
 # MCP server config — contains API keys, never commit
 .mcp.json

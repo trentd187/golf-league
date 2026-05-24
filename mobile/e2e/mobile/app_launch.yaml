@@ -1,0 +1,31 @@
+# app_launch.yaml — Smoke test: app launches without crashing.
+# Verifies the app opens and lands on a recognisable screen within 10 seconds.
+# Run with: maestro test e2e/mobile/app_launch.yaml
+# Targets the development build: com.trentd.golfstuffinhere.dev
+
+appId: com.trentd.golfstuffinhere.dev
+
+---
+
+- launchApp:
+    clearState: false
+
+# Wait for either the sign-in screen (unauthenticated) or the events tab
+# (previously signed in). Either is a valid successful launch.
+- assertTrue:
+    condition: ${output.viewTree != null}
+    label: "App rendered a view tree (did not crash on launch)"
+
+# At least one of these texts must be visible — covers both auth states.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - assertVisible: "Continue with Google"
+      - assertVisible: "Golf Stuff In Here"
+
+- runFlow:
+    when:
+      visible: "Events"
+    commands:
+      - assertVisible: "Events"

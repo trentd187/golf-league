@@ -388,6 +388,11 @@ export default function ScorecardScreen() {
   // always centred in view without the user having to swipe manually.
   const pillScrollRef = useRef<ScrollView>(null);
 
+  // holeChangeIsMount guards the hole-change refetch effect so it does not fire
+  // on the initial mount. useQuery already fetches on mount — calling refetch()
+  // simultaneously doubles the GET /scorecard request without adding any value.
+  const holeChangeIsMount = useRef(true);
+
   // Scroll the hole pills so the active pill is always centred in view.
   // Each pill is w-9 (36px) with gap-2 (8px) between them = 44px per slot.
   // We subtract half the screen width and add half a pill so it lands centred.
@@ -403,7 +408,13 @@ export default function ScorecardScreen() {
 
   // Refetch when the player moves to a new hole so other players' freshly-saved
   // scores appear immediately rather than waiting for the next 60-second poll.
+  // Skip the first fire — useQuery handles the initial fetch; a simultaneous
+  // refetch() on mount doubles the GET /scorecard request for no gain.
   useEffect(() => {
+    if (holeChangeIsMount.current) {
+      holeChangeIsMount.current = false;
+      return;
+    }
     refetch();
   }, [currentHole, refetch]);
 

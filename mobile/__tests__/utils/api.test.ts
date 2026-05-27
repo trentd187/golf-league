@@ -3,8 +3,8 @@
 // Verifies that observability headers are injected on every request and that
 // the response is returned unchanged. fetch and expo-crypto are mocked.
 
-// Valid hex UUID so traceId/spanId derivations in TelemetryClient produce
-// well-formed strings (same mock as telemetry.test.ts for consistency).
+// Valid hex UUID so TelemetryClient constructor produces well-formed session IDs
+// (same mock as telemetry.test.ts for consistency).
 jest.mock("expo-crypto", () => ({
   randomUUID: jest.fn(() => "deadbeef-dead-4bee-beef-deadbeefcafe"),
 }));
@@ -40,15 +40,6 @@ beforeEach(() => {
 });
 
 describe("apiFetch — observability headers", () => {
-  it("injects a W3C traceparent header on every request", async () => {
-    const fetch = isolatedApiFetch();
-    await fetch("http://localhost:8080/api/v1/events");
-
-    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    const traceparent = (opts.headers as Headers).get("traceparent");
-    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
-  });
-
   it("injects X-Correlation-ID set to the session ID", async () => {
     const fetch = isolatedApiFetch();
     await fetch("http://localhost:8080/api/v1/events");
@@ -60,6 +51,14 @@ describe("apiFetch — observability headers", () => {
     );
   });
 
+  it("does not inject a traceparent header (FetchInstrumentation handles this on web)", async () => {
+    const fetch = isolatedApiFetch();
+    await fetch("http://localhost:8080/api/v1/events");
+
+    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect((opts.headers as Headers).get("traceparent")).toBeNull();
+  });
+
   it("preserves caller-supplied headers alongside the injected ones", async () => {
     const fetch = isolatedApiFetch();
     await fetch("http://localhost:8080/api/v1/events", {
@@ -69,7 +68,6 @@ describe("apiFetch — observability headers", () => {
     const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
     const headers = opts.headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer my-jwt");
-    expect(headers.get("traceparent")).toBeTruthy();
     expect(headers.get("X-Correlation-ID")).toBeTruthy();
   });
 

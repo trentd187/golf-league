@@ -49,7 +49,17 @@ export function initWebTracing(): void {
     instrumentations: [
       // FetchInstrumentation patches globalThis.fetch and injects traceparent into
       // every outgoing request. Same-origin requests (our API) are always propagated.
-      new FetchInstrumentation(),
+      //
+      // ignoreUrls prevents the exporter and telemetry flush from being instrumented:
+      //   - /otlp/v1/traces: the OTLPTraceExporter uses fetch() to ship spans; without
+      //     this exclusion every export creates a new span that gets exported, creating
+      //     a self-perpetuating loop that fills the BatchSpanProcessor queue with ~2048
+      //     spans and steadily inflates renderer memory until the process crashes.
+      //   - /api/v1/telemetry/logs: internal flush requests are noise in Tempo and
+      //     compound the loop since the 30-second flush timer fires on every page.
+      new FetchInstrumentation({
+        ignoreUrls: [/\/otlp\/v1\/traces/, /\/api\/v1\/telemetry\/logs/],
+      }),
       // DocumentLoadInstrumentation records navigation and resource timing,
       // providing Core Web Vitals (FCP, LCP, etc.) as Tempo span attributes.
       new DocumentLoadInstrumentation(),

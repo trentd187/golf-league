@@ -3,9 +3,8 @@
 // All tests are Tier 1 — no network or native device APIs required.
 // expo-crypto and fetch are mocked below.
 
-// Mock expo-crypto with a valid hex UUID so traceId/spanId derivations produce
-// well-formed hex strings. The constructor calls randomUUID() twice (sessionId + traceId)
-// and getTraceparent() calls it once more (spanId); all calls return the same value here.
+// Mock expo-crypto with a valid hex UUID so traceId derivations produce well-formed
+// hex strings. The constructor calls randomUUID() twice (sessionId + traceId).
 jest.mock("expo-crypto", () => ({
   randomUUID: jest.fn(() => "deadbeef-dead-4bee-beef-deadbeefcafe"),
 }));
@@ -139,22 +138,6 @@ describe("TelemetryClient.setTokenGetter", () => {
   });
 });
 
-describe("TelemetryClient.getTraceparent", () => {
-  it("returns a string in W3C traceparent format (00-traceId-spanId-01)", () => {
-    const client = freshClient();
-    expect(client.getTraceparent()).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
-  });
-
-  it("trace ID portion is stable across multiple calls", () => {
-    const client = freshClient();
-    const first = client.getTraceparent();
-    const second = client.getTraceparent();
-    // traceparent format: "00-{traceId}-{spanId}-01" — no dashes inside traceId or spanId,
-    // so split("-")[1] is exactly the 32-char trace ID segment.
-    expect(first.split("-")[1]).toBe(second.split("-")[1]);
-  });
-});
-
 describe("TelemetryClient.setLastTraceId", () => {
   it("stores the trace ID without throwing", () => {
     const client = freshClient();
@@ -219,6 +202,26 @@ describe("TelemetryClient.flush", () => {
     client.log("error", "ev", "msg");
     await client.flush();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("drops entries silently when fetch throws a network error", async () => {
+    mockFetch.mockRejectedValueOnce(new Error("network error"));
+    const client = freshClient();
+    client.setTokenGetter(() => Promise.resolve("tok"));
+    client.log("warn", "ev", "will be dropped");
+    await expect(client.flush()).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes automatically when the 30-second batch timer fires", async () => {
+    const client = freshClient();
+    client.setTokenGetter(() => Promise.resolve("tok"));
+    client.log("info", "ev", "arm the timer");
+    // Advance fake timers to fire the 30-second debounce callback.
+    jest.advanceTimersByTime(30_000);
+    // Allow promise microtasks to settle (flush is async).
+    await Promise.resolve();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -29,6 +29,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// ─── Field-name constants ─────────────────────────────────────────────────────
+// Prevents S1192 duplicate-literal findings for strings repeated 3+ times
+// across the Schedule, Update, and CreateEventlessRound validation blocks.
+const (
+	colScheduledDate     = "scheduled_date"
+	colDefaultTeeID      = "default_tee_id"
+	colNineHoleSelection = "nine_hole_selection"
+	nineHoleFront        = "front"
+	nineHoleBack         = "back"
+)
+
 // ─── Sentinel errors ───────────────────────────────────────────────────────────
 
 var (
@@ -304,19 +315,19 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 		return ScheduleRoundResult{}, &ValidationError{Field: "course", Message: "course_id or course_name is required"}
 	}
 	if in.CourseID != nil && in.DefaultTeeID == nil {
-		return ScheduleRoundResult{}, &ValidationError{Field: "default_tee_id", Message: "default_tee_id is required when course_id is provided"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colDefaultTeeID, Message: "default_tee_id is required when course_id is provided"}
 	}
 	if in.ScheduledDate == "" {
-		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date is required"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date is required"}
 	}
 	scheduledDate, err := time.Parse("2006-01-02", in.ScheduledDate)
 	if err != nil {
-		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date must be YYYY-MM-DD"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date must be YYYY-MM-DD"}
 	}
 	if in.NineHoleSelection != nil {
 		sel := *in.NineHoleSelection
-		if sel != "front" && sel != "back" {
-			return ScheduleRoundResult{}, &ValidationError{Field: "nine_hole_selection", Message: `nine_hole_selection must be "front" or "back"`}
+		if sel != nineHoleFront && sel != nineHoleBack {
+			return ScheduleRoundResult{}, &ValidationError{Field: colNineHoleSelection, Message: `nine_hole_selection must be "front" or "back"`}
 		}
 	}
 
@@ -358,7 +369,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			}
 			teeUUID, err := uuid.Parse(*in.DefaultTeeID)
 			if err != nil {
-				return &ValidationError{Field: "default_tee_id", Message: "invalid default_tee_id"}
+				return &ValidationError{Field: colDefaultTeeID, Message: "invalid default_tee_id"}
 			}
 			var tee models.Tee
 			if err := tx.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {
@@ -409,7 +420,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 		courseName = course.Name
 
 		if in.NineHoleSelection != nil && course.HoleCount != 18 {
-			return &ValidationError{Field: "nine_hole_selection", Message: "nine_hole_selection is only valid for 18-hole courses"}
+			return &ValidationError{Field: colNineHoleSelection, Message: "nine_hole_selection is only valid for 18-hole courses"}
 		}
 
 		var roundCount int64
@@ -491,10 +502,10 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		return RoundUpdateResult{}, &ValidationError{Field: "name", Message: "name cannot be empty"}
 	}
 	if in.ScheduledDate != nil && *in.ScheduledDate == "" {
-		return RoundUpdateResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date cannot be empty"}
+		return RoundUpdateResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date cannot be empty"}
 	}
 	if in.CourseID != nil && in.DefaultTeeID == nil {
-		return RoundUpdateResult{}, &ValidationError{Field: "default_tee_id", Message: "default_tee_id is required when course_id is provided"}
+		return RoundUpdateResult{}, &ValidationError{Field: colDefaultTeeID, Message: "default_tee_id is required when course_id is provided"}
 	}
 	if in.Status != nil {
 		switch models.RoundStatus(*in.Status) {
@@ -530,7 +541,7 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	if in.ScheduledDate != nil {
 		parsed, err := time.Parse("2006-01-02", *in.ScheduledDate)
 		if err != nil {
-			return RoundUpdateResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date must be YYYY-MM-DD"}
+			return RoundUpdateResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date must be YYYY-MM-DD"}
 		}
 		round.ScheduledDate = parsed
 	}
@@ -548,7 +559,7 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		}
 		teeUUID, err := uuid.Parse(*in.DefaultTeeID)
 		if err != nil {
-			return RoundUpdateResult{}, &ValidationError{Field: "default_tee_id", Message: "invalid default_tee_id"}
+			return RoundUpdateResult{}, &ValidationError{Field: colDefaultTeeID, Message: "invalid default_tee_id"}
 		}
 		var course models.Course
 		if err := s.DB.WithContext(ctx).First(&course, "id = ?", courseUUID).Error; err != nil {
@@ -951,19 +962,19 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 		return ScheduleRoundResult{}, &ValidationError{Field: "course", Message: "course_id or course_name is required"}
 	}
 	if in.CourseID != nil && in.DefaultTeeID == nil {
-		return ScheduleRoundResult{}, &ValidationError{Field: "default_tee_id", Message: "default_tee_id is required when course_id is provided"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colDefaultTeeID, Message: "default_tee_id is required when course_id is provided"}
 	}
 	if in.ScheduledDate == "" {
-		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date is required"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date is required"}
 	}
 	scheduledDate, err := time.Parse("2006-01-02", in.ScheduledDate)
 	if err != nil {
-		return ScheduleRoundResult{}, &ValidationError{Field: "scheduled_date", Message: "scheduled_date must be YYYY-MM-DD"}
+		return ScheduleRoundResult{}, &ValidationError{Field: colScheduledDate, Message: "scheduled_date must be YYYY-MM-DD"}
 	}
 	if in.NineHoleSelection != nil {
 		sel := *in.NineHoleSelection
-		if sel != "front" && sel != "back" {
-			return ScheduleRoundResult{}, &ValidationError{Field: "nine_hole_selection", Message: `nine_hole_selection must be "front" or "back"`}
+		if sel != nineHoleFront && sel != nineHoleBack {
+			return ScheduleRoundResult{}, &ValidationError{Field: colNineHoleSelection, Message: `nine_hole_selection must be "front" or "back"`}
 		}
 	}
 
@@ -997,7 +1008,7 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 			}
 			teeUUID, err := uuid.Parse(*in.DefaultTeeID)
 			if err != nil {
-				return &ValidationError{Field: "default_tee_id", Message: "invalid default_tee_id"}
+				return &ValidationError{Field: colDefaultTeeID, Message: "invalid default_tee_id"}
 			}
 			var tee models.Tee
 			if err := tx.First(&tee, "id = ? AND course_id = ?", teeUUID, courseUUID).Error; err != nil {

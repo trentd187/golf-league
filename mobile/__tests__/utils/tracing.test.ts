@@ -113,6 +113,18 @@ describe("initWebTracing", () => {
     );
   });
 
+  it("configures FetchInstrumentation to ignore OTLP and telemetry log URLs", () => {
+    // Without ignoreUrls, the OTLPTraceExporter's own fetch calls would be instrumented,
+    // creating a self-perpetuating span loop that fills the BatchSpanProcessor queue and
+    // causes renderer memory pressure / STATUS_ILLEGAL_INSTRUCTION crashes.
+    const { initWebTracing } = freshTracing("web");
+    initWebTracing();
+    const [opts] = MockFetchInstrumentation.mock.calls[0] as [{ ignoreUrls: RegExp[] }];
+    expect(opts).toHaveProperty("ignoreUrls");
+    expect(opts.ignoreUrls.some((re) => re.test("/otlp/v1/traces"))).toBe(true);
+    expect(opts.ignoreUrls.some((re) => re.test("/api/v1/telemetry/logs"))).toBe(true);
+  });
+
   it("is idempotent — second call within the same module instance is a no-op", () => {
     const { initWebTracing } = freshTracing("web");
     initWebTracing();

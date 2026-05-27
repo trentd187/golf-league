@@ -6,13 +6,16 @@
 // them to /api/v1/telemetry/logs using the user's Supabase JWT — the backend proxies
 // them to Loki with server-side credentials.
 //
-// Distributed trace linking works via two mechanisms:
-//   - traceparent (W3C Trace Context): sent as a header on every API request via
-//     apiFetch. Contains the session's stable 128-bit trace ID and a per-request
-//     span ID. The backend's otelfiber middleware reads this and creates child spans
-//     under the same trace ID, so all backend work for a session shares one trace in Tempo.
-//   - trace_id / correlation_id fields: included in every log entry so Loki entries
-//     can be correlated with Tempo traces for the same session.
+// Session correlation works via two fields included in every log entry:
+//   - correlation_id: stable session UUID, also sent as X-Correlation-ID on every API
+//     request via apiFetch so backend logs and Loki entries share a join key.
+//   - trace_id: stable 128-bit hex string included in Loki entries for cross-referencing
+//     with Tempo when needed.
+//
+// W3C traceparent propagation is handled by FetchInstrumentation (utils/tracing.ts) on
+// web — it patches globalThis.fetch and injects per-request span context automatically.
+// apiFetch does NOT set traceparent manually; doing so would conflict with FetchInstrumentation
+// and break distributed tracing (the two systems would use different trace IDs).
 
 import * as ExpoCrypto from "expo-crypto";
 
@@ -41,9 +44,7 @@ class TelemetryClient {
   private readonly sessionId: string;
 
   // 128-bit trace ID for this session, formatted as 32 lowercase hex chars.
-  // Sent in the W3C traceparent header on every API request so the backend creates
-  // child spans under this trace ID — all backend work for the session shares one
-  // root trace in Tempo.
+  // Included in every Loki log entry as trace_id for cross-referencing with Tempo.
   private readonly traceId: string;
 
   // Most recent trace ID received from the backend in an X-Trace-ID response header.
@@ -76,15 +77,6 @@ class TelemetryClient {
   // the X-Correlation-ID request header on every API call.
   getSessionId(): string {
     return this.sessionId;
-  }
-
-  // getTraceparent returns a W3C traceparent header value for one outgoing request.
-  // The trace ID is stable for the session; the span ID is fresh per call so each
-  // request gets a unique parent span ID in the backend trace.
-  // Format: 00-{32-hex traceId}-{16-hex spanId}-01  (version-traceId-parentSpanId-sampled)
-  getTraceparent(): string {
-    const spanId = ExpoCrypto.randomUUID().replace(/-/g, "").slice(0, 16);
-    return `00-${this.traceId}-${spanId}-01`;
   }
 
   // setLastTraceId stores the trace ID from the most recent X-Trace-ID response

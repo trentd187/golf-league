@@ -159,7 +159,7 @@ func authUser(c *fiber.Ctx) (uuid.UUID, string, bool) {
 	userRole, _ := c.Locals("userRole").(string)
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid user ID"})
+		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		return uuid.Nil, "", false
 	}
 	return userID, userRole, true
@@ -169,7 +169,7 @@ func authUser(c *fiber.Ctx) (uuid.UUID, string, bool) {
 func parseEventID(c *fiber.Ctx) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid event ID"})
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid event ID"})
 		return uuid.Nil, false
 	}
 	return id, true
@@ -183,34 +183,34 @@ func parseEventID(c *fiber.Ctx) (uuid.UUID, bool) {
 func writeEventError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: ve.Message})
 	}
 	switch {
 	case errors.Is(err, services.ErrEventNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "event not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "event not found"})
 	case errors.Is(err, services.ErrUserNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "user not found"})
 	case errors.Is(err, services.ErrMemberNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "member not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "member not found"})
 	case errors.Is(err, services.ErrJoinRequestNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "join request not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "join request not found"})
 	case errors.Is(err, services.ErrEventForbidden):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "not authorized"})
 	case errors.Is(err, services.ErrEventNotMember):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not a member of this event"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "not a member of this event"})
 	case errors.Is(err, services.ErrEventNotPublic):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "event is not open for join requests"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "event is not open for join requests"})
 	case errors.Is(err, services.ErrMemberAlreadyExists):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "user is already a member"})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "user is already a member"})
 	case errors.Is(err, services.ErrLastOrganizer):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "cannot remove the last organizer; promote another member first",
+			jsonKeyError: "cannot remove the last organizer; promote another member first",
 		})
 	case errors.Is(err, services.ErrInvalidRole):
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be 'organizer' or 'player'"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "role must be 'organizer' or 'player'"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})
 }
 
 // buildEventResponse converts a service-layer EventListItem into the JSON shape.
@@ -278,7 +278,7 @@ func CreateEvent(svc *services.EventService) fiber.Handler {
 		}
 		var req CreateEventRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		item, err := svc.Create(c.UserContext(), services.CreateEventInput{
 			Name:              req.Name,
@@ -347,7 +347,7 @@ func UpdateEvent(svc *services.EventService) fiber.Handler {
 		}
 		var req UpdateEventRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		result, err := svc.Update(c.UserContext(), eventID, userID, userRole, services.UpdateEventInput{
 			Name:              req.Name,
@@ -442,11 +442,11 @@ func AddEventMember(svc *services.EventService) fiber.Handler {
 		}
 		var req AddMemberRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		targetUserID, err := uuid.Parse(req.UserID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user_id"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user_id"})
 		}
 		member, err := svc.AddMember(c.UserContext(), eventID, userID, userRole, targetUserID)
 		if err != nil {
@@ -469,7 +469,7 @@ func RemoveEventMember(svc *services.EventService) fiber.Handler {
 		}
 		targetUserID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID in path"})
 		}
 		if err := svc.RemoveMember(c.UserContext(), eventID, userID, userRole, targetUserID); err != nil {
 			return writeEventError(c, err, "event.remove_member", "failed to remove member")
@@ -582,11 +582,11 @@ func HandleJoinRequest(svc *services.EventService) fiber.Handler {
 		}
 		targetUserID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID in path"})
 		}
 		var req JoinRequestActionRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		if err := svc.HandleJoinRequest(c.UserContext(), eventID, userID, userRole, targetUserID, req.Approve); err != nil {
 			return writeEventError(c, err, "event.handle_join_request", "failed to handle join request")
@@ -609,11 +609,11 @@ func UpdateMemberRole(svc *services.EventService) fiber.Handler {
 		}
 		targetUserID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID in path"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID in path"})
 		}
 		var req UpdateMemberRoleRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		if err := svc.UpdateMemberRole(c.UserContext(), eventID, userID, userRole, targetUserID, req.Role); err != nil {
 			return writeEventError(c, err, "event.update_member_role", "failed to update member role")
@@ -640,7 +640,7 @@ func ScheduleEventRound(roundSvc *services.RoundService) fiber.Handler {
 
 		var req ScheduleRoundRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
 		groups := make([]services.GroupScheduleInput, len(req.Groups))

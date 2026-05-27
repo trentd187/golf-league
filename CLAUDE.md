@@ -68,9 +68,16 @@ Every file must have a file-level comment explaining its purpose. Beyond that, c
 
 Every new handler, utility, screen, or component ships with tests in the **same commit**. Bug fixes also ship with a test that covers the fixed path. The coverage ratchet (`.go-coverage-baseline`, `.mobile-coverage-baseline`) blocks regressions at commit time. Do not use `LEFTHOOK=0` to defer tests. See [Pre-commit Hooks](#pre-commit-hooks-lefthook) below.
 
-### Do not commit
+### Commit and push workflow
 
-Committing is the user's responsibility. Complete the change, verify it works, then stop. Do not stage, commit, or offer to commit.
+Claude commits and pushes to `develop` as the final step of a session, **after `/ci` passes**. The workflow is:
+
+1. Execute the requested changes
+2. Run `/ci` — all checks must pass before committing
+3. `git add` the relevant files, write a concise commit message, and `git push origin develop`
+4. Run `/qa` against the Railway develop deployment and report results
+
+Do **not** push to `main` without explicit user instruction. Do not commit if `/ci` is failing.
 
 ---
 

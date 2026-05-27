@@ -33,18 +33,18 @@ import (
 func writeUserError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: ve.Message})
 	}
 	switch {
 	case errors.Is(err, services.ErrUserNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "user not found"})
 	case errors.Is(err, services.ErrFollowSelf):
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cannot follow yourself"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "cannot follow yourself"})
 	case errors.Is(err, services.ErrAlreadyFollowing):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "already following"})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "already following"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -54,11 +54,11 @@ func GetMe(svc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		callerIDStr, ok := c.Locals("userID").(string)
 		if !ok || callerIDStr == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		data, err := svc.GetMe(c.UserContext(), callerID)
@@ -75,7 +75,7 @@ func SearchUsers(svc *services.UserService) fiber.Handler {
 		callerIDStr, _ := c.Locals("userID").(string)
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		results, err := svc.SearchUsers(c.UserContext(), callerID, c.Query("q"))
@@ -92,12 +92,12 @@ func GetUserProfile(svc *services.UserService) fiber.Handler {
 		callerIDStr, _ := c.Locals("userID").(string)
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		targetID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		data, err := svc.GetUserProfile(c.UserContext(), callerID, targetID)
@@ -114,12 +114,12 @@ func FollowUser(svc *services.UserService) fiber.Handler {
 		callerIDStr, _ := c.Locals("userID").(string)
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		targetID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		if err := svc.FollowUser(c.UserContext(), callerID, targetID); err != nil {
@@ -135,12 +135,12 @@ func UnfollowUser(svc *services.UserService) fiber.Handler {
 		callerIDStr, _ := c.Locals("userID").(string)
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		targetID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		_ = callerID // auth check only; service handles the delete
@@ -157,7 +157,7 @@ func GetFollowing(svc *services.UserService) fiber.Handler {
 		callerIDStr, _ := c.Locals("userID").(string)
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		results, err := svc.GetFollowing(c.UserContext(), callerID)
@@ -173,12 +173,12 @@ func GetUserStats(svc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		callerIDStr, _ := c.Locals("userID").(string)
 		if _, err := uuid.Parse(callerIDStr); err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		targetID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		data, err := svc.GetUserStats(c.UserContext(), targetID, c.Query("filter", "all_time"))
@@ -194,12 +194,12 @@ func GetUserRounds(svc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		callerIDStr, _ := c.Locals("userID").(string)
 		if _, err := uuid.Parse(callerIDStr); err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		targetID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		results, err := svc.GetUserRounds(c.UserContext(), targetID)
@@ -215,11 +215,11 @@ func GetScorecardSettings(svc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		callerIDStr, ok := c.Locals("userID").(string)
 		if !ok || callerIDStr == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		data, err := svc.GetScorecardSettings(c.UserContext(), callerID)
@@ -235,16 +235,16 @@ func UpsertScorecardSettings(svc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		callerIDStr, ok := c.Locals("userID").(string)
 		if !ok || callerIDStr == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 		callerID, err := uuid.Parse(callerIDStr)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
 		}
 
 		var body services.ScorecardSettingsInput
 		if err := c.BodyParser(&body); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
 		data, err := svc.UpsertScorecardSettings(c.UserContext(), callerID, body)

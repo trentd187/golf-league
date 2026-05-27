@@ -1,0 +1,28 @@
+# sign_in.yaml — Verify the sign-in screen renders all interactive elements.
+# Does NOT attempt to authenticate (requires real credentials).
+# Run with: maestro test e2e/mobile/sign_in.yaml
+# Targets the development build: com.trentd.golfstuffinhere.dev
+
+appId: com.trentd.golfstuffinhere.dev
+
+---
+
+- launchApp:
+    clearState: true
+
+# After clearing state, app must show the sign-in screen.
+- assertVisible: "Golf Stuff In Here"
+- assertVisible: "Sign in or create an account to continue"
+
+# OAuth button
+- assertVisible: "Continue with Google"
+
+# Email OTP flow elements
+- assertVisible:
+    text: "Email address"
+    enabled: true
+- assertVisible: "Continue with Email"
+
+# Legal links
+- assertVisible: "Terms of Service"
+- assertVisible: "Privacy Policy"

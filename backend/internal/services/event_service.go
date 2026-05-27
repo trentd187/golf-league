@@ -153,7 +153,7 @@ func NewEventService(db *gorm.DB) *EventService {
 // Exposed (rather than kept private) because RoundsService and ScoreService
 // need the same check at their own boundaries.
 func (s *EventService) IsOrganizer(ctx context.Context, eventID, userID uuid.UUID, userRole string) (bool, error) {
-	if userRole == "admin" {
+	if models.UserRole(userRole) == models.UserRoleAdmin {
 		return true, nil
 	}
 	var player models.EventPlayer
@@ -182,7 +182,7 @@ func (s *EventService) List(ctx context.Context, f ListEventsFilters) ([]EventLi
 	if f.Type != "" {
 		q = q.Where("event_type = ?", f.Type)
 	}
-	if f.UserRole != "admin" {
+	if models.UserRole(f.UserRole) != models.UserRoleAdmin {
 		q = q.Joins("JOIN event_players ON event_players.event_id = events.id").
 			Where("event_players.user_id = ?", f.UserID)
 	}
@@ -241,7 +241,7 @@ func (s *EventService) Get(ctx context.Context, eventID, requesterID uuid.UUID, 
 		return EventDetail{}, fmt.Errorf("load event: %w", err)
 	}
 
-	if requesterRole != "admin" {
+	if models.UserRole(requesterRole) != models.UserRoleAdmin {
 		var count int64
 		if err := s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
 			Where("event_id = ? AND user_id = ?", eventID, requesterID).
@@ -460,9 +460,9 @@ func (s *EventService) Update(ctx context.Context, eventID, requesterID uuid.UUI
 	}
 	statusChanged := false
 	if in.Status != nil {
-		switch *in.Status {
-		case "active", "completed", "cancelled":
-			if string(event.Status) != *in.Status {
+		switch models.EventStatus(*in.Status) {
+		case models.EventStatusActive, models.EventStatusCompleted, models.EventStatusCancelled:
+			if event.Status != models.EventStatus(*in.Status) {
 				statusChanged = true
 			}
 			event.Status = models.EventStatus(*in.Status)
@@ -751,7 +751,7 @@ func (s *EventService) HandleJoinRequest(ctx context.Context, eventID, requester
 // UpdateMemberRole sets the role of an existing (registered) event_player.
 // Only "organizer" and "player" are valid roles. Refuses to demote the last organizer.
 func (s *EventService) UpdateMemberRole(ctx context.Context, eventID, requesterID uuid.UUID, requesterRole string, targetUserID uuid.UUID, newRole string) error {
-	if newRole != "organizer" && newRole != "player" {
+	if models.EventPlayerRole(newRole) != models.EventPlayerRoleOrganizer && models.EventPlayerRole(newRole) != models.EventPlayerRolePlayer {
 		return ErrInvalidRole
 	}
 	authorized, err := s.IsOrganizer(ctx, eventID, requesterID, requesterRole)
@@ -774,7 +774,7 @@ func (s *EventService) UpdateMemberRole(ctx context.Context, eventID, requesterI
 	}
 
 	// Refuse to demote if this is the only organizer.
-	if newRole == "player" && player.Role == models.EventPlayerRoleOrganizer {
+	if models.EventPlayerRole(newRole) == models.EventPlayerRolePlayer && player.Role == models.EventPlayerRoleOrganizer {
 		var organizerCount int64
 		if err := s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
 			Where("event_id = ? AND role = ?", eventID, models.EventPlayerRoleOrganizer).
@@ -795,8 +795,8 @@ func (s *EventService) UpdateMemberRole(ctx context.Context, eventID, requesterI
 // ─── Private helpers ───────────────────────────────────────────────────────────
 
 func isValidEventType(t string) bool {
-	switch t {
-	case "league", "tournament", "casual":
+	switch models.EventType(t) {
+	case models.EventTypeLeague, models.EventTypeTournament, models.EventTypeCasual:
 		return true
 	}
 	return false

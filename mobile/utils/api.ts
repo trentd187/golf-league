@@ -3,14 +3,17 @@
 // and captures the backend's trace ID from every response.
 //
 // Headers injected on every request:
-//   - traceparent (W3C Trace Context): session trace ID + per-request span ID.
-//     The backend's otelfiber middleware reads this and creates child spans under
-//     the same trace ID, linking all backend work for the session in Tempo.
-//   - X-Correlation-ID: stable session UUID for Loki log correlation (legacy;
-//     kept alongside traceparent for backwards compatibility with existing queries).
+//   - X-Correlation-ID: stable session UUID for Loki log correlation. Lets Loki queries
+//     join all frontend log entries and backend request logs for the same session.
 //
-// X-Trace-ID in the response is stored on TelemetryClient for reference; after
-// traceparent propagation it equals the session trace ID already present in logs.
+// traceparent (W3C Trace Context) is NOT set here. On web, FetchInstrumentation
+// (tracing.ts) patches globalThis.fetch and injects the correct traceparent from the
+// active OTel span context automatically. Setting it manually would be overwritten and
+// would cause double-injection. On native, there is no OTel provider, so no traceparent
+// is needed — the backend creates root spans for native API calls.
+//
+// X-Trace-ID in the response is stored on TelemetryClient for reference; it holds the
+// backend's trace ID for the most recent request, usable in subsequent log entries.
 //
 // Usage: replace fetch(`${API_URL}/api/v1/...`) calls with apiFetch(...).
 // The returned Response is unchanged — callers still call .json() / .ok themselves.
@@ -27,7 +30,6 @@ export async function apiFetch(
 
   // Merge observability headers into any headers the caller already set.
   const headers = new Headers(init?.headers);
-  headers.set("traceparent", client.getTraceparent());
   headers.set("X-Correlation-ID", client.getSessionId());
 
   const response = await fetch(input, { ...init, headers });

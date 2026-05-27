@@ -143,7 +143,7 @@ type CreateEventlessRoundRequest struct {
 func parseRoundID(c *fiber.Ctx) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Params("roundId"))
 	if err != nil {
-		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid round ID"})
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round ID"})
 		return uuid.Nil, false
 	}
 	return id, true
@@ -153,7 +153,7 @@ func parseRoundID(c *fiber.Ctx) (uuid.UUID, bool) {
 func parseGroupID(c *fiber.Ctx) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Params("groupId"))
 	if err != nil {
-		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid group ID"})
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid group ID"})
 		return uuid.Nil, false
 	}
 	return id, true
@@ -167,30 +167,30 @@ func parseGroupID(c *fiber.Ctx) (uuid.UUID, bool) {
 func writeRoundError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": ve.Message})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: ve.Message})
 	}
 	switch {
 	case errors.Is(err, services.ErrRoundNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "round not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "round not found"})
 	case errors.Is(err, services.ErrGroupNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "group not found for this round"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "group not found for this round"})
 	case errors.Is(err, services.ErrCourseNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "course not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "course not found"})
 	case errors.Is(err, services.ErrTeeNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "tee not found for this course"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "tee not found for this course"})
 	case errors.Is(err, services.ErrPlayerNotEventMember):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user is not a member of this event"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "user is not a member of this event"})
 	case errors.Is(err, services.ErrPlayerNotInRound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "player is not registered for this round"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "player is not registered for this round"})
 	case errors.Is(err, services.ErrRoundForbidden):
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "not authorized"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{jsonKeyError: "not authorized"})
 	case errors.Is(err, services.ErrGroupFull):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "group is full (max 4 players)"})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "group is full (max 4 players)"})
 	case errors.Is(err, services.ErrPlayerAlreadyInGroup):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "player is already assigned to a group in this round"})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "player is already assigned to a group in this round"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fallbackMsg})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})
 }
 
 // formatTeeTime converts a *time.Time to the "3:04 PM" string the client expects,
@@ -322,7 +322,7 @@ func UpdateRound(svc *services.RoundService) fiber.Handler {
 
 		var req UpdateRoundRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
 		result, err := svc.Update(c.UserContext(), roundID, callerID, callerRole, services.UpdateRoundInput{
@@ -415,7 +415,7 @@ func UpdateGroup(svc *services.RoundService) fiber.Handler {
 
 		var req UpdateGroupRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
 		result, err := svc.UpdateGroup(c.UserContext(), roundID, groupID, callerID, callerRole, services.UpdateGroupInput{
@@ -477,11 +477,11 @@ func AddGroupMember(svc *services.RoundService) fiber.Handler {
 
 		var req AddGroupMemberRequest
 		if err := c.BodyParser(&req); err != nil || req.UserID == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user_id is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "user_id is required"})
 		}
 		targetUserID, err := uuid.Parse(req.UserID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user_id"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user_id"})
 		}
 
 		result, err := svc.AddGroupMember(c.UserContext(), roundID, groupID, callerID, targetUserID, callerRole)
@@ -514,7 +514,7 @@ func RemoveGroupMember(svc *services.RoundService) fiber.Handler {
 		}
 		targetUserID, err := uuid.Parse(c.Params("userId"))
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user ID"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
 		if err := svc.RemoveGroupMember(c.UserContext(), roundID, groupID, callerID, targetUserID, callerRole); err != nil {
@@ -537,17 +537,17 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 
 		var req CreateEventlessRoundRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 		if req.ScheduledDate == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "scheduled_date is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "scheduled_date is required"})
 		}
 		if req.CourseID == nil && req.CourseName == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "course_id or course_name is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "course_id or course_name is required"})
 		}
 		if req.CourseID != nil {
 			if _, err := uuid.Parse(*req.CourseID); err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course_id"})
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid course_id"})
 			}
 		}
 

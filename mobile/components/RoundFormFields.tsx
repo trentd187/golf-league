@@ -58,7 +58,7 @@ export default function RoundFormFields({
             {selectedCourse ? (
               <>
                 <Text className={`text-base ${t.textPrimary}`}>{selectedCourse.name}</Text>
-                {(selectedCourse.city || selectedCourse.state) && (
+                {!!(selectedCourse.city || selectedCourse.state) && (
                   <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
                     {[selectedCourse.city, selectedCourse.state].filter(Boolean).join(", ")}
                   </Text>

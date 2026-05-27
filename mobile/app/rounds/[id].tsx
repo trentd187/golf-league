@@ -1235,7 +1235,7 @@ export default function RoundDetailScreen() {
                 >
                   <Ionicons name="search-outline" size={15} color={t.colors.tabBarActive} />
                   <Text className="text-sm font-semibold" style={{ color: t.colors.tabBarActive }}>
-                    {editNewCourse ? "Change Course" : "Change Course"}
+                    {editNewCourse ? "Change Course" : "Choose Course"}
                   </Text>
                 </TouchableOpacity>
               </View>

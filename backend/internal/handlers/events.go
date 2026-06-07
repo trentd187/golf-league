@@ -26,11 +26,11 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
 )
 
@@ -293,7 +293,8 @@ func CreateEvent(svc *services.EventService) fiber.Handler {
 		if err != nil {
 			return writeEventError(c, err, "event.create", "failed to create event")
 		}
-		observability.LogInfo(c.UserContext(), "event.created", "Event created",
+		slog.InfoContext(c.UserContext(), "Event created",
+			"event_type_label", "event.created",
 			"event_id", item.Event.ID.String(),
 			"event_type", string(item.Event.EventType),
 			"user_id", userID.String(),
@@ -363,7 +364,8 @@ func UpdateEvent(svc *services.EventService) fiber.Handler {
 		}
 
 		if result.StatusChanged {
-			observability.LogInfo(c.UserContext(), "event.status_changed", "Event status changed",
+			slog.InfoContext(c.UserContext(), "Event status changed",
+				"event_type_label", "event.status_changed",
 				"event_id", result.Event.ID.String(),
 				"status", string(result.Event.Status),
 			)
@@ -371,14 +373,16 @@ func UpdateEvent(svc *services.EventService) fiber.Handler {
 
 		if result.AllowanceChanged {
 			if err := services.RecalculateEventScores(c.UserContext(), svc.DB, eventID, result.Event.HandicapAllowance); err != nil {
-				observability.LogInfo(c.UserContext(), "event.handicap_allowance_recalc_error",
-					"Failed to recalculate scores after allowance change",
+				// ErrorContext (not InfoContext) so this lands in Sentry Issues — recalc
+				// failure leaves event scores out of sync with the new allowance.
+				slog.ErrorContext(c.UserContext(), "Failed to recalculate scores after allowance change",
+					"event_type_label", "event.handicap_allowance_recalc_error",
 					"event_id", eventID.String(),
 					"error", err.Error(),
 				)
 			} else {
-				observability.LogInfo(c.UserContext(), "event.handicap_allowance_changed",
-					"Handicap allowance updated; scores recalculated",
+				slog.InfoContext(c.UserContext(), "Handicap allowance updated; scores recalculated",
+					"event_type_label", "event.handicap_allowance_changed",
 					"event_id", eventID.String(),
 				)
 			}
@@ -662,7 +666,8 @@ func ScheduleEventRound(roundSvc *services.RoundService) fiber.Handler {
 			return writeRoundError(c, err, "event.schedule_round", "failed to schedule round")
 		}
 
-		observability.LogInfo(c.UserContext(), "round.created", "Round scheduled",
+		slog.InfoContext(c.UserContext(), "Round scheduled",
+			"event_type_label", "round.created",
 			"round_id", result.Round.ID.String(),
 			"event_id", eventID.String(),
 		)

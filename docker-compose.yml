@@ -41,13 +41,6 @@ services:
       # name so container-to-container traffic stays on the Docker bridge network.
       # In Railway, set this to the backend's private hostname instead.
       BACKEND_PRIVATE_URL: http://backend:8080
-      # OTLP_URL / OTLP_USER / OTLP_API_KEY: Caddy proxies /otlp/* to Grafana Cloud Tempo.
-      # Same naming as the backend service. docker-entrypoint.sh computes OTLP_BASIC_AUTH
-      # from OTLP_USER + OTLP_API_KEY at startup. Leave empty in local dev — span exports
-      # fail silently and the app continues to work.
-      OTLP_URL: ${OTLP_URL:-}
-      OTLP_USER: ${OTLP_USER:-}
-      OTLP_API_KEY: ${OTLP_API_KEY:-}
     ports:
       - "3000:3000"
     depends_on:

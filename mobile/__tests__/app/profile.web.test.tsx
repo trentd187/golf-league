@@ -141,14 +141,7 @@ jest.mock("@/themes", () => ({
   THEME_META: [],
 }));
 
-jest.mock("@/utils/telemetry", () => ({
-  getTelemetryClient: () => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    setTokenGetter: jest.fn(),
-  }),
-}));
+// @sentry/react-native is auto-mocked by __mocks__/@sentry/react-native.js.
 
 // --- Imports (after mocks) ---
 

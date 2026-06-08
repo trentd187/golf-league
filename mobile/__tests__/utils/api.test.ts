@@ -1,114 +1,48 @@
 // __tests__/utils/api.test.ts
-// Unit tests for apiFetch in utils/api.ts.
-// Verifies that observability headers are injected on every request and that
-// the response is returned unchanged. fetch and expo-crypto are mocked.
-
-// Valid hex UUID so TelemetryClient constructor produces well-formed session IDs
-// (same mock as telemetry.test.ts for consistency).
-jest.mock("expo-crypto", () => ({
-  randomUUID: jest.fn(() => "deadbeef-dead-4bee-beef-deadbeefcafe"),
-}));
-
-jest.mock("@/constants/api", () => ({ API_URL: "http://localhost:8080" }));
-
-// Minimal response shape: apiFetch reads response.headers.get("X-Trace-ID").
-const makeMockResponse = (traceId?: string) => ({
-  ok: true,
-  status: 200,
-  headers: {
-    get: (key: string) => (key === "X-Trace-ID" && traceId ? traceId : null),
-  },
-});
+// Unit tests for apiFetch in utils/api.ts. apiFetch is now a thin passthrough to
+// the global fetch — Sentry's fetch instrumentation injects trace headers, so the
+// wrapper adds nothing and must forward input/init unchanged and return the Response.
 
 const mockFetch = jest.fn();
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
-import type { apiFetch as ApiFetch } from "@/utils/api";
+import { apiFetch } from "@/utils/api";
 
-// Each test gets a fresh module instance so the TelemetryClient singleton resets.
-function isolatedApiFetch(): typeof ApiFetch {
-  let fn!: typeof ApiFetch;
-  jest.isolateModules(() => {
-    fn = (require("@/utils/api") as { apiFetch: typeof ApiFetch }).apiFetch;
-  });
-  return fn;
-}
+const mockResponse = { ok: true, status: 200 };
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockFetch.mockResolvedValue(makeMockResponse());
+  mockFetch.mockResolvedValue(mockResponse);
 });
 
-describe("apiFetch — observability headers", () => {
-  it("injects X-Correlation-ID set to the session ID", async () => {
-    const fetch = isolatedApiFetch();
-    await fetch("http://localhost:8080/api/v1/events");
+describe("apiFetch", () => {
+  it("passes the URL through to fetch unchanged", async () => {
+    await apiFetch("http://localhost:8080/api/v1/me");
+    expect(mockFetch).toHaveBeenCalledWith("http://localhost:8080/api/v1/me", undefined);
+  });
 
-    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    // sessionId is the first randomUUID() call in the TelemetryClient constructor.
-    expect((opts.headers as Headers).get("X-Correlation-ID")).toBe(
-      "deadbeef-dead-4bee-beef-deadbeefcafe",
+  it("forwards the init object (method, headers, body) unchanged", async () => {
+    const init = {
+      method: "POST",
+      headers: { Authorization: "Bearer my-jwt" },
+      body: JSON.stringify({ a: 1 }),
+    };
+    await apiFetch("http://localhost:8080/api/v1/events", init);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/events",
+      init,
     );
   });
 
-  it("does not inject a traceparent header (FetchInstrumentation handles this on web)", async () => {
-    const fetch = isolatedApiFetch();
-    await fetch("http://localhost:8080/api/v1/events");
-
-    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect((opts.headers as Headers).get("traceparent")).toBeNull();
-  });
-
-  it("preserves caller-supplied headers alongside the injected ones", async () => {
-    const fetch = isolatedApiFetch();
-    await fetch("http://localhost:8080/api/v1/events", {
-      headers: { Authorization: "Bearer my-jwt" },
-    });
-
-    const [, opts] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    const headers = opts.headers as Headers;
-    expect(headers.get("Authorization")).toBe("Bearer my-jwt");
-    expect(headers.get("X-Correlation-ID")).toBeTruthy();
-  });
-
-  it("passes the original URL to fetch unchanged", async () => {
-    const fetch = isolatedApiFetch();
-    await fetch("http://localhost:8080/api/v1/me");
-
-    const [url] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("http://localhost:8080/api/v1/me");
-  });
-});
-
-describe("apiFetch — response passthrough", () => {
   it("returns the Response from fetch unchanged", async () => {
-    const mockResponse = makeMockResponse();
-    mockFetch.mockResolvedValueOnce(mockResponse);
-    const fetch = isolatedApiFetch();
-
-    const result = await fetch("http://localhost:8080/api/v1/events");
+    const result = await apiFetch("http://localhost:8080/api/v1/events");
     expect(result).toBe(mockResponse);
   });
 
-  it("stores X-Trace-ID from the response on the telemetry client", async () => {
-    mockFetch.mockResolvedValueOnce(makeMockResponse("backend-trace-abc123"));
-
-    let setLastTraceIdSpy!: jest.SpyInstance;
-    jest.isolateModules(() => {
-      // Load telemetry and api from the same isolated scope so they share
-      // the same TelemetryClient singleton.
-      const telemetry = require("@/utils/telemetry") as {
-        getTelemetryClient: () => { setLastTraceId: (id: string) => void };
-      };
-      setLastTraceIdSpy = jest.spyOn(telemetry.getTelemetryClient(), "setLastTraceId");
-
-      const { apiFetch } = require("@/utils/api") as { apiFetch: typeof ApiFetch };
-      void apiFetch("http://localhost:8080/api/v1/events");
-    });
-
-    // Allow the promise microtasks to settle.
-    await Promise.resolve();
-
-    expect(setLastTraceIdSpy).toHaveBeenCalledWith("backend-trace-abc123");
+  it("does not inject any observability headers", async () => {
+    await apiFetch("http://localhost:8080/api/v1/events");
+    const [, init] = mockFetch.mock.calls[0];
+    // init is forwarded as-is (undefined here) — no Headers object is constructed.
+    expect(init).toBeUndefined();
   });
 });

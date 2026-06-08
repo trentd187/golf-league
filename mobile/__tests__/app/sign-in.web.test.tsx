@@ -23,18 +23,7 @@ const mockWindowAlert = jest.fn();
 };
 
 // --- Mocks ---
-
-const mockInfo = jest.fn();
-const mockWarn = jest.fn();
-
-jest.mock("@/utils/telemetry", () => ({
-  getTelemetryClient: () => ({
-    info: mockInfo,
-    warn: mockWarn,
-    error: jest.fn(),
-    setTokenGetter: jest.fn(),
-  }),
-}));
+// @sentry/react-native is auto-mocked by __mocks__/@sentry/react-native.js.
 
 jest.mock("@/utils/supabase", () => ({
   supabase: {
@@ -79,6 +68,7 @@ jest.mock("@/hooks/useTheme", () => ({
 
 import SignIn from "@/app/sign-in";
 import { supabase } from "@/utils/supabase";
+import * as Sentry from "@sentry/react-native";
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -114,10 +104,9 @@ it("logs a warn and shows an alert when web signInWithOAuth returns an error", a
   });
 
   await waitFor(() => {
-    expect(mockWarn).toHaveBeenCalledWith(
-      "auth.google.error",
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
       "Google OAuth sign-in failed",
-      { message: "OAuth provider unavailable" }
+      { event: "auth.google.error", message: "OAuth provider unavailable" }
     );
     expect(mockWindowAlert).toHaveBeenCalledWith(
       "Something went wrong: OAuth provider unavailable"

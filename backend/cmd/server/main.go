@@ -108,12 +108,6 @@ func main() {
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
 
-	// Telemetry — mobile clients POST structured logs here during the staged Sentry
-	// migration. SlogPusher routes each entry through the default logger, which the
-	// Sentry slog handler forwards to Sentry Logs. Stage 3 deletes this endpoint
-	// once mobile is fully on @sentry/react-native and ships logs directly.
-	api.Post("/telemetry/logs", handlers.PostMobileLogs(&observability.SlogPusher{Logger: logger}))
-
 	// Event routes — any authenticated user can create events (they become the organizer).
 	// /events/public must be registered before /events/:id so Fiber matches it literally.
 	api.Get("/events", handlers.GetEvents(eventService))

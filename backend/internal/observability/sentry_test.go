@@ -3,7 +3,6 @@
 // Tier 1 only — no network, no DSN. We test:
 //   - Init returns a stdout-only logger and a no-op shutdown when DSN is empty.
 //   - parseLevel maps the four known strings and falls back to info.
-//   - The fanout handler dispatches each record to every downstream handler.
 //
 // We deliberately do not exercise the DSN-set path: that calls sentry.Init,
 // which is a process-global side effect with no clean teardown, and the
@@ -12,7 +11,6 @@
 package observability_test
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"testing"
@@ -62,22 +60,4 @@ func TestInit_NoDSN_LogLevelHonoured(t *testing.T) {
 	// way to verify this without capturing stdout.
 	assert.False(t, logger.Enabled(context.Background(), slog.LevelInfo))
 	assert.True(t, logger.Enabled(context.Background(), slog.LevelWarn))
-}
-
-// TestSlogPusher_RoutesThroughLogger verifies that SlogPusher.Log writes
-// through the wrapped *slog.Logger at the requested level, with the args
-// preserved. We use a real JSON handler writing to a byte buffer so we can
-// assert on the structured output exactly.
-func TestSlogPusher_RoutesThroughLogger(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	pusher := &observability.SlogPusher{Logger: logger}
-
-	pusher.Log(context.Background(), slog.LevelWarn, "score retry", "round_id", "abc", "attempt", 2)
-
-	out := buf.String()
-	assert.Contains(t, out, `"msg":"score retry"`)
-	assert.Contains(t, out, `"level":"WARN"`)
-	assert.Contains(t, out, `"round_id":"abc"`)
-	assert.Contains(t, out, `"attempt":2`)
 }

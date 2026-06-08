@@ -137,18 +137,3 @@ func (f *fanout) WithGroup(name string) slog.Handler {
 	}
 	return &fanout{handlers: next}
 }
-
-// SlogPusher adapts a *slog.Logger to the handlers.LokiPusher interface.
-// During the staged migration the mobile app still POSTs structured logs to
-// /api/v1/telemetry/logs (stage 1 keeps the endpoint alive). This adapter
-// routes those entries through slog so they land in Sentry Logs via the
-// fanout handler installed in Init. Stage 3 deletes the endpoint entirely.
-type SlogPusher struct {
-	Logger *slog.Logger
-}
-
-// Log writes the entry through the underlying slog logger. Args are key-value
-// pairs matching slog conventions.
-func (s *SlogPusher) Log(ctx context.Context, level slog.Level, msg string, args ...any) {
-	s.Logger.Log(ctx, level, msg, args...)
-}

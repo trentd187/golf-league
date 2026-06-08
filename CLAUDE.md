@@ -12,6 +12,7 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Keyboard handling, TextInput chaining, file uploads, KeyboardAvoidingView | [`mobile/docs/keyboard-and-platform.md`](mobile/docs/keyboard-and-platform.md) |
 | Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy | [`backend/docs/testing.md`](backend/docs/testing.md) |
 | Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
+| Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated

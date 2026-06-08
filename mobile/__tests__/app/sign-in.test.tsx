@@ -7,20 +7,8 @@ import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
 import { Alert } from "react-native";
 
 // --- Mocks ---
-// jest.mock() is hoisted before imports, so mock factories must use jest.fn()
-// directly — variables declared in the outer test scope are not yet defined.
-
-const mockInfo = jest.fn();
-const mockWarn = jest.fn();
-
-jest.mock("@/utils/telemetry", () => ({
-  getTelemetryClient: () => ({
-    info: mockInfo,
-    warn: mockWarn,
-    error: jest.fn(),
-    setTokenGetter: jest.fn(),
-  }),
-}));
+// @sentry/react-native is auto-mocked by __mocks__/@sentry/react-native.js, so
+// Sentry.logger.info/warn are jest.fn() spies we can assert on directly.
 
 // Supabase auth methods are mocked as jest.fn() stubs within the factory.
 // Tests customise their return values via the imported supabase object.
@@ -68,6 +56,7 @@ jest.mock("@/hooks/useTheme", () => ({
 
 import SignIn from "@/app/sign-in";
 import { supabase } from "@/utils/supabase";
+import * as Sentry from "@sentry/react-native";
 
 const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
 
@@ -125,7 +114,9 @@ it("calls info telemetry when OTP email is sent successfully", async () => {
   });
 
   await waitFor(() => {
-    expect(mockInfo).toHaveBeenCalledWith("auth.otp.sent", "OTP email sent");
+    expect(Sentry.logger.info).toHaveBeenCalledWith("OTP email sent", {
+      event: "auth.otp.sent",
+    });
   });
 });
 
@@ -149,9 +140,9 @@ it("calls info telemetry on successful OTP verification", async () => {
   });
 
   await waitFor(() => {
-    expect(mockInfo).toHaveBeenCalledWith(
-      "auth.otp.verified",
-      "OTP verification succeeded"
+    expect(Sentry.logger.info).toHaveBeenCalledWith(
+      "OTP verification succeeded",
+      { event: "auth.otp.verified" }
     );
   });
 });
@@ -176,10 +167,9 @@ it("calls warn telemetry on failed OTP verification", async () => {
   });
 
   await waitFor(() => {
-    expect(mockWarn).toHaveBeenCalledWith(
-      "auth.otp.error",
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
       "OTP verification failed",
-      { message: "Token has expired or is invalid" }
+      { event: "auth.otp.error", message: "Token has expired or is invalid" }
     );
   });
 });

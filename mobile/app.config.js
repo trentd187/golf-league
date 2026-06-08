@@ -55,6 +55,12 @@ module.exports = {
       "expo-web-browser",
       "expo-font",
       "@react-native-community/datetimepicker",
+      // Sentry config plugin — applies the native iOS/Android setup and writes a
+      // sentry.properties for build-time source-map upload. org/project/authToken
+      // are intentionally omitted here so they fall back to the SENTRY_ORG /
+      // SENTRY_PROJECT / SENTRY_AUTH_TOKEN environment variables at build time
+      // (provided via EAS Secrets) — no Sentry credentials are committed.
+      "@sentry/react-native",
     ],
     extra: {
       router: {},

@@ -34,6 +34,9 @@ services:
         EXPO_PUBLIC_API_URL: ""
         EXPO_PUBLIC_SUPABASE_URL: ${EXPO_PUBLIC_SUPABASE_URL}
         EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+        # Empty DSN disables Sentry on web locally; Railway sets these as build vars.
+        EXPO_PUBLIC_SENTRY_DSN: ${EXPO_PUBLIC_SENTRY_DSN:-}
+        EXPO_PUBLIC_SENTRY_ENVIRONMENT: ${EXPO_PUBLIC_SENTRY_ENVIRONMENT:-development}
     environment:
       # PORT: the port Caddy listens on (Railway injects this automatically in production).
       PORT: "3000"

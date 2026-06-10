@@ -31,10 +31,17 @@ COPY . .
 ARG EXPO_PUBLIC_API_URL
 ARG EXPO_PUBLIC_SUPABASE_URL
 ARG EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+# Sentry runtime config for the web bundle. Leave EXPO_PUBLIC_SENTRY_DSN empty to
+# disable Sentry on web; set it (plus the environment) as Railway web-service build
+# variables to enable error/trace/replay reporting from the browser.
+ARG EXPO_PUBLIC_SENTRY_DSN
+ARG EXPO_PUBLIC_SENTRY_ENVIRONMENT
 
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
 ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV EXPO_PUBLIC_SENTRY_DSN=$EXPO_PUBLIC_SENTRY_DSN
+ENV EXPO_PUBLIC_SENTRY_ENVIRONMENT=$EXPO_PUBLIC_SENTRY_ENVIRONMENT
 
 # --clear flushes Metro's transform cache so every Railway build produces a
 # fresh bundle. Without it, BuildKit may cache the export layer and serve

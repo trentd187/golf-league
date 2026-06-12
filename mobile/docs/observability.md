@@ -44,7 +44,9 @@ Automatic. The SDK's fetch instrumentation injects `sentry-trace` + `baggage` he
 
 ## Cross-platform
 
-`@sentry/react-native` is the supported SDK for `web` too (per Expo's Sentry guide) — there is **no** separate `@sentry/react`. The only platform-specific branch is the replay integration, chosen by `Platform.OS` in `buildSentryOptions`: `browserReplayIntegration()` on web, `mobileReplayIntegration()` on native.
+`@sentry/react-native` is the supported SDK for `web` too (per Expo's Sentry guide) — there is **no** separate `@sentry/react`. The only platform-specific branch is **Session Replay**, gated by `Platform.OS` in `buildSentryOptions`: native gets `mobileReplayIntegration()`; **web gets no replay integration and zero replay sampling**.
+
+> **Do not enable Session Replay on web.** The web DOM recorder (`rrweb` + `@sentry-internal/replay-canvas`) continuously snapshots the page, and on screens with many user-avatar `<img>` elements it drove the Chromium renderer into memory pressure and a `STATUS_ILLEGAL_INSTRUCTION` crash — the same failure mode as the retired OTel `PerformanceObserver` loop. Replay sampling is forced to `0` on web (rrweb records continuously to keep an on-error buffer, so the integration must be omitted, not just down-sampled). Errors, distributed traces, and logs are unaffected.
 
 > `@sentry/react-native` ships native code, so it does **not** run in Expo Go. Native crash reporting needs an EAS dev build (the `development` profile already sets `developmentClient: true`). Web and the dev client work; Expo Go does not load the native module.
 
@@ -69,4 +71,4 @@ See [.env.example](../.env.example) for the runtime placeholders.
 
 ## Sampling
 
-Set in `buildSentryOptions`: traces and session replay are sampled at `1.0` in dev and `0.1` in prod; `replaysOnErrorSampleRate` is always `1.0`; `profilesSampleRate` is `1.0` (relative to traces). `sendDefaultPii: true` attaches user email/IP (first-party app, Sentry's recommended default).
+Set in `buildSentryOptions`: traces are sampled at `1.0` in dev and `0.1` in prod; `profilesSampleRate` is `1.0` (relative to traces). **Session replay is native-only** — `1.0` dev / `0.1` prod with `replaysOnErrorSampleRate` `1.0` on native, and **`0` on web** (both session and on-error — see the Cross-platform note). `sendDefaultPii: true` attaches user email/IP (first-party app, Sentry's recommended default).

@@ -68,15 +68,18 @@ describe("buildSentryOptions", () => {
     expect(prod.replaysOnErrorSampleRate).toBe(1.0);
   });
 
-  it("uses the browser replay integration on web", () => {
-    buildSentryOptions({
+  it("disables session replay on web (rrweb crashed the renderer on avatar-heavy pages)", () => {
+    const web = buildSentryOptions({
       dsn: undefined,
       environment: "development",
       isDev: true,
       platformOS: "web",
     });
-    expect(Sentry.browserReplayIntegration).toHaveBeenCalled();
+    // No replay integration on web, and zero sampling so rrweb never records.
+    expect(Sentry.browserReplayIntegration).not.toHaveBeenCalled();
     expect(Sentry.mobileReplayIntegration).not.toHaveBeenCalled();
+    expect(web.replaysSessionSampleRate).toBe(0);
+    expect(web.replaysOnErrorSampleRate).toBe(0);
   });
 
   it("uses the mobile replay integration on native", () => {

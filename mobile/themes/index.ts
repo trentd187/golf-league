@@ -56,15 +56,15 @@ export interface Theme {
 
 // Light — white cards, gray-50 background, green-700 brand
 const light: Theme = {
-  screen:            "bg-gray-50",
+  screen:            "bg-gray-150",
   surface:           "bg-white",
-  surfaceSunken:     "bg-gray-50",
-  border:            "border-gray-100",
-  divider:           "border-gray-100",
+  surfaceSunken:     "bg-gray-150",
+  border:            "border-gray-200",
+  divider:           "border-gray-200",
   borderInput:       "border-gray-300",
   textPrimary:       "text-gray-900",
-  textSecondary:     "text-gray-600",
-  textTertiary:      "text-gray-400",
+  textSecondary:     "text-gray-750",
+  textTertiary:      "text-gray-600",
   primaryBg:         "bg-green-700",
   primaryBgDisabled: "bg-green-400",
   colors: {
@@ -107,8 +107,8 @@ const highContrast: Theme = {
   divider:           "border-zinc-800",
   borderInput:       "border-yellow-400",
   textPrimary:       "text-white",
-  textSecondary:     "text-zinc-200",
-  textTertiary:      "text-zinc-500",
+  textSecondary:     "text-zinc-100",
+  textTertiary:      "text-zinc-200",
   primaryBg:         "bg-green-500",
   primaryBgDisabled: "bg-zinc-700",
   colors: {

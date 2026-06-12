@@ -9,6 +9,7 @@ This replaced the previous custom telemetry queue (`utils/telemetry.ts` → `/ap
 | Concern | Location |
 |---|---|
 | SDK init + option builder | [utils/sentry.ts](../utils/sentry.ts) (`initSentry`, `buildSentryOptions`) |
+| TanStack query/mutation error routing | [utils/sentry.ts](../utils/sentry.ts) (`reportQueryError`, `reportMutationError`); wired to `QueryCache`/`MutationCache` in [app/_layout.tsx](../app/_layout.tsx) |
 | Init call + navigation registration + `Sentry.wrap` | [app/_layout.tsx](../app/_layout.tsx) |
 | Error boundary (recovery card + auto-capture) | [components/ErrorBoundary.tsx](../components/ErrorBoundary.tsx) |
 | User context on auth changes | [hooks/useUser.ts](../hooks/useUser.ts) via `syncSentryUser` |
@@ -33,6 +34,15 @@ Sentry.logger.warn("OTP verification failed", {
 Keep an `event:` attribute with a dotted name (`auth.otp.error`, `profile.avatar.uploaded`) so logs filter cleanly per business event.
 
 `enableLogs: true` in the init options is what makes `Sentry.logger.*` ship — without it those calls are dropped.
+
+## TanStack Query error reporting
+
+The `QueryClient` in `_layout.tsx` wires both caches to Sentry so failures aren't silently swallowed by per-call `onError` alerts:
+
+- **Queries** → `QueryCache.onError: reportQueryError` — 5xx/non-HTTP errors become Issues, 4xx become warning Logs.
+- **Mutations** → `MutationCache.onError: reportMutationError` — transport/network rejections (fetch rejecting even though the request may have committed server-side) are captured as Issues **tagged `error_source:mutation`, `mutation_error_kind:network`**; app-thrown errors (validation, surfaced API messages) become warning Logs to avoid noise. The global handler runs *alongside* each mutation's own `onError`, so user-facing alerts are unchanged.
+
+To investigate cellular "phantom save" failures, filter Sentry Issues by `mutation_error_kind:network` — the exception message is the exact transport error (e.g. `Network request failed`), and breadcrumbs carry the request URL.
 
 ## User context
 

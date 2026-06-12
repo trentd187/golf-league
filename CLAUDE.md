@@ -400,9 +400,11 @@ pnpm lint --fix
 
 ## SonarCloud
 
-Config: `sonar-project.properties`. Quality chain: pre-commit (local) → SonarCloud Scanner CI (workflow TBD) → SonarLint VS Code extension in connected mode.
+Config: `sonar-project.properties` (well-commented — read it before changing analysis scope). Quality chain: pre-commit lefthook (local) → the `sonarcloud` job in `.github/workflows/ci.yml` on PRs → SonarLint VS Code extension (connected mode). Org `trentd187`, project `trentd187_golf-league`; `SONAR_TOKEN` is a GitHub secret and in the local shell profile.
 
-To complete CI setup: fill `sonar.projectKey`/`sonar.organization`, add `SONAR_TOKEN` GitHub secret, add a workflow that runs SonarScanner on push to `main` and PRs.
+- **The gate is enforced, not decorative**: `sonar.qualitygate.wait=true` makes both local `/ci` and the CI `sonarcloud` job block on the gate and exit non-zero when it's red. That job is a required check, so a red gate blocks develop→main merges. (Without `wait`, the scanner only uploads and the gate is surfaced async by the SonarCloud GitHub app — CI goes green while the PR check goes red.)
+- **Scope mirrors our test strategy** so the gate measures only what we actually test: `sonar.coverage.exclusions` = Jest `collectCoverageFrom` (utils + app minus the large E2E-territory screens; components/hooks/stores/themes/constants) + the backend Tier 1/2 scope + `*_test.go`/`*.test.*` (SonarCloud otherwise counts Go test files as uncovered production code). `sonar.cpd.exclusions` drops the JSX-heavy detail screens and `*_test.go` from duplication. **Keep both in sync with `mobile/package.json`'s jest config** when screens move in/out of the tested set.
+- **New Code period = "30 days"**, set in the SonarCloud dashboard (Project Settings → New Code), not the repo. Don't switch it back to "previous_version" — that made new-code metrics (coverage/duplication/hotspots) fluctuate between scans.
 
 ---
 

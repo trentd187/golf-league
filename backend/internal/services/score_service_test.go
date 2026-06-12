@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -79,6 +80,87 @@ func newScoreSvc(db *gorm.DB) *services.ScoreService {
 func activateRound(t *testing.T, db *gorm.DB, roundID uuid.UUID) {
 	t.Helper()
 	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", roundID).Update("status", "active").Error)
+}
+
+// seedEventlessRound inserts a casual (eventless) round directly: EventID nil and
+// CreatedBy set, mirroring a round created outside any event. The creator is the
+// organizer of such a round (see canModifyScores), so they can enter scores.
+func seedEventlessRound(t *testing.T, db *gorm.DB, creatorID, courseID, teeID uuid.UUID) models.Round {
+	t.Helper()
+	round := models.Round{
+		EventID:       nil,
+		CreatedBy:     &creatorID,
+		CourseID:      courseID,
+		DefaultTeeID:  teeID,
+		ScheduledDate: time.Now().UTC(),
+		Status:        models.RoundStatusActive,
+		ScoringFormat: models.ScoringFormatStroke,
+	}
+	require.NoError(t, db.Omit(clause.Associations).Create(&round).Error)
+	return round
+}
+
+// addEventlessRoundPlayer inserts a round_player tied directly to a user, with no
+// event_player — the shape used for eventless rounds.
+func addEventlessRoundPlayer(t *testing.T, db *gorm.DB, roundID, userID uuid.UUID) models.RoundPlayer {
+	t.Helper()
+	rp := models.RoundPlayer{
+		RoundID: roundID, UserID: userID,
+		Status: models.RoundPlayerStatusRegistered,
+	}
+	require.NoError(t, db.Omit(clause.Associations).Create(&rp).Error)
+	return rp
+}
+
+// ─── Eventless (casual) round score entry ─────────────────────────────────────
+// Regression tests for the nil-pointer crash (GOLF-LEAGUE-BACKEND-2 / -3): for a
+// casual round round.Event is nil, so the handicap-allowance lookup must not
+// dereference it. Both of these panicked before roundHandicapAllowance was added.
+
+// TestScoreService_UpsertScores_EventlessRound_NoPanic covers BACKEND-3: the
+// score write path on an eventless round.
+func TestScoreService_UpsertScores_EventlessRound_NoPanic(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+
+	creator := seedUser(t, db, "casualUpsert")
+	course, tee := seedCourseWithTee(t, db, "Casual Upsert Course")
+	seedHoles(t, db, tee.ID)
+	round := seedEventlessRound(t, db, creator.ID, course.ID, tee.ID)
+	rp := addEventlessRoundPlayer(t, db, round.ID, creator.ID)
+
+	saved, err := svc.UpsertScores(context.Background(), round.ID, rp.ID, creator.ID, "user",
+		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 5}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, saved)
+
+	// No course handicap and no event allowance → net equals gross.
+	var score models.Score
+	require.NoError(t, db.First(&score, "round_player_id = ? AND hole_number = ?", rp.ID, 1).Error)
+	assert.Equal(t, 5, score.GrossScore)
+	assert.Equal(t, 5, score.NetScore)
+}
+
+// TestScoreService_SetHandicap_EventlessRound_NoPanic covers BACKEND-2: setting a
+// handicap on an eventless round drives the recalc back-fill through the
+// previously-unguarded allowance lookup.
+func TestScoreService_SetHandicap_EventlessRound_NoPanic(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+
+	creator := seedUser(t, db, "casualHcp")
+	course, tee := seedCourseWithTee(t, db, "Casual Hcp Course")
+	seedHoles(t, db, tee.ID)
+	round := seedEventlessRound(t, db, creator.ID, course.ID, tee.ID)
+	rp := addEventlessRoundPlayer(t, db, round.ID, creator.ID)
+
+	err := svc.SetHandicap(context.Background(), round.ID, rp.ID, creator.ID, "user", 12)
+	require.NoError(t, err)
+
+	var updated models.RoundPlayer
+	require.NoError(t, db.First(&updated, "id = ?", rp.ID).Error)
+	require.NotNil(t, updated.CourseHandicap)
+	assert.Equal(t, 12, *updated.CourseHandicap)
 }
 
 // ─── SetHandicap (exercises canModifyScores) ──────────────────────────────────

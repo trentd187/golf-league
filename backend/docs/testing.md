@@ -78,6 +78,26 @@ If Docker isn't running you'll see `failed to start postgres container` — star
 
 The canonical example is `internal/services/course_service_test.go`.
 
+### Tier 2 handler tests — for thin handler success/mapping paths
+
+Handlers are Tier 1 by default. But a thin handler's success and error-mapping
+branches (parse → `svc.Method(...)` → shape the response / `writeXError`) can't be
+reached with a `nil` DB — the service call panics — so they stay uncovered. When
+those lines need coverage (e.g. to satisfy SonarCloud's coverage-on-new-code on a
+handler), add a **Tier 2 handler test** with a real service backed by
+`testutil.NewTestDB(t)` on a bare single-route app:
+
+```go
+db := testutil.NewTestDB(t)
+svc := services.NewCourseService(db, nil) // real service, no external client
+app := newSingleRouteApp(http.MethodGet, "/courses", handlers.GetCourses(svc))
+resp := doJSON(t, app, http.MethodGet, "/courses", nil)
+```
+
+The course handlers read no auth `Locals`, so no auth injection is needed. The
+canonical example is `internal/handlers/courses_integration_test.go`. (SonarCloud's
+coverage scope is aligned to these tiers — see the SonarCloud section in `CLAUDE.md`.)
+
 ## What to test (ordered by impact on coverage ratchet)
 
 | Priority | Target | Tier | Where |

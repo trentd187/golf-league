@@ -166,7 +166,7 @@ export default function TermsScreen() {
           </Body>
           <Bullet>Supabase — authentication, database storage, and file storage (supabase.com/privacy)</Bullet>
           <Bullet>Google — OAuth single sign-on (policies.google.com/privacy)</Bullet>
-          <Bullet>Grafana Cloud — service monitoring and telemetry (grafana.com/legal/privacy-policy)</Bullet>
+          <Bullet>Sentry — error monitoring, performance tracing, and session replay (sentry.io/privacy)</Bullet>
           <Bullet>Railway — cloud hosting infrastructure (railway.app/legal/privacy)</Bullet>
           <Bullet>GolfCourseAPI.com — golf course data for imported courses</Bullet>
           <Body>

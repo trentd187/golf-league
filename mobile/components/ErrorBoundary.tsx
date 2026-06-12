@@ -1,71 +1,52 @@
 // components/ErrorBoundary.tsx
-// React error boundary that catches uncaught render errors in the component tree.
+// App-wide error boundary that catches uncaught render errors in the component tree.
 //
-// Error boundaries MUST be class components — React does not support functional
-// components for getDerivedStateFromError / componentDidCatch. This is a React
-// core limitation, not an Expo or RN limitation.
-//
-// When a render error is caught the component:
-//   1. Switches to a fallback red-card UI (hardcoded error colors per CLAUDE.md convention)
-//   2. Ships the error to Loki via the telemetry client so it shows up in Grafana
-//   3. Offers a "Try again" button that resets state and re-attempts the render
+// This is a thin wrapper around Sentry.ErrorBoundary: Sentry captures the error
+// (with component stack, breadcrumbs, and user context) automatically, so we no
+// longer need a hand-written class component or a manual telemetry call. We keep a
+// custom fallback so users see a recovery card (hardcoded error colors per CLAUDE.md
+// convention) instead of Sentry's default minimal fallback.
 
 import React from "react";
 import { Text, TouchableOpacity, View } from "react-native";
-import { getTelemetryClient } from "@/utils/telemetry";
+import * as Sentry from "@sentry/react-native";
 
 interface Props {
   children: React.ReactNode;
 }
 
-interface State {
-  hasError: boolean;
-  errorMessage: string;
+// ErrorFallback is rendered by Sentry.ErrorBoundary when a descendant throws.
+// resetError clears the boundary so the subtree re-attempts its render.
+function ErrorFallback(props: { error: unknown; resetError: () => void }) {
+  const message =
+    props.error instanceof Error ? props.error.message : String(props.error);
+
+  return (
+    <View className="flex-1 items-center justify-center bg-red-50 p-6">
+      <Text className="mb-2 text-lg font-bold text-red-700">
+        Something went wrong
+      </Text>
+      <Text className="mb-6 text-center text-sm text-red-600">{message}</Text>
+      <TouchableOpacity
+        className="rounded-lg bg-red-600 px-6 py-3"
+        onPress={props.resetError}
+      >
+        <Text className="font-semibold text-white">Try again</Text>
+      </TouchableOpacity>
+    </View>
+  );
 }
 
-export class ErrorBoundary extends React.Component<Props, State> {
-  constructor(props: Props) {
-    super(props);
-    this.state = { hasError: false, errorMessage: "" };
-  }
-
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, errorMessage: error.message };
-  }
-
-  componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    // Ship the error to Loki so it appears in Grafana alongside the backend trace
-    // for the most recent API call (trace_id is injected automatically by the client).
-    const t = getTelemetryClient();
-    t.error("react.error", error.message, {
-      error_name: error.name,
-      component_stack: info.componentStack ?? undefined,
-    });
-    // Flush immediately — render crashes often precede tab close on web, so waiting
-    // for the 30-second batch timer means the error is silently lost.
-    void t.flush();
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View className="flex-1 items-center justify-center bg-red-50 p-6">
-          <Text className="mb-2 text-lg font-bold text-red-700">
-            Something went wrong
-          </Text>
-          <Text className="mb-6 text-center text-sm text-red-600">
-            {this.state.errorMessage}
-          </Text>
-          <TouchableOpacity
-            className="rounded-lg bg-red-600 px-6 py-3"
-            onPress={() => this.setState({ hasError: false, errorMessage: "" })}
-          >
-            <Text className="font-semibold text-white">Try again</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
-    return this.props.children;
-  }
+export function ErrorBoundary({ children }: Props) {
+  // fallback receives { error, componentStack, eventId, resetError } from Sentry;
+  // we only need error + resetError for the recovery card.
+  return (
+    <Sentry.ErrorBoundary
+      fallback={({ error, resetError }) => (
+        <ErrorFallback error={error} resetError={resetError} />
+      )}
+    >
+      {children}
+    </Sentry.ErrorBoundary>
+  );
 }

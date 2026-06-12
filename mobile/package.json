@@ -58,32 +58,27 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "lefthook"
+      "lefthook",
+      "@sentry/cli"
     ]
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
     "@expo/vector-icons": "~15.1.1",
-    "@opentelemetry/core": "^2.7.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
-    "@opentelemetry/instrumentation": "^0.218.0",
-    "@opentelemetry/instrumentation-document-load": "^0.63.0",
-    "@opentelemetry/instrumentation-fetch": "^0.218.0",
-    "@opentelemetry/sdk-trace-base": "^2.7.1",
-    "@opentelemetry/sdk-trace-web": "^2.7.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.4.4",
+    "@sentry/react-native": "~7.2.0",
     "@supabase/supabase-js": "^2.104.0",
     "@tanstack/react-query": "latest",
-    "expo": "~54.0.34",
+    "expo": "~54.0.35",
     "expo-auth-session": "~7.0.11",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.9",
     "expo-dev-client": "~6.0.21",
-    "expo-font": "~14.0.11",
+    "expo-font": "~14.0.12",
     "expo-image-picker": "~17.0.11",
     "expo-linking": "~8.0.12",
-    "expo-router": "~6.0.23",
+    "expo-router": "~6.0.24",
     "expo-secure-store": "~15.0.8",
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",

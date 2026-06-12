@@ -3,7 +3,8 @@
 #
 # Stage 1 (builder): installs dependencies and runs `expo export --platform web`,
 #   producing a static SPA in /app/dist.
-# Stage 2 (serve):   copies /app/dist into a Caddy container.
+# Stage 2 (serve):   copies /app/dist into a Caddy container, which runs with its
+#   default entrypoint (caddy run --config /etc/caddy/Caddyfile).
 #   Caddyfile handles SPA routing, gzip, and reverse-proxying /api/* to the backend
 #   via Railway private networking (BACKEND_PRIVATE_URL runtime env var).
 #
@@ -30,10 +31,17 @@ COPY . .
 ARG EXPO_PUBLIC_API_URL
 ARG EXPO_PUBLIC_SUPABASE_URL
 ARG EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+# Sentry runtime config for the web bundle. Leave EXPO_PUBLIC_SENTRY_DSN empty to
+# disable Sentry on web; set it (plus the environment) as Railway web-service build
+# variables to enable error/trace/replay reporting from the browser.
+ARG EXPO_PUBLIC_SENTRY_DSN
+ARG EXPO_PUBLIC_SENTRY_ENVIRONMENT
 
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
 ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV EXPO_PUBLIC_SENTRY_DSN=$EXPO_PUBLIC_SENTRY_DSN
+ENV EXPO_PUBLIC_SENTRY_ENVIRONMENT=$EXPO_PUBLIC_SENTRY_ENVIRONMENT
 
 # --clear flushes Metro's transform cache so every Railway build produces a
 # fresh bundle. Without it, BuildKit may cache the export layer and serve
@@ -46,7 +54,3 @@ RUN npx expo export --platform web --clear
 FROM caddy:alpine
 COPY --from=builder /app/dist /srv
 COPY Caddyfile /etc/caddy/Caddyfile
-# Entrypoint computes OTLP_BASIC_AUTH from OTLP_USER + OTLP_API_KEY before starting Caddy.
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
-ENTRYPOINT ["/docker-entrypoint.sh"]

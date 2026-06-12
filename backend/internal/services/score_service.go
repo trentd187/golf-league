@@ -295,10 +295,7 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 	}
 
 	// HandicapAllowance is an event-level setting; nil for eventless rounds.
-	var handicapAllowance *float64
-	if round.Event != nil {
-		handicapAllowance = round.Event.HandicapAllowance
-	}
+	handicapAllowance := roundHandicapAllowance(&round)
 
 	groupData := make([]ScorecardGroupData, 0, len(groups))
 	for _, g := range groups {
@@ -446,7 +443,7 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 		First(&round, "id = ?", roundID).Error; err != nil {
 		return fmt.Errorf("load round for recalc: %w", err)
 	}
-	eff := EffectiveCourseHandicap(handicap, round.Event.HandicapAllowance)
+	eff := EffectiveCourseHandicap(handicap, roundHandicapAllowance(&round))
 
 	played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
 	siMap := NormalizeStrokeIndexes(played)
@@ -477,6 +474,16 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 		}
 	}
 	return nil
+}
+
+// roundHandicapAllowance returns the event's handicap allowance, or nil for
+// eventless (casual) rounds where round.Event is not loaded. EffectiveCourseHandicap
+// treats nil as "full handicap", which is the correct behaviour for casual rounds.
+func roundHandicapAllowance(round *models.Round) *float64 {
+	if round.Event == nil {
+		return nil
+	}
+	return round.Event.HandicapAllowance
 }
 
 // ─── UpsertScores ─────────────────────────────────────────────────────────────
@@ -544,7 +551,7 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 	if rp.CourseHandicap != nil {
 		rawHandicap = *rp.CourseHandicap
 	}
-	chandi := EffectiveCourseHandicap(rawHandicap, round.Event.HandicapAllowance)
+	chandi := EffectiveCourseHandicap(rawHandicap, roundHandicapAllowance(&round))
 
 	records := make([]models.Score, 0, len(scores))
 	for _, sc := range scores {

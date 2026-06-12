@@ -14,9 +14,10 @@
 
 :{$PORT}
 
-# Emit structured JSON access logs to stdout so Railway's log drain can forward them to Loki.
-# Captures every request Caddy handles: static files, API proxies, and edge errors (4xx from
-# Caddy itself, TLS failures) that never reach the backend and are otherwise invisible.
+# Emit structured JSON access logs to stdout. Railway captures container stdout, so
+# these remain available in Railway's log view. Captures every request Caddy handles:
+# static files, API proxies, and edge errors (4xx from Caddy itself, TLS failures) that
+# never reach the backend and are otherwise invisible.
 log {
     output stdout
     format json
@@ -35,18 +36,6 @@ handle /health {
 # never rewrites API paths to /index.html.
 handle /api/* {
     reverse_proxy {$BACKEND_PRIVATE_URL}
-}
-
-# Proxy browser OTLP spans to Grafana Cloud Tempo.
-# The browser sends to /otlp/v1/traces (same origin, no CORS); Caddy forwards the
-# full path to OTLP_URL (e.g. https://otlp-gateway-prod-us-east-3.grafana.net) so
-# the final URL is OTLP_URL/otlp/v1/traces — same format the backend uses.
-# OTLP_BASIC_AUTH is computed at startup by docker-entrypoint.sh from OTLP_USER
-# and OTLP_API_KEY (same env vars as the backend service — no separate secret needed).
-handle /otlp/* {
-    reverse_proxy {$OTLP_URL} {
-        header_up Authorization "Basic {$OTLP_BASIC_AUTH}"
-    }
 }
 
 # Serve the static SPA. try_files falls back to index.html so Expo Router

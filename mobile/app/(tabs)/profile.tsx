@@ -42,7 +42,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { useThemeStore } from "@/stores/themeStore";
 import { THEME_META } from "@/themes";
-import { getTelemetryClient } from "@/utils/telemetry";
+import * as Sentry from "@sentry/react-native";
 import { showAlert } from "@/utils/alerts";
 import {
   type ScorecardSettings,
@@ -208,9 +208,12 @@ export default function ProfileScreen() {
         try {
           const arrayBuffer = await file.arrayBuffer();
           await uploadAvatarBuffer(arrayBuffer, file.type || "image/jpeg");
-          getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
+          Sentry.logger.info("Profile image uploaded successfully", {
+            event: "profile.avatar.uploaded",
+          });
         } catch (err) {
-          getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
+          Sentry.logger.warn("Profile image upload failed", {
+            event: "profile.avatar.upload_failed",
             message: (err as Error)?.message,
           });
           window.alert(`Upload failed: ${(err as Error)?.message ?? "Could not upload photo."}`);
@@ -256,10 +259,13 @@ export default function ProfileScreen() {
       const arrayBuffer = await fileResponse.arrayBuffer();
 
       await uploadAvatarBuffer(arrayBuffer, mimeType);
-      getTelemetryClient().info("profile.avatar.uploaded", "Profile image uploaded successfully");
+      Sentry.logger.info("Profile image uploaded successfully", {
+        event: "profile.avatar.uploaded",
+      });
     } catch (err) {
       setLocalPhotoUri(null);
-      getTelemetryClient().warn("profile.avatar.upload_failed", "Profile image upload failed", {
+      Sentry.logger.warn("Profile image upload failed", {
+        event: "profile.avatar.upload_failed",
         message: (err as Error)?.message,
       });
       Alert.alert(

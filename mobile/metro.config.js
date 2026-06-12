@@ -3,18 +3,21 @@
 // It bundles all your TypeScript/JS source files, images, and other assets
 // into a single bundle that the app can load. This file customizes Metro's behaviour.
 
-// getDefaultConfig returns the base Metro configuration that Expo provides.
-// We extend it rather than writing from scratch so we inherit all Expo's defaults.
-const { getDefaultConfig } = require("expo/metro-config");
+// getSentryExpoConfig returns Expo's base Metro config with Sentry's custom
+// serializer layered in. The serializer injects a stable Debug ID into every
+// bundle so the source maps EAS uploads at build time line up with the minified
+// Hermes bundle that ships — no manual source-map coordination. It is a superset
+// of expo/metro-config's getDefaultConfig, so we lose none of Expo's defaults.
+const { getSentryExpoConfig } = require("@sentry/react-native/metro");
 
 // withNativeWind wraps the Metro config to add NativeWind support.
 // NativeWind needs to hook into Metro's pipeline so it can process your global CSS
 // file and make Tailwind utility classes available in your components.
 const { withNativeWind } = require("nativewind/metro");
 
-// Start with the default Expo Metro config, passing __dirname (current directory)
-// so Metro knows where the project root is.
-const config = getDefaultConfig(__dirname);
+// Start with the Sentry-enhanced Expo Metro config, passing __dirname (current
+// directory) so Metro knows where the project root is.
+const config = getSentryExpoConfig(__dirname);
 
 // @supabase/supabase-js v2 ships ESM with import.meta.url (via @supabase/realtime-js).
 // zustand v5 ships ESM with import.meta.env (via its devtools middleware).
@@ -27,7 +30,7 @@ const config = getDefaultConfig(__dirname);
 // equivalents. We hardcode the full list rather than mutating the default because the
 // default may be a RegExp (not a string) in some Metro versions, making .replace() a no-op.
 config.transformer.transformIgnorePatterns = [
-  "node_modules/(?!(@supabase|zustand|@opentelemetry|react-native|@react-native|@react-navigation|expo|@expo|nativewind|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context)/)",
+  "node_modules/(?!(@supabase|zustand|@sentry|react-native|@react-native|@react-navigation|expo|@expo|nativewind|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context)/)",
 ];
 
 // Wrap the config with NativeWind's Metro plugin.

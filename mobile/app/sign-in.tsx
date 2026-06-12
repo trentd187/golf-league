@@ -29,7 +29,7 @@ import * as WebBrowser from "expo-web-browser";
 import * as AuthSession from "expo-auth-session";
 import { supabase } from "@/utils/supabase";
 import { useTheme } from "@/hooks/useTheme";
-import { getTelemetryClient } from "@/utils/telemetry";
+import * as Sentry from "@sentry/react-native";
 import { showAlert } from "@/utils/alerts";
 
 // Required for OAuth redirects to complete correctly in Expo — safe to call unconditionally.
@@ -65,7 +65,8 @@ export default function SignIn() {
           options: { redirectTo: window.location.origin + "/oauth-callback" },
         });
         if (error) {
-          getTelemetryClient().warn("auth.google.error", "Google OAuth sign-in failed", {
+          Sentry.logger.warn("Google OAuth sign-in failed", {
+            event: "auth.google.error",
             message: error.message,
           });
           showErrorAlert(error.message);
@@ -92,7 +93,8 @@ export default function SignIn() {
       });
 
       if (error || !data.url) {
-        getTelemetryClient().warn("auth.google.error", "Google OAuth sign-in failed", {
+        Sentry.logger.warn("Google OAuth sign-in failed", {
+          event: "auth.google.error",
           message: error?.message,
         });
         showErrorAlert(error?.message ?? "Could not start Google sign-in.");
@@ -116,7 +118,9 @@ export default function SignIn() {
         if (sessionError) {
           showErrorAlert(sessionError.message);
         } else {
-          getTelemetryClient().info("auth.google.success", "Google OAuth sign-in succeeded");
+          Sentry.logger.info("Google OAuth sign-in succeeded", {
+            event: "auth.google.success",
+          });
           router.replace("/(tabs)/events");
         }
       }
@@ -143,7 +147,7 @@ export default function SignIn() {
     if (error) {
       showErrorAlert(error.message);
     } else {
-      getTelemetryClient().info("auth.otp.sent", "OTP email sent");
+      Sentry.logger.info("OTP email sent", { event: "auth.otp.sent" });
       setPendingVerification(true);
     }
   };
@@ -163,12 +167,15 @@ export default function SignIn() {
 
     if (error) {
       // Wrong code — show inline so the user can retry without dismissing a dialog.
-      getTelemetryClient().warn("auth.otp.error", "OTP verification failed", {
+      Sentry.logger.warn("OTP verification failed", {
+        event: "auth.otp.error",
         message: error.message,
       });
       setInlineError(error.message);
     } else {
-      getTelemetryClient().info("auth.otp.verified", "OTP verification succeeded");
+      Sentry.logger.info("OTP verification succeeded", {
+        event: "auth.otp.verified",
+      });
       router.replace("/(tabs)/events");
     }
   };

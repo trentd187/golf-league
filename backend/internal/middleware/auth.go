@@ -7,10 +7,10 @@ import (
 	"log"
 	"strings"
 
+	"github.com/getsentry/sentry-go"
+	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	// keyfunc fetches Supabase's public JWKS keys, caches them, and handles key rotation.
 	// Supabase uses RS256 (asymmetric); keyfunc handles the JWKS endpoint automatically.
@@ -109,7 +109,6 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		if result.Error != nil {
 			if result.Error != gorm.ErrRecordNotFound {
-				c.Locals("error_detail", "auth.db_error: "+result.Error.Error())
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "database error",
 				})
@@ -138,7 +137,6 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 					Role:        models.UserRoleUser,
 				}
 				if err := db.Create(&user).Error; err != nil {
-					c.Locals("error_detail", "auth.create_user: "+err.Error())
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "failed to create user record",
 					})
@@ -168,11 +166,14 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 		c.Locals("userID", user.ID.String())
 		c.Locals("userRole", string(user.Role))
 
-		// Tag the active OTel span with the user's database UUID so traces in
-		// Grafana Tempo can be filtered by user when investigating reported issues.
-		trace.SpanFromContext(c.UserContext()).SetAttributes(
-			attribute.String("user.id", user.ID.String()),
-		)
+		// Attach the user to this request's Sentry scope so events and traces
+		// captured downstream are filterable by user in the Sentry UI.
+		if hub := sentryfiber.GetHubFromContext(c); hub != nil {
+			hub.Scope().SetUser(sentry.User{
+				ID:    user.ID.String(),
+				Email: user.Email,
+			})
+		}
 
 		return c.Next()
 	}

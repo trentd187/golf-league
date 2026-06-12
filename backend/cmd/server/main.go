@@ -5,15 +5,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/gofiber/contrib/otelfiber"
+	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
@@ -30,6 +30,16 @@ import (
 func main() {
 	cfg := config.Load()
 
+	// Initialise Sentry (single observability vendor: errors, traces, profiles, logs).
+	// When SENTRY_DSN is empty (local dev without an account), logger is stdout-only
+	// and shutdown is a no-op — server runs identically without telemetry.
+	logger, sentryShutdown, err := observability.Init(cfg)
+	if err != nil {
+		log.Fatal("Failed to initialise Sentry:", err)
+	}
+	defer sentryShutdown()
+	slog.SetDefault(logger)
+
 	db, err := database.Connect(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -44,19 +54,6 @@ func main() {
 	// so it doesn't block the rest of startup.
 	hub := websocket.NewHub()
 	go hub.Run()
-
-	// Initialise the full Grafana Cloud observability stack (logs, metrics, traces, profiling).
-	// Components whose env vars are absent degrade to no-ops — server runs without credentials.
-	obs, err := observability.Init(cfg, hub.ConnCount)
-	if err != nil {
-		log.Fatal("Failed to initialise observability:", err)
-	}
-	defer obs.Shutdown()
-
-	// Route all stdlib slog output through our handler so app logs appear in Loki.
-	slog.SetDefault(obs.Logger)
-	// Register the default handler for package-level observability.LogInfo(...) calls in handlers.
-	observability.SetDefault(obs.Handler())
 
 	// GolfCourseAPIClient is created once and shared across requests.
 	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
@@ -92,28 +89,17 @@ func main() {
 
 	app.Use(cors.New())
 
-	// otelfiber auto-instruments every request as an OTel span.
-	// Must be registered first so all subsequent middleware and handlers have span context.
-	// WithSpanNameFormatter uses the fully matched route pattern (e.g. /api/v1/me) instead
-	// of the default group prefix (/api/v1), which made all grouped-route spans
-	// indistinguishable in Grafana Tempo.
-	app.Use(otelfiber.Middleware(
-		otelfiber.WithSpanNameFormatter(func(c *fiber.Ctx) string {
-			if c.Route().Path == "" {
-				return "unknown" // unmatched routes; avoids blank span names in Tempo
-			}
-			return c.Route().Path
-		}),
-	))
-
-	// Correlation middleware reads X-Correlation-ID from the request (or generates one),
-	// attaches it to the active span, and writes X-Trace-ID to the response.
-	// Must be registered after otelfiber so the span already exists.
-	app.Use(middleware.Correlation())
-
-	// HTTPMetrics records request counts and latency using OTel instruments.
-	// Registered after otelfiber so span context is available.
-	app.Use(middleware.HTTPMetrics(obs.Metrics))
+	// sentryfiber installs a per-request Sentry Hub on c.Context() so handlers can
+	// call sentryfiber.GetHubFromContext(c) and capture exceptions, set tags, or
+	// attach the authenticated user without sharing scope across requests.
+	// Repanic:true defers HTTP response writing to fiberrecover, which is already
+	// registered above. WaitForDelivery is false because requests must not block
+	// on Sentry's network; sentry.Flush(2s) at shutdown drains the buffer instead.
+	app.Use(sentryfiber.New(sentryfiber.Options{
+		Repanic:         true,
+		WaitForDelivery: false,
+		Timeout:         5 * time.Second,
+	}))
 
 	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
 	app.Get("/health", handlers.HealthCheck)
@@ -121,10 +107,6 @@ func main() {
 	// All routes under /api/v1 require a valid Supabase JWT.
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
-
-	// Telemetry — mobile clients POST structured logs here; backend proxies to Loki.
-	// Requires a valid Supabase JWT (auth middleware above), so Loki credentials stay server-side.
-	api.Post("/telemetry/logs", handlers.PostMobileLogs(obs.Handler()))
 
 	// Event routes — any authenticated user can create events (they become the organizer).
 	// /events/public must be registered before /events/:id so Fiber matches it literally.
@@ -201,13 +183,15 @@ func main() {
 
 	// Start the server in a goroutine so we can listen for OS signals below.
 	// SIGTERM is sent by Railway (and Docker) when the container is being stopped;
-	// graceful shutdown flushes telemetry before the process exits.
+	// the deferred sentryShutdown flushes buffered events before the process exits.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		observability.LogInfo(context.Background(), "server.startup", "Server starting",
-			"port", cfg.Port, "env", cfg.Env)
+		slog.Info("Server starting",
+			"event_type_label", "server.startup",
+			"port", cfg.Port,
+			"env", cfg.Env)
 		if err := app.Listen(":" + cfg.Port); err != nil {
 			log.Printf("Server listen error: %v", err)
 		}
@@ -215,7 +199,7 @@ func main() {
 
 	<-quit
 
-	observability.LogInfo(context.Background(), "server.shutdown", "Server shutting down")
+	slog.Info("Server shutting down", "event_type_label", "server.shutdown")
 	if err := app.Shutdown(); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}

@@ -84,8 +84,8 @@ const dark: Theme = {
   divider:           "border-gray-700",
   borderInput:       "border-gray-600",
   textPrimary:       "text-gray-100",
-  textSecondary:     "text-gray-300",
-  textTertiary:      "text-gray-500",
+  textSecondary:     "text-gray-200",
+  textTertiary:      "text-gray-300",
   primaryBg:         "bg-green-600",
   primaryBgDisabled: "bg-green-800",
   colors: {

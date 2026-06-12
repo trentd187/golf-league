@@ -5,6 +5,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 
 	// godotenv reads .env files in development; in production real env vars take precedence.
 	"github.com/joho/godotenv"
@@ -21,20 +22,12 @@ type Config struct {
 	// Logging — structured slog output at or above this level (debug|info|warn|error, default: info)
 	LogLevel string
 
-	// Loki — all three must be set to enable remote log push; empty = stdout only
-	LokiURL    string
-	LokiUser   string
-	LokiAPIKey string
-
-	// OTLP — same gateway receives metrics (→ Mimir) and traces (→ Tempo); empty = disabled
-	OTLPURL    string
-	OTLPUser   string
-	OTLPAPIKey string
-
-	// Pyroscope — continuous profiling; empty = disabled
-	PyroscopeURL    string
-	PyroscopeUser   string
-	PyroscopeAPIKey string
+	// Sentry — single full-stack observability vendor (errors, traces, logs).
+	// Empty SentryDSN disables Sentry entirely: slog writes to stdout only and no
+	// network call is made on startup. Lets local dev and CI run without credentials.
+	SentryDSN              string
+	SentryRelease          string  // typically the git SHA, set via Docker build arg
+	SentryTracesSampleRate float64 // 0.0–1.0; default 0.1 in prod, 1.0 in dev
 }
 
 // Load reads configuration from environment variables and returns a populated Config.
@@ -57,21 +50,27 @@ func Load() *Config {
 		logLevel = "info"
 	}
 
+	// Default traces sample rate: 1.0 in dev (capture everything for local debugging),
+	// 0.1 in prod (free-tier-friendly). Operator can override via SENTRY_TRACES_SAMPLE_RATE.
+	tracesRate := 0.1
+	if env == "development" {
+		tracesRate = 1.0
+	}
+	if v := os.Getenv("SENTRY_TRACES_SAMPLE_RATE"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			tracesRate = parsed
+		}
+	}
+
 	return &Config{
-		Port:             port,
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		SupabaseJWKSURL:  os.Getenv("SUPABASE_JWKS_URL"),
-		Env:              env,
-		GolfCourseAPIKey: os.Getenv("GOLF_COURSE_API_KEY"),
-		LogLevel:         logLevel,
-		LokiURL:          os.Getenv("LOKI_URL"),
-		LokiUser:         os.Getenv("LOKI_USER"),
-		LokiAPIKey:       os.Getenv("LOKI_API_KEY"),
-		OTLPURL:          os.Getenv("OTLP_URL"),
-		OTLPUser:         os.Getenv("OTLP_USER"),
-		OTLPAPIKey:       os.Getenv("OTLP_API_KEY"),
-		PyroscopeURL:     os.Getenv("PYROSCOPE_URL"),
-		PyroscopeUser:    os.Getenv("PYROSCOPE_USER"),
-		PyroscopeAPIKey:  os.Getenv("PYROSCOPE_API_KEY"),
+		Port:                   port,
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		SupabaseJWKSURL:        os.Getenv("SUPABASE_JWKS_URL"),
+		Env:                    env,
+		GolfCourseAPIKey:       os.Getenv("GOLF_COURSE_API_KEY"),
+		LogLevel:               logLevel,
+		SentryDSN:              os.Getenv("SENTRY_DSN"),
+		SentryRelease:          os.Getenv("SENTRY_RELEASE"),
+		SentryTracesSampleRate: tracesRate,
 	}
 }

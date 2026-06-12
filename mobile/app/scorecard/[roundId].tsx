@@ -9,12 +9,12 @@
 //   2. Filters to the group matching the `groupId` search param
 //   3. If the round requires handicaps and any player is missing one, shows a
 //      handicap entry section at the top before score entry is available
-//   4. Non-scramble formats: toggle between group view (all players in columns)
-//      and individual view (one player at a time, hole-by-hole).
+//   4. Non-scramble formats: toggle between Basic view (all players in columns)
+//      and Advanced view (one player at a time, hole-by-hole).
 //      Both views share the same `scores` state — switching never discards data.
 //   5. Allows any player in the group (or organizer/admin) to enter scores
 //   6. Scores are auto-saved on blur via PUT /rounds/:id/players/:rpId/scores
-//   7. Individual view: hole-by-hole card with score entry + FIR/GIR/putts per hole,
+//   7. Advanced view: hole-by-hole card with score entry + FIR/GIR/putts per hole,
 //      navigated via hole selector pills or Prev/Next buttons.
 
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -206,7 +206,7 @@ async function withRetry<T>(fn: () => Promise<T>, delays: number[]): Promise<T> 
 }
 
 // scoreColor returns a NativeWind class string for a score relative to par.
-// Used in both group and individual views to keep color logic in one place.
+// Used in both Basic and Advanced views to keep color logic in one place.
 function scoreColor(diff: number, textPrimary: string): string {
   if (diff <= -2) return "text-yellow-500"; // Eagle or better
   if (diff === -1) return "text-green-600"; // Birdie
@@ -258,11 +258,11 @@ export default function ScorecardScreen() {
   const queryClient   = useQueryClient();
 
   // ── View mode ───────────────────────────────────────────────────────────────
-  // "group": all players shown in columns (always available).
-  // "individual": one player at a time, hole-by-hole with score + stats per hole.
-  // Only offered for non-scramble formats with 2+ players.
+  // "basic": all players shown in columns (always available).
+  // "advanced": one player at a time, hole-by-hole with score + stats per hole.
+  // The toggle is offered for every non-scramble round regardless of player count.
   // Switching never resets scores — both views share the same `scores` state.
-  const [viewMode,         setViewMode]         = useState<"group" | "individual">("individual");
+  const [viewMode,         setViewMode]         = useState<"basic" | "advanced">("advanced");
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
 
   // ── Score / handicap / UI state ─────────────────────────────────────────────
@@ -285,7 +285,7 @@ export default function ScorecardScreen() {
   const [stats,          setStats]          = useState<LocalStats>({});
   // statsSaveError is set when all retries for a stats PUT are exhausted.
   const [statsSaveError, setStatsSaveError] = useState(false);
-  // currentHole drives which hole is displayed in individual view (1-based).
+  // currentHole drives which hole is displayed in Advanced view (1-based).
   const [currentHole, setCurrentHole] = useState(1);
 
   // ── Fetch scorecard ─────────────────────────────────────────────────────────
@@ -351,12 +351,12 @@ export default function ScorecardScreen() {
   // statSaveTimers debounces per-hole stat saves (key: "<rpId>-<holeNumber>").
   const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // inputRefs: group view grid — key "<holeIndex>-<playerIndex>".
+  // inputRefs: Basic view grid — key "<holeIndex>-<playerIndex>".
   const inputRefs      = useRef<Map<string, TextInput | null>>(new Map());
-  // statsInputRefs: individual view numeric stat fields, indexed by field position (0–3).
+  // statsInputRefs: Advanced view numeric stat fields, indexed by field position (0–3).
   const statsInputRefs = useRef<(TextInput | null)[]>([]);
 
-  // scoreInputRef: individual view gross score field — used to chain keyboard focus
+  // scoreInputRef: Advanced view gross score field — used to chain keyboard focus
   // from the last numeric stat (score_position "last") or from the score field to the
   // first stat (score_position "first").
   const scoreInputRef = useRef<TextInput>(null);
@@ -543,7 +543,7 @@ export default function ScorecardScreen() {
 
   // ── Focus helpers ────────────────────────────────────────────────────────────
 
-  // Group view: advance to next player in the same hole, then wrap to next hole.
+  // Basic view: advance to next player in the same hole, then wrap to next hole.
   const focusNext = useCallback(
     (holeIdx: number, playerIdx: number, totalPlayers: number, totalHoles: number) => {
       const nextPlayer = playerIdx + 1;
@@ -566,7 +566,7 @@ export default function ScorecardScreen() {
       setStats(initStats(group.players));
       // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
       setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
-      // Default individual view to the current user's player, then first player.
+      // Default Advanced view to the current user's player, then first player.
       // Use scorecard.caller_user_id (DB UUID) — it differs from the Supabase auth UUID.
       const myPlayer = group.players.find((p) => p.user_id === scorecard?.caller_user_id);
       setSelectedPlayerId(
@@ -681,13 +681,11 @@ export default function ScorecardScreen() {
   // Resolve stat visibility settings; fall back to defaults before the query resolves.
   const settings = scorecardSettingsData ?? DEFAULT_SCORECARD_SETTINGS;
 
-  // Scramble: all players play from the same ball — individual scorecards don't apply.
+  // Scramble: all players play from the same ball — the per-player Advanced view
+  // doesn't apply, so the toggle is hidden and the Basic columns view is used.
+  // Every other round shows the toggle regardless of how many players are in the group.
   const isScramble = scorecard.scoring_format === "scramble";
-  const effectiveViewMode =
-    group.players.length === 1
-      ? "individual"
-      : viewMode;
-  const showToggle = !isScramble && group.players.length > 1;
+  const showToggle = !isScramble;
 
   // Resolve the selected player, falling back to the first player if stale.
   const selectedPlayer =
@@ -742,7 +740,7 @@ export default function ScorecardScreen() {
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
 
-  // Column widths for group view.
+  // Column widths for Basic view.
   const leftColW       = 38;
   const parColW        = 32;
   const siColW         = 32;
@@ -772,7 +770,7 @@ export default function ScorecardScreen() {
     .forEach((h, rank) => normalizedSIMap.set(h.hole_number, rank + 1));
   const handicapHoleCount = holeRows.length || 18;
 
-  // Pre-compute individual view running totals.
+  // Pre-compute Advanced view running totals.
   let indivGrossTotal = 0, indivGrossCount = 0;
   let indivNetTotal   = 0, indivNetCount   = 0;
   if (selectedPlayer) {
@@ -817,18 +815,18 @@ export default function ScorecardScreen() {
         {showToggle && (
           <View className={`flex-row rounded-lg overflow-hidden border ${t.border}`}>
             <TouchableOpacity
-              onPress={() => setViewMode("individual")}
-              className={`px-3 py-1.5 ${viewMode === "individual" ? "bg-green-700" : t.surface}`}
+              onPress={() => setViewMode("advanced")}
+              className={`px-3 py-1.5 ${viewMode === "advanced" ? "bg-green-700" : t.surface}`}
             >
-              <Text className={`text-xs font-semibold ${viewMode === "individual" ? "text-white" : t.textSecondary}`}>
+              <Text className={`text-xs font-semibold ${viewMode === "advanced" ? "text-white" : t.textSecondary}`}>
                 Advanced
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => setViewMode("group")}
-              className={`px-3 py-1.5 ${viewMode === "group" ? "bg-green-700" : t.surface}`}
+              onPress={() => setViewMode("basic")}
+              className={`px-3 py-1.5 ${viewMode === "basic" ? "bg-green-700" : t.surface}`}
             >
-              <Text className={`text-xs font-semibold ${viewMode === "group" ? "text-white" : t.textSecondary}`}>
+              <Text className={`text-xs font-semibold ${viewMode === "basic" ? "text-white" : t.textSecondary}`}>
                 Basic
               </Text>
             </TouchableOpacity>
@@ -923,8 +921,8 @@ export default function ScorecardScreen() {
         )}
 
 
-        {/* ── Individual view: player selector pills ─────────────────────────── */}
-        {effectiveViewMode === "individual" && (
+        {/* ── Advanced view: player selector pills ───────────────────────────── */}
+        {viewMode === "advanced" && (
           <View className="mt-4 gap-2">
             <View className="flex-row gap-2 px-4 flex-wrap">
               {visiblePlayers.map((p) => {
@@ -1021,9 +1019,9 @@ export default function ScorecardScreen() {
 
         {/* ── Scorecard tables ───────────────────────────────────────────────── */}
 
-        {effectiveViewMode === "group" ? (
+        {viewMode === "basic" ? (
 
-          /* ── Group view: horizontal scroll, all players in columns ── */
+          /* ── Basic view: horizontal scroll, all players in columns ── */
           <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-4">
             <View style={{ width: totalGroupWidth }}>
 
@@ -1191,7 +1189,7 @@ export default function ScorecardScreen() {
 
         ) : (
 
-          /* ── Individual view: hole-by-hole entry ── */
+          /* ── Advanced view: hole-by-hole entry ── */
           <View className="mt-4 px-4 gap-4">
 
             {/* Hole selector pills — green outline = score entered, solid green = current hole */}

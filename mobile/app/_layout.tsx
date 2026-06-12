@@ -17,8 +17,9 @@
 import "../global.css";
 
 // React Query manages server state: fetching, caching, synchronizing, and updating data.
-// QueryCache lets us add a global error handler that reports failures to Sentry.
+// QueryCache/MutationCache let us add global error handlers that report failures to Sentry.
 import {
+  MutationCache,
   QueryCache,
   QueryClient,
   QueryClientProvider,
@@ -30,18 +31,31 @@ import { AppState, AppStateStatus, Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
 import { Stack, useNavigationContainerRef } from "expo-router";
 
-import { initSentry, navigationIntegration, reportQueryError } from "@/utils/sentry";
+import {
+  initSentry,
+  navigationIntegration,
+  reportQueryError,
+  reportMutationError,
+} from "@/utils/sentry";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Initialise Sentry at module load — before any component renders — so errors
 // thrown during the first render are captured.
 initSentry();
 
-// QueryClient is created with a global QueryCache error handler that reports 5xx /
-// unexpected API errors to Sentry (Issues for 5xx, warning Logs for 4xx).
+// QueryClient is created with global error handlers that report unexpected failures
+// to Sentry: queries via QueryCache (Issues for 5xx, warning Logs for 4xx), and
+// mutations via MutationCache (network rejections as Issues, app errors as warnings).
+// The MutationCache handler runs alongside each mutation's own onError, so existing
+// user-facing alerts are unaffected. Until this was added, mutation failures — the
+// create/save operations that fail on cellular — left no Sentry telemetry at all.
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: reportQueryError,
+  }),
+  mutationCache: new MutationCache({
+    onError: (error, _variables, _context, mutation) =>
+      reportMutationError(error, mutation.options.mutationKey),
   }),
 });
 

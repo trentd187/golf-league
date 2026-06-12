@@ -10,6 +10,7 @@ import {
   buildSentryOptions,
   syncSentryUser,
   reportQueryError,
+  reportMutationError,
   initSentry,
 } from "@/utils/sentry";
 
@@ -149,6 +150,65 @@ describe("reportQueryError", () => {
 
   it("ignores non-Error, non-Response values", () => {
     reportQueryError("just a string");
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("reportMutationError", () => {
+  // Each message a fetch transport failure surfaces with on the platforms we ship.
+  // All should be captured as Issues so we can read the exact string off Sentry.
+  it.each([
+    "Network request failed",
+    "Failed to fetch",
+    "The network connection was lost",
+    "The request timed out",
+    "unexpected end of stream",
+    "Canceled",
+  ])("captures network rejection %p as a tagged exception", (message) => {
+    reportMutationError(new Error(message));
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ mutation_error_kind: "network" }),
+      }),
+    );
+    expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs app-thrown errors as a warning, not an exception", () => {
+    reportMutationError(new Error("Please select a golf course."));
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "Mutation error (non-network)",
+      expect.objectContaining({ message: "Please select a golf course." }),
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("includes the mutationKey label in context when provided", () => {
+    reportMutationError(new Error("Network request failed"), ["create-round"]);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        extra: expect.objectContaining({ mutationKey: '["create-round"]' }),
+      }),
+    );
+  });
+
+  it("falls back to String() when the mutationKey is not JSON-serializable", () => {
+    // A BigInt makes JSON.stringify throw, exercising the catch fallback.
+    reportMutationError(new Error("Network request failed"), 7n);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        extra: expect.objectContaining({ mutationKey: "7" }),
+      }),
+    );
+  });
+
+  it("ignores non-Error, non-Response values", () => {
+    reportMutationError(12345);
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(Sentry.logger.warn).not.toHaveBeenCalled();
   });

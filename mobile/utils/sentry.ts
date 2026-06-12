@@ -124,6 +124,54 @@ export function reportQueryError(error: unknown): void {
   }
 }
 
+// NETWORK_ERROR_RE matches the messages fetch produces when the transport fails
+// rather than the server returning an error body — i.e. the request may have
+// reached the backend (and even committed) while the client never saw a response.
+// This is the signature of the cellular "phantom failure → duplicate write" bug:
+// the user sees a save error, retries, and a non-idempotent POST runs twice.
+// Covers the React Native (Android okhttp / iOS) and web wordings.
+const NETWORK_ERROR_RE =
+  /network request failed|failed to fetch|load failed|networkerror|network connection|timed?\s?out|timeout|unexpected end of stream|stream was reset|connection reset|connection abort|cancell?ed|aborted/i;
+
+// mutationKeyLabel renders an optional TanStack mutationKey as a short string for
+// Sentry context. Most mutations omit the key, so undefined is the common case.
+function mutationKeyLabel(mutationKey: unknown): string | undefined {
+  if (mutationKey === undefined) return undefined;
+  try {
+    return JSON.stringify(mutationKey);
+  } catch {
+    return String(mutationKey);
+  }
+}
+
+// reportMutationError routes a TanStack Query *mutation* error to Sentry. Unlike
+// queries, mutation failures were previously invisible to Sentry (no MutationCache
+// handler existed), which is why the cellular save failures left no telemetry.
+//
+// Transport/network rejections are captured as Issues (tagged for filtering) because
+// they are the phantom-failure path we are hunting. App-thrown errors (validation,
+// or an API error body already surfaced to the user) become a warning Log instead
+// of an Issue — they are still searchable in Sentry but do not create noise.
+//
+// Mutations in this app always reject with an Error (their mutationFn converts a
+// non-ok Response into one before throwing), so there is no Response branch here.
+export function reportMutationError(error: unknown, mutationKey?: unknown): void {
+  if (!(error instanceof Error)) return;
+
+  const keyLabel = mutationKeyLabel(mutationKey);
+  if (NETWORK_ERROR_RE.test(error.message)) {
+    Sentry.captureException(error, {
+      tags: { error_source: "mutation", mutation_error_kind: "network" },
+      extra: { mutationKey: keyLabel },
+    });
+  } else {
+    Sentry.logger.warn("Mutation error (non-network)", {
+      message: error.message,
+      mutationKey: keyLabel,
+    });
+  }
+}
+
 // initSentry initialises the SDK once at app start. Reads runtime config from
 // EXPO_PUBLIC_* env vars (inlined into the bundle by Expo at build time).
 export function initSentry(): void {

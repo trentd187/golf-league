@@ -277,7 +277,9 @@ export default function ScorecardScreen() {
   const [editingHandicapFor, setEditingHandicapFor] = useState<string | null>(null);
   const [savingHandicap,     setSavingHandicap]     = useState(false);
   const [handicapDraft,      setHandicapDraft]      = useState("");
-  const [saveStatus,      setSaveStatus]      = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+  // True for a round_player whose last score save failed; cleared on a later success.
+  // Saves are otherwise optimistic — no in-progress or success indicator is shown.
+  const [saveError,       setSaveError]       = useState<Record<string, boolean>>({});
 
   // ── Advanced stats + hole navigation state ───────────────────────────────────
   const [stats,          setStats]          = useState<LocalStats>({});
@@ -438,11 +440,10 @@ export default function ScorecardScreen() {
 
         if (entries.length === 0) return;
 
-        setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saving" }));
         try {
           const token = await getToken();
           // Retry up to 3 times (500 ms → 1 s → 2 s) before surfacing an error.
-          // saveStatus stays "saving" for the full sequence so the user sees one spinner.
+          // Saves are optimistic, so nothing is shown unless every retry fails.
           await withRetry(async () => {
             const res = await fetch(
               `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
@@ -457,18 +458,15 @@ export default function ScorecardScreen() {
               throw new Error(body?.error ?? "Save failed");
             }
           }, [500, 1000, 2000]);
-          setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "saved" }));
+          // Clear any prior failure flag now that the save has succeeded.
+          setSaveError((prev) => ({ ...prev, [roundPlayerId]: false }));
           // After saving the last hole, scroll back to the top so the user
           // sees the updated leaderboard without having to scroll manually.
           if (currentHoleRef.current === lastHoleRef.current) {
             outerScrollRef.current?.scrollTo({ y: 0, animated: true });
           }
-          setTimeout(
-            () => setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "idle" })),
-            2000
-          );
         } catch {
-          setSaveStatus((prev) => ({ ...prev, [roundPlayerId]: "error" }));
+          setSaveError((prev) => ({ ...prev, [roundPlayerId]: true }));
         }
       }, 400);
 
@@ -1035,7 +1033,7 @@ export default function ScorecardScreen() {
                 <Text style={{ width: parColW }}  className={`text-xs font-bold text-center ${t.textTertiary}`}>Par</Text>
                 <Text style={{ width: siColW }}   className={`text-xs font-bold text-center ${t.textTertiary}`}>SI</Text>
                 {visiblePlayers.map((p) => {
-                  const status = saveStatus[p.round_player_id] ?? "idle";
+                  const hasSaveError = saveError[p.round_player_id] ?? false;
                   const isMe = p.user_id === scorecard.caller_user_id;
                   return (
                     <View
@@ -1058,12 +1056,10 @@ export default function ScorecardScreen() {
                           </Text>
                         );
                       })()}
-                      {status === "saving" && (
-                        <ActivityIndicator size="small" color={t.colors.tabBarActive} style={{ transform: [{ scale: 0.55 }] }} />
-                      )}
-                      {status === "saved"  && <Ionicons name="checkmark-circle" size={10} color="#16a34a" />}
-                      {status === "error"  && <Ionicons name="alert-circle"     size={10} color="#dc2626" />}
-                      {status === "idle"   && <View style={{ height: 10 }} />}
+                      {/* Failure-only indicator; a spacer keeps the column height stable otherwise. */}
+                      {hasSaveError
+                        ? <Ionicons name="alert-circle" size={10} color="#dc2626" />
+                        : <View style={{ height: 10 }} />}
                     </View>
                   );
                 })}
@@ -1654,27 +1650,11 @@ export default function ScorecardScreen() {
                   {/* Score entry — after stats when score_position is "last" (default) */}
                   {settings.score_position !== "first" && renderScoreBlock()}
 
-                  {/* Save status — inline, shown only while active */}
-                  {saveStatus[rpId] !== undefined && saveStatus[rpId] !== "idle" && (
+                  {/* Save status — failure only; successful saves show nothing */}
+                  {saveError[rpId] && (
                     <View className={`flex-row items-center justify-center gap-2 py-2 border-t ${t.divider}`}>
-                      {saveStatus[rpId] === "saving" && (
-                        <>
-                          <ActivityIndicator size="small" color={t.colors.tabBarActive} />
-                          <Text className={`text-xs ${t.textTertiary}`}>Saving…</Text>
-                        </>
-                      )}
-                      {saveStatus[rpId] === "saved" && (
-                        <>
-                          <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
-                          <Text className="text-xs text-green-700">Saved</Text>
-                        </>
-                      )}
-                      {saveStatus[rpId] === "error" && (
-                        <>
-                          <Ionicons name="alert-circle" size={14} color="#dc2626" />
-                          <Text className="text-xs text-red-600">Save failed — tap score to retry</Text>
-                        </>
-                      )}
+                      <Ionicons name="alert-circle" size={14} color="#dc2626" />
+                      <Text className="text-xs text-red-600">Save failed — tap score to retry</Text>
                     </View>
                   )}
 

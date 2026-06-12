@@ -227,7 +227,7 @@ export default function CourseDetailScreen() {
           </TouchableOpacity>
 
           <Text className={`text-2xl font-bold ${t.textPrimary}`}>{course.name}</Text>
-          {(course.city || course.state) && (
+          {!!(course.city || course.state) && (
             <Text className={`text-sm mt-1 ${t.textTertiary}`}>
               {[course.city, course.state].filter(Boolean).join(", ")}
             </Text>
@@ -356,7 +356,7 @@ export default function CourseDetailScreen() {
         </View>
 
         {/* ── Admin actions ──────────────────────────────────────────────── */}
-        {canEdit && course.external_source && (
+        {canEdit && !!course.external_source && (
           <View className="px-5 mt-4">
             <TouchableOpacity
               className={`flex-row items-center justify-center gap-2 border rounded-xl py-3 ${t.borderInput}`}

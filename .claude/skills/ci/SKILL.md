@@ -107,7 +107,19 @@ export PATH="$PATH:/c/Users/trent/.sonar-scanner/sonar-scanner-8.1.0.6389-window
 cd /c/Users/trent/git-repos/golf-league && sonar-scanner.bat
 ```
 
-Pass = exit 0 and output contains "ANALYSIS SUCCESSFUL". FAIL = non-zero exit or "ANALYSIS FAILED" in output.
+`sonar-project.properties` sets `sonar.qualitygate.wait=true`, so the scanner blocks
+until SonarCloud computes the **quality gate** and exits non-zero if it fails — this
+step now enforces the gate, it does not merely upload. The output ends with a
+`QUALITY GATE STATUS: PASSED` / `FAILED` line.
+
+- **Pass** = exit 0 and `QUALITY GATE STATUS: PASSED`.
+- **FAIL** = non-zero exit, or `QUALITY GATE STATUS: FAILED`. On failure, surface the
+  failed conditions. The scanner prints a dashboard URL; the failing conditions
+  (e.g. `new_coverage`, `new_duplicated_lines_density`, `new_reliability_rating`)
+  can be read from `GET https://sonarcloud.io/api/qualitygates/project_status?projectKey=trentd187_golf-league`
+  using `SONAR_TOKEN`. Report which conditions failed (actual vs threshold) and stop.
+
+Note: this can add ~15–60s while SonarCloud finishes background processing — expected.
 
 ## Report format
 

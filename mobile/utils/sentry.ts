@@ -52,6 +52,12 @@ export function buildSentryOptions(opts: {
   platformOS: string;
 }): Sentry.ReactNativeOptions {
   const { dsn, environment, isDev, platformOS } = opts;
+  const isWeb = platformOS === "web";
+
+  // Native replay sampling: full in dev for verification, 10% of sessions in prod.
+  // Web is forced to 0 below so rrweb never records (see the integration note below).
+  const nativeSessionReplayRate = isDev ? 1.0 : 0.1;
+
   return {
     dsn,
     environment,
@@ -63,16 +69,19 @@ export function buildSentryOptions(opts: {
     tracesSampleRate: isDev ? 1.0 : 0.1,
     // Relative to tracesSampleRate — profile every sampled transaction.
     profilesSampleRate: 1.0,
-    // Session Replay: always in dev, 10% of sessions in prod, plus any session
-    // that hits an error.
-    replaysSessionSampleRate: isDev ? 1.0 : 0.1,
-    replaysOnErrorSampleRate: 1.0,
+    // Replay sampling applies to native only; web records nothing (see below).
+    replaysSessionSampleRate: isWeb ? 0 : nativeSessionReplayRate,
+    replaysOnErrorSampleRate: isWeb ? 0 : 1.0,
     integrations: [
       navigationIntegration,
-      // Replay capture is platform-specific: only one of these is valid per build.
-      platformOS === "web"
-        ? Sentry.browserReplayIntegration()
-        : Sentry.mobileReplayIntegration(),
+      // Session Replay is native-only. The web DOM recorder (rrweb + replay-canvas)
+      // continuously snapshots the page; on screens with many user-avatar <img>
+      // elements it drove the Chromium renderer into memory pressure and a
+      // STATUS_ILLEGAL_INSTRUCTION crash — the same failure mode as the retired OTel
+      // PerformanceObserver loop. Omit it on web entirely; the zero replay sample
+      // rates above ensure rrweb never records. Native keeps the canvas recorder,
+      // which is well-behaved.
+      ...(isWeb ? [] : [Sentry.mobileReplayIntegration()]),
     ],
   };
 }

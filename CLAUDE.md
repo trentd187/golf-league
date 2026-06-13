@@ -316,6 +316,10 @@ Player-entered per round — **no automatic WHS calculation.**
 
 `round_players.finish_position` (within a round) and `event_players.finish_position` (across the event). Both `nullable INT`, set programmatically when status flips to `completed`.
 
+### Las Vegas (`scoring_format = 'las_vegas'`)
+
+2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables (organizer assigns two teams of two per group via `RoundService` team CRUD: `GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`); `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
+
 ---
 
 ## Backend Testing

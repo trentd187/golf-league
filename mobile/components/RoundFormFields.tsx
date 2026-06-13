@@ -19,12 +19,17 @@ interface RoundFormFieldsProps {
   selectedTeeId: string | null;
   nineHoleSelection: "18" | "front" | "back";
   scoringFormat: string;
+  // Las Vegas toggles — only rendered when scoringFormat is "las_vegas".
+  vegasBirdieFlip: boolean;
+  vegasScoringBasis: "gross" | "net";
   isPending: boolean;
   onOpenCoursePicker: () => void;
   onClearCourse: () => void;
   onSelectTee: (id: string) => void;
   onChangeNineHoles: (val: "18" | "front" | "back") => void;
   onChangeScoringFormat: (val: string) => void;
+  onChangeVegasBirdieFlip: (val: boolean) => void;
+  onChangeVegasScoringBasis: (val: "gross" | "net") => void;
 }
 
 export default function RoundFormFields({
@@ -32,12 +37,16 @@ export default function RoundFormFields({
   selectedTeeId,
   nineHoleSelection,
   scoringFormat,
+  vegasBirdieFlip,
+  vegasScoringBasis,
   isPending,
   onOpenCoursePicker,
   onClearCourse,
   onSelectTee,
   onChangeNineHoles,
   onChangeScoringFormat,
+  onChangeVegasBirdieFlip,
+  onChangeVegasScoringBasis,
 }: RoundFormFieldsProps) {
   const t = useTheme();
 
@@ -170,7 +179,7 @@ export default function RoundFormFields({
       )}
 
       {/* ── Scoring format picker — 2-column pill grid ────────────────────── */}
-      <View className="mb-8">
+      <View className={scoringFormat === "las_vegas" ? "mb-4" : "mb-8"}>
         <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
           Scoring Format
         </Text>
@@ -200,6 +209,68 @@ export default function RoundFormFields({
           ))}
         </View>
       </View>
+
+      {/* ── Las Vegas options — only for a las_vegas round ────────────────── */}
+      {scoringFormat === "las_vegas" && (
+        <View className="mb-8">
+          {/* Birdie flip toggle */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+            Birdie Flip
+          </Text>
+          <View className="flex-row gap-2 mb-4">
+            {([
+              { value: true,  label: "On"  },
+              { value: false, label: "Off" },
+            ] as const).map((opt) => {
+              const selected = vegasBirdieFlip === opt.value;
+              return (
+                <TouchableOpacity
+                  key={String(opt.value)}
+                  className={`flex-1 rounded-xl py-2.5 items-center border ${
+                    selected ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.borderInput}`
+                  }`}
+                  onPress={() => onChangeVegasBirdieFlip(opt.value)}
+                  disabled={isPending}
+                >
+                  <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text className={`text-xs mb-4 ${t.textTertiary}`}>
+            When a team birdies, the opponents{"'"} combined number flips high-digit-first.
+          </Text>
+
+          {/* Scoring basis toggle */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+            Scoring Basis
+          </Text>
+          <View className="flex-row gap-2">
+            {([
+              { value: "gross", label: "Gross" },
+              { value: "net",   label: "Net"   },
+            ] as const).map((opt) => {
+              const selected = vegasScoringBasis === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  className={`flex-1 rounded-xl py-2.5 items-center border ${
+                    selected ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.borderInput}`
+                  }`}
+                  onPress={() => onChangeVegasScoringBasis(opt.value)}
+                  disabled={isPending}
+                >
+                  <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
     </>
   );
 }

@@ -144,6 +144,12 @@ func main() {
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
+	// Las Vegas team routes — organizer-only partner assignment for las_vegas rounds.
+	api.Get("/rounds/:roundId/teams", handlers.ListTeams(roundService))
+	api.Post("/rounds/:roundId/teams", handlers.CreateTeam(roundService))
+	api.Put("/rounds/:roundId/teams/:teamId/members", handlers.AssignTeamMembers(roundService))
+	api.Delete("/rounds/:roundId/teams/:teamId", handlers.DeleteTeam(roundService))
+
 	// Score routes — permission enforced inside ScoreService.canModifyScores
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))

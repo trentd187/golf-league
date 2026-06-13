@@ -57,4 +57,28 @@ describe("buildRoundCoursePayload", () => {
       expect(result.scoring_format).toBe(fmt);
     }
   });
+
+  it("includes vegas toggles only for a las_vegas round", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "las_vegas", {
+      birdieFlip: false,
+      scoringBasis: "net",
+    });
+    expect(result.vegas_birdie_flip).toBe(false);
+    expect(result.vegas_scoring_basis).toBe("net");
+  });
+
+  it("omits vegas toggles for non-vegas formats even when supplied", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "stroke", {
+      birdieFlip: true,
+      scoringBasis: "gross",
+    });
+    expect(result.vegas_birdie_flip).toBeUndefined();
+    expect(result.vegas_scoring_basis).toBeUndefined();
+  });
+
+  it("omits vegas toggles for a las_vegas round when no options are supplied", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "las_vegas");
+    expect(result.vegas_birdie_flip).toBeUndefined();
+    expect(result.vegas_scoring_basis).toBeUndefined();
+  });
 });

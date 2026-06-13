@@ -38,7 +38,35 @@ const (
 	colNineHoleSelection = "nine_hole_selection"
 	nineHoleFront        = "front"
 	nineHoleBack         = "back"
+	colVegasScoringBasis = "vegas_scoring_basis"
 )
+
+// validateVegasScoringBasis returns a ValidationError when basis is set to anything
+// other than "gross" or "net". A nil pointer (omitted) is valid — the caller defaults it.
+func validateVegasScoringBasis(basis *string) error {
+	if basis == nil {
+		return nil
+	}
+	switch models.VegasScoringBasis(*basis) {
+	case models.VegasScoringBasisGross, models.VegasScoringBasisNet:
+		return nil
+	default:
+		return &ValidationError{Field: colVegasScoringBasis, Message: `vegas_scoring_basis must be "gross" or "net"`}
+	}
+}
+
+// applyVegasToggles sets the Las Vegas configuration on a round being created,
+// defaulting flip to true and basis to "gross" when the caller omits them.
+func applyVegasToggles(round *models.Round, flip *bool, basis *string) {
+	round.VegasBirdieFlip = true
+	if flip != nil {
+		round.VegasBirdieFlip = *flip
+	}
+	round.VegasScoringBasis = string(models.VegasScoringBasisGross)
+	if basis != nil && *basis != "" {
+		round.VegasScoringBasis = *basis
+	}
+}
 
 // ─── Sentinel errors ───────────────────────────────────────────────────────────
 
@@ -57,6 +85,10 @@ var (
 	ErrPlayerNotEventMember = errors.New("user is not a member of this event")
 	// ErrPlayerNotInRound — the target player has no RoundPlayer record for this round.
 	ErrPlayerNotInRound = errors.New("player is not registered for this round")
+	// ErrTeamNotFound — team does not exist or does not belong to the round.
+	ErrTeamNotFound = errors.New("team not found")
+	// ErrTeamFull — a Las Vegas team already has 2 members (the maximum).
+	ErrTeamFull = errors.New("team is full (max 2 players)")
 )
 
 // ─── Input types ───────────────────────────────────────────────────────────────
@@ -72,6 +104,10 @@ type ScheduleRoundInput struct {
 	// CourseName is the legacy find-or-create fallback. Prefer CourseID.
 	CourseName        string
 	NineHoleSelection *string // "front" or "back"; only valid for 18-hole courses
+	// Las Vegas toggles; nil = default (flip true, basis "gross"). Ignored unless
+	// ScoringFormat is las_vegas, but stored regardless so they survive a format change.
+	VegasBirdieFlip   *bool
+	VegasScoringBasis *string
 	Groups            []GroupScheduleInput
 }
 
@@ -93,6 +129,9 @@ type UpdateRoundInput struct {
 	DefaultTeeID *string
 	// CourseName is the legacy find-or-create fallback.
 	CourseName *string
+	// Las Vegas toggles; nil = leave unchanged.
+	VegasBirdieFlip   *bool
+	VegasScoringBasis *string
 }
 
 // UpdateGroupInput is the optional-fields payload for UpdateGroup.
@@ -156,6 +195,13 @@ type GroupPlayerResult struct {
 	DisplayName   string
 	Email         string
 	AvatarURL     *string
+}
+
+// TeamResult is one Las Vegas team with its (up to 2) members. Reuses
+// GroupPlayerResult for members since the join shape is identical.
+type TeamResult struct {
+	Team    models.Team
+	Members []GroupPlayerResult
 }
 
 // ─── Constructor ───────────────────────────────────────────────────────────────
@@ -330,6 +376,9 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			return ScheduleRoundResult{}, &ValidationError{Field: colNineHoleSelection, Message: `nine_hole_selection must be "front" or "back"`}
 		}
 	}
+	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
+	}
 
 	authorized, err := s.EventSvc.IsOrganizer(ctx, eventID, callerID, callerRole)
 	if err != nil {
@@ -444,6 +493,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			RequiresHandicap:  false,
 			NineHoleSelection: in.NineHoleSelection,
 		}
+		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}
@@ -515,6 +565,9 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 			return RoundUpdateResult{}, &ValidationError{Field: "status", Message: "status must be 'scheduled', 'active', or 'completed'"}
 		}
 	}
+	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
+		return RoundUpdateResult{}, err
+	}
 
 	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
 	if errors.Is(err, ErrRoundNotFound) {
@@ -550,6 +603,12 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	}
 	if in.Status != nil {
 		round.Status = models.RoundStatus(*in.Status)
+	}
+	if in.VegasBirdieFlip != nil {
+		round.VegasBirdieFlip = *in.VegasBirdieFlip
+	}
+	if in.VegasScoringBasis != nil && *in.VegasScoringBasis != "" {
+		round.VegasScoringBasis = *in.VegasScoringBasis
 	}
 
 	if in.CourseID != nil {
@@ -939,6 +998,191 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 	return nil
 }
 
+// ─── Las Vegas teams ──────────────────────────────────────────────────────────
+//
+// For a las_vegas round, each group holds two teams of two. Teams are assigned
+// after players are in groups (so creation-time input can't carry them), via these
+// organizer-only endpoints. The existing teams/team_members tables back this; the
+// Vegas point math is derived client-side from individual scores, not stored here.
+
+// ListTeams returns every team for a round with its members. Organizer-only.
+func (s *RoundService) ListTeams(ctx context.Context, roundID, callerID uuid.UUID, callerRole string) ([]TeamResult, error) {
+	isOrg, err := s.requireRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if err != nil {
+		return nil, err
+	}
+	if !isOrg {
+		return nil, ErrRoundForbidden
+	}
+
+	var teams []models.Team
+	if err := s.DB.WithContext(ctx).Where("round_id = ?", roundID).Order("created_at ASC").Find(&teams).Error; err != nil {
+		return nil, fmt.Errorf("load teams: %w", err)
+	}
+
+	out := make([]TeamResult, len(teams))
+	for i, t := range teams {
+		members, err := s.loadTeamMembers(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = TeamResult{Team: t, Members: members}
+	}
+	return out, nil
+}
+
+// CreateTeam creates a named, empty team on a round. Organizer-only.
+func (s *RoundService) CreateTeam(ctx context.Context, roundID, callerID uuid.UUID, callerRole, name string) (TeamResult, error) {
+	if name == "" {
+		return TeamResult{}, &ValidationError{Field: "name", Message: "name is required"}
+	}
+
+	isOrg, err := s.requireRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if err != nil {
+		return TeamResult{}, err
+	}
+	if !isOrg {
+		return TeamResult{}, ErrRoundForbidden
+	}
+
+	team := models.Team{RoundID: roundID, Name: name}
+	if err := s.DB.WithContext(ctx).Create(&team).Error; err != nil {
+		return TeamResult{}, fmt.Errorf("create team: %w", err)
+	}
+	return TeamResult{Team: team, Members: []GroupPlayerResult{}}, nil
+}
+
+// AssignTeamMembers replaces a team's membership with the given round_players
+// (max 2). Each player is first removed from any other team in the round so a
+// player is never on two teams. All round_players must belong to the round.
+// Organizer-only.
+func (s *RoundService) AssignTeamMembers(ctx context.Context, roundID, teamID, callerID uuid.UUID, callerRole string, roundPlayerIDs []uuid.UUID) (TeamResult, error) {
+	if len(roundPlayerIDs) > 2 {
+		return TeamResult{}, ErrTeamFull
+	}
+
+	isOrg, err := s.requireRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if err != nil {
+		return TeamResult{}, err
+	}
+	if !isOrg {
+		return TeamResult{}, ErrRoundForbidden
+	}
+
+	var team models.Team
+	if err := s.DB.WithContext(ctx).First(&team, "id = ? AND round_id = ?", teamID, roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return TeamResult{}, ErrTeamNotFound
+		}
+		return TeamResult{}, fmt.Errorf("load team: %w", err)
+	}
+
+	// Every target round_player must belong to this round.
+	if len(roundPlayerIDs) > 0 {
+		var validCount int64
+		s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+			Where("round_id = ? AND id IN ?", roundID, roundPlayerIDs).Count(&validCount)
+		if int(validCount) != len(roundPlayerIDs) {
+			return TeamResult{}, ErrPlayerNotInRound
+		}
+	}
+
+	txErr := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Remove these players from any team in this round (single team per round).
+		if len(roundPlayerIDs) > 0 {
+			if err := tx.Exec(
+				`DELETE FROM team_members WHERE round_player_id IN ? AND team_id IN (SELECT id FROM teams WHERE round_id = ?)`,
+				roundPlayerIDs, roundID,
+			).Error; err != nil {
+				return fmt.Errorf("clear prior team assignments: %w", err)
+			}
+		}
+		// Clear the target team's current membership, then insert the new set.
+		if err := tx.Where("team_id = ?", teamID).Delete(&models.TeamMember{}).Error; err != nil {
+			return fmt.Errorf("clear team: %w", err)
+		}
+		for _, rpID := range roundPlayerIDs {
+			if err := tx.Create(&models.TeamMember{TeamID: teamID, RoundPlayerID: rpID}).Error; err != nil {
+				return fmt.Errorf("add team member: %w", err)
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		return TeamResult{}, txErr
+	}
+
+	members, err := s.loadTeamMembers(ctx, teamID)
+	if err != nil {
+		return TeamResult{}, err
+	}
+	return TeamResult{Team: team, Members: members}, nil
+}
+
+// DeleteTeam removes a team. team_members cascade via ON DELETE CASCADE.
+// Organizer-only.
+func (s *RoundService) DeleteTeam(ctx context.Context, roundID, teamID, callerID uuid.UUID, callerRole string) error {
+	isOrg, err := s.requireRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if err != nil {
+		return err
+	}
+	if !isOrg {
+		return ErrRoundForbidden
+	}
+
+	var team models.Team
+	if err := s.DB.WithContext(ctx).First(&team, "id = ? AND round_id = ?", teamID, roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrTeamNotFound
+		}
+		return fmt.Errorf("load team: %w", err)
+	}
+
+	if err := s.DB.WithContext(ctx).Delete(&team).Error; err != nil {
+		return fmt.Errorf("delete team: %w", err)
+	}
+	return nil
+}
+
+// requireRoundOrganizer wraps IsRoundOrganizer, normalizing the not-found error so
+// callers can branch on (isOrg, err). Mirrors the guard repeated by group mutations.
+func (s *RoundService) requireRoundOrganizer(ctx context.Context, roundID, callerID uuid.UUID, callerRole string) (bool, error) {
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return false, ErrRoundNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	return isOrg, nil
+}
+
+// loadTeamMembers fetches a team's members via team_members → round_players → users.
+func (s *RoundService) loadTeamMembers(ctx context.Context, teamID uuid.UUID) ([]GroupPlayerResult, error) {
+	type playerRow struct {
+		RoundPlayerID string
+		UserID        string
+		DisplayName   string
+		Email         string
+		AvatarURL     *string
+	}
+	var rows []playerRow
+	if err := s.DB.WithContext(ctx).Table("team_members tm").
+		Select("tm.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
+		Joins("JOIN round_players rp ON rp.id = tm.round_player_id").
+		Joins("JOIN users u ON u.id = rp.user_id").
+		Where("tm.team_id = ?", teamID).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("load team members: %w", err)
+	}
+
+	out := make([]GroupPlayerResult, len(rows))
+	for i, row := range rows {
+		out[i] = GroupPlayerResult(row)
+	}
+	return out, nil
+}
+
 // ─── Eventless rounds ─────────────────────────────────────────────────────────
 
 // CreateEventlessRoundInput is the payload for CreateEventlessRound.
@@ -952,6 +1196,9 @@ type CreateEventlessRoundInput struct {
 	DefaultTeeID      *string
 	CourseName        string
 	NineHoleSelection *string // "front" or "back"; nil = full round
+	// Las Vegas toggles; nil = default (flip true, basis "gross").
+	VegasBirdieFlip   *bool
+	VegasScoringBasis *string
 }
 
 // CreateEventlessRound creates a standalone round with no event association.
@@ -976,6 +1223,9 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 		if sel != nineHoleFront && sel != nineHoleBack {
 			return ScheduleRoundResult{}, &ValidationError{Field: colNineHoleSelection, Message: `nine_hole_selection must be "front" or "back"`}
 		}
+	}
+	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
 	}
 
 	scoringFormat := models.ScoringFormatStroke
@@ -1068,6 +1318,7 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 			ScoringFormat:     scoringFormat,
 			NineHoleSelection: in.NineHoleSelection,
 		}
+		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}

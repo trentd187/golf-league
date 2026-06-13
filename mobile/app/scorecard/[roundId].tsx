@@ -41,6 +41,8 @@ import { apiFetch } from "@/utils/api";
 import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
+import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
+import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import type { ComponentProps } from "react";
 
@@ -761,6 +763,18 @@ export default function ScorecardScreen() {
     return holeMap.get(n) ?? { hole_number: n, par: 0, stroke_index: 0, yardage: null };
   });
 
+  // ── Las Vegas live match ──────────────────────────────────────────────────────
+  // For a las_vegas round the Basic view is a combined team-vs-team matchup built
+  // live from the local gross scores (so it updates as the user types). Computed
+  // from the viewing player's perspective; null until the group has two teams.
+  const isVegas = scorecard.scoring_format === "las_vegas";
+  const vegasBasis: VegasBasis = scorecard.vegas_scoring_basis === "net" ? "net" : "gross";
+  const vegasEffHandicaps: Record<string, number | null> = {};
+  for (const p of group.players) vegasEffHandicaps[p.round_player_id] = p.effective_course_handicap;
+  const vegasMatch = isVegas
+    ? buildLiveVegasMatch(group, holeRows, scores, vegasBasis, scorecard.vegas_birdie_flip, vegasEffHandicaps, myPlayer?.team_id ?? undefined)
+    : null;
+
   // Normalize stroke indexes to ranks 1–N within the played holes so that
   // 9-hole handicap previews distribute correctly (mirrors Go NormalizeStrokeIndexes).
   // holeRows is already filtered to the played set (front/back/full).
@@ -1019,7 +1033,39 @@ export default function ScorecardScreen() {
 
         {/* ── Scorecard tables ───────────────────────────────────────────────── */}
 
-        {viewMode === "basic" ? (
+        {viewMode === "basic" && isVegas ? (
+
+          /* ── Basic Vegas view: combined team-vs-team matchup ── */
+          vegasMatch ? (
+            <VegasBasicScorecard
+              match={vegasMatch}
+              holes={holeRows}
+              scores={scores}
+              onChangeScore={(rpId, hole, v) =>
+                setScores((prev) => ({
+                  ...prev,
+                  [rpId]: { ...(prev[rpId] ?? {}), [hole]: v },
+                }))
+              }
+              onBlurScore={(rpId) => autoSavePlayer(rpId)}
+              canEdit={canEditPlayer}
+              saveError={saveError}
+              editableDisabled={savingHandicaps || needsHandicap}
+            />
+          ) : (
+            <View className={`mt-6 items-center rounded-xl border ${t.border} ${t.surfaceSunken} p-6`}>
+              <Ionicons name="people-outline" size={28} color={t.colors.tabBarInactive} />
+              <Text className={`mt-2 text-sm font-semibold text-center ${t.textSecondary}`}>
+                Waiting for opponents
+              </Text>
+              <Text className={`mt-1 text-xs text-center ${t.textTertiary}`}>
+                This group needs two teams of two before the Vegas matchup can be scored.
+                The organizer assigns teams from the round screen.
+              </Text>
+            </View>
+          )
+
+        ) : viewMode === "basic" ? (
 
           /* ── Basic view: horizontal scroll, all players in columns ── */
           <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-4">

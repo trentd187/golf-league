@@ -12,11 +12,16 @@ export interface RoundFormState {
   selectedTeeId: string | null;
   nineHoleSelection: "18" | "front" | "back";
   scoringFormat: string;
+  // Las Vegas toggles — only used when scoringFormat is "las_vegas".
+  vegasBirdieFlip: boolean;
+  vegasScoringBasis: "gross" | "net";
   coursePickerVisible: boolean;
   setSelectedCourse: (c: PickedCourse | null) => void;
   setSelectedTeeId: (id: string | null) => void;
   setNineHoleSelection: (v: "18" | "front" | "back") => void;
   setScoringFormat: (v: string) => void;
+  setVegasBirdieFlip: (v: boolean) => void;
+  setVegasScoringBasis: (v: "gross" | "net") => void;
   setCoursePickerVisible: (v: boolean) => void;
   // resetForm: clears all course/tee/format state back to defaults.
   // Call on modal close, form submit, or course clear.
@@ -28,6 +33,8 @@ export function useRoundForm(): RoundFormState {
   const [selectedTeeId, setSelectedTeeId] = useState<string | null>(null);
   const [nineHoleSelection, setNineHoleSelection] = useState<"18" | "front" | "back">("18");
   const [scoringFormat, setScoringFormat] = useState("stroke");
+  const [vegasBirdieFlip, setVegasBirdieFlip] = useState(true);
+  const [vegasScoringBasis, setVegasScoringBasis] = useState<"gross" | "net">("gross");
   const [coursePickerVisible, setCoursePickerVisible] = useState(false);
 
   const resetForm = () => {
@@ -35,6 +42,8 @@ export function useRoundForm(): RoundFormState {
     setSelectedTeeId(null);
     setNineHoleSelection("18");
     setScoringFormat("stroke");
+    setVegasBirdieFlip(true);
+    setVegasScoringBasis("gross");
   };
 
   return {
@@ -42,11 +51,15 @@ export function useRoundForm(): RoundFormState {
     selectedTeeId,
     nineHoleSelection,
     scoringFormat,
+    vegasBirdieFlip,
+    vegasScoringBasis,
     coursePickerVisible,
     setSelectedCourse,
     setSelectedTeeId,
     setNineHoleSelection,
     setScoringFormat,
+    setVegasBirdieFlip,
+    setVegasScoringBasis,
     setCoursePickerVisible,
     resetForm,
   };

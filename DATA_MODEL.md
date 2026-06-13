@@ -140,6 +140,8 @@ has multiple rounds; a casual round has just one.
 | `status` | round_status | `scheduled`, `active`, `completed` |
 | `scoring_format` | scoring_format | See formats below |
 | `requires_handicap` | BOOLEAN | If true, handicap must be set before score entry |
+| `vegas_birdie_flip` | BOOLEAN | Las Vegas only: birdie flips opponents' number. Default true; ignored for other formats |
+| `vegas_scoring_basis` | TEXT | Las Vegas only: `gross` or `net` for the two-digit combination. Default `gross` |
 | `created_at` / `updated_at` | TIMESTAMPTZ | |
 
 ---
@@ -207,8 +209,10 @@ from being in two groups in the same round.
 ---
 
 ### `teams`
-Named teams for team-format rounds (scramble, best ball, etc.).
-Teams belong to a round — compositions can change between rounds.
+Named teams for team-format rounds. Teams belong to a round — compositions can
+change between rounds. **Used by Las Vegas** for the two-player partnerships the
+organizer assigns per group (two teams of two). `team_scores` stays unused for
+Vegas — the two-digit numbers are derived client-side from individual `scores`.
 
 | column | type | notes |
 |---|---|---|
@@ -221,7 +225,8 @@ Teams belong to a round — compositions can change between rounds.
 
 ### `team_members`
 Join table placing a `round_player` on a `team`. Composite PK prevents a player
-from being on two teams in the same round.
+from being on the *same* team twice; `RoundService.AssignTeamMembers` additionally
+enforces one team per round (removes the player from other teams when re-assigning).
 
 ---
 
@@ -294,7 +299,7 @@ Per-hole details for each tee set. Par and stroke index can differ between tee s
 | `event_player_status` | `invited`, `registered`, `withdrawn`, `completed` |
 | `round_status` | `scheduled`, `active`, `completed` |
 | `round_player_status` | `registered`, `active`, `withdrawn`, `completed` |
-| `scoring_format` | `stroke`, `net_stroke`, `stableford`, `skins`, `match_play`, `scramble`, `best_ball` |
+| `scoring_format` | `stroke`, `stableford`, `irish_rumble`, `irish_rumble_stableford`, `scramble`, `match_play`, `las_vegas` |
 | `tee_gender` | `mens`, `womens`, `unisex` |
 
 ---

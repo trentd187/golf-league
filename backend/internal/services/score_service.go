@@ -96,9 +96,13 @@ type ScorecardPlayerData struct {
 	CourseHandicap *int    `json:"course_handicap"`
 	// EffectiveCourseHandicap is CourseHandicap after applying the event's handicap allowance.
 	// Nil when CourseHandicap is nil; equals CourseHandicap when no allowance is set.
-	EffectiveCourseHandicap *int                    `json:"effective_course_handicap"`
-	Scores                  []ScorecardScoreData    `json:"scores"`
-	HoleStats               []ScorecardHoleStatData `json:"hole_stats"`
+	EffectiveCourseHandicap *int `json:"effective_course_handicap"`
+	// TeamID/TeamName identify the player's Las Vegas team within their group.
+	// Nil when the player is not assigned to a team (or the round isn't las_vegas).
+	TeamID    *string                 `json:"team_id"`
+	TeamName  *string                 `json:"team_name"`
+	Scores    []ScorecardScoreData    `json:"scores"`
+	HoleStats []ScorecardHoleStatData `json:"hole_stats"`
 	// TotalGross/TotalNet are nil until all holes have been scored (prevents partial totals).
 	TotalGross *int `json:"total_gross"`
 	TotalNet   *int `json:"total_net"`
@@ -120,6 +124,9 @@ type ScorecardData struct {
 	HoleCount        int    `json:"hole_count"`
 	RequiresHandicap bool   `json:"requires_handicap"`
 	ScoringFormat    string `json:"scoring_format"`
+	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
+	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
+	VegasScoringBasis string `json:"vegas_scoring_basis"`
 	// CallerUserID is the DB UUID of the requesting user. The mobile client needs
 	// this to locate its own player entry (Supabase UUID ≠ DB UUID).
 	CallerUserID      string               `json:"caller_user_id"`
@@ -315,6 +322,8 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 		HoleCount:         effectiveHoleCount,
 		RequiresHandicap:  round.RequiresHandicap,
 		ScoringFormat:     string(round.ScoringFormat),
+		VegasBirdieFlip:   round.VegasBirdieFlip,
+		VegasScoringBasis: round.VegasScoringBasis,
 		CallerUserID:      callerID.String(),
 		IsOrganizer:       isOrg,
 		HandicapAllowance: handicapAllowance,
@@ -335,12 +344,20 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		DisplayName    string
 		AvatarURL      *string
 		CourseHandicap *int
+		// TeamID/TeamName come from the LEFT JOIN — nil when the player has no team.
+		TeamID   *string
+		TeamName *string
 	}
 	var rows []playerRow
+	// LEFT JOIN team_members → teams (scoped to the same round) so Las Vegas team
+	// membership rides along on the scorecard. Non-Vegas rounds simply have no teams,
+	// so these columns stay nil.
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap, t.id as team_id, t.name as team_name").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
+		Joins("LEFT JOIN team_members tm ON tm.round_player_id = gp.round_player_id").
+		Joins("LEFT JOIN teams t ON t.id = tm.team_id AND t.round_id = rp.round_id").
 		Where("gp.group_id = ?", groupID).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load group players: %w", err)
@@ -399,7 +416,8 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		players = append(players, ScorecardPlayerData{
 			RoundPlayerID: pr.RoundPlayerID, UserID: pr.UserID, DisplayName: pr.DisplayName,
 			AvatarURL: pr.AvatarURL, CourseHandicap: pr.CourseHandicap,
-			EffectiveCourseHandicap: effHCP, Scores: scores, HoleStats: holeStats,
+			EffectiveCourseHandicap: effHCP, TeamID: pr.TeamID, TeamName: pr.TeamName,
+			Scores: scores, HoleStats: holeStats,
 			TotalGross: tg, TotalNet: tn,
 		})
 	}

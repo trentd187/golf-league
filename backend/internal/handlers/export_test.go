@@ -17,6 +17,7 @@ var UUIDPtrStrExported = uuidPtrStr
 var FormatOptionalDateExported = formatOptionalDate
 var FormatTeeTimeExported = formatTeeTime
 var ToGroupResponseExported = toGroupResponse
+var ToTeamResponseExported = toTeamResponse
 var BuildEventResponseExported = buildEventResponse
 var BuildMemberResponseExported = buildMemberResponse
 var BuildHoleResponsesExported = buildHoleResponses

@@ -10,6 +10,7 @@ export const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "irish_rumble_stableford", label: "Irish Rumble (Stableford)" },
   { value: "scramble",                label: "Scramble" },
   { value: "match_play",              label: "Match Play" },
+  { value: "las_vegas",               label: "Las Vegas" },
 ];
 
 // formatLabel converts a scoring_format DB value to a human-readable label.

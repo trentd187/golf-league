@@ -62,6 +62,7 @@ export default function CreateRoundScreen() {
           form.selectedTeeId,
           form.nineHoleSelection,
           form.scoringFormat,
+          { birdieFlip: form.vegasBirdieFlip, scoringBasis: form.vegasScoringBasis },
         ),
       };
       if (roundName.trim()) payload.name = roundName.trim();
@@ -133,12 +134,16 @@ export default function CreateRoundScreen() {
           selectedTeeId={form.selectedTeeId}
           nineHoleSelection={form.nineHoleSelection}
           scoringFormat={form.scoringFormat}
+          vegasBirdieFlip={form.vegasBirdieFlip}
+          vegasScoringBasis={form.vegasScoringBasis}
           isPending={isPending}
           onOpenCoursePicker={() => form.setCoursePickerVisible(true)}
           onClearCourse={() => { form.setSelectedCourse(null); form.setSelectedTeeId(null); }}
           onSelectTee={form.setSelectedTeeId}
           onChangeNineHoles={form.setNineHoleSelection}
           onChangeScoringFormat={form.setScoringFormat}
+          onChangeVegasBirdieFlip={form.setVegasBirdieFlip}
+          onChangeVegasScoringBasis={form.setVegasScoringBasis}
         />
 
         {/* ── Date ─────────────────────────────────────────────────────────── */}

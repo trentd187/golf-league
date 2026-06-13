@@ -21,10 +21,12 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trentd187/golf-league/internal/handlers"
+	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/services"
 )
 
@@ -37,11 +39,14 @@ func nilRoundSvc() *services.RoundService {
 
 // Route pattern constants — avoids duplicating string literals across tests.
 const (
-	roundRoute      = "/rounds/:roundId"
-	groupRoute      = "/rounds/:roundId/groups"
-	groupByIDRoute  = "/rounds/:roundId/groups/:groupId"
-	membersRoute    = "/rounds/:roundId/groups/:groupId/members"
-	memberByIDRoute = "/rounds/:roundId/groups/:groupId/members/:userId"
+	roundRoute       = "/rounds/:roundId"
+	groupRoute       = "/rounds/:roundId/groups"
+	groupByIDRoute   = "/rounds/:roundId/groups/:groupId"
+	membersRoute     = "/rounds/:roundId/groups/:groupId/members"
+	memberByIDRoute  = "/rounds/:roundId/groups/:groupId/members/:userId"
+	teamsRoute       = "/rounds/:roundId/teams"
+	teamMembersRoute = "/rounds/:roundId/teams/:teamId/members"
+	teamByIDRoute    = "/rounds/:roundId/teams/:teamId"
 )
 
 // ─── GetMyRounds ──────────────────────────────────────────────────────────────
@@ -191,6 +196,90 @@ func TestRemoveGroupMember_InvalidUserID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── ListTeams ────────────────────────────────────────────────────────────────
+
+func TestListTeams_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, teamsRoute, handlers.ListTeams(nil))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/rounds/"+validUUID+"/teams", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestListTeams_InvalidRoundID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodGet, teamsRoute, handlers.ListTeams(nilRoundSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/rounds/bad-id/teams", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── CreateTeam ───────────────────────────────────────────────────────────────
+
+func TestCreateTeam_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, teamsRoute, handlers.CreateTeam(nil))
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/rounds/"+validUUID+"/teams", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestCreateTeam_InvalidRoundID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, teamsRoute, handlers.CreateTeam(nilRoundSvc()))
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/rounds/bad-id/teams", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// Empty/missing name returns 400 before any service call.
+func TestCreateTeam_MissingName(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, teamsRoute, handlers.CreateTeam(nilRoundSvc()))
+	resp := doJSON(t, app, http.MethodPost, "/rounds/"+validUUID+"/teams", map[string]string{"name": ""})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── AssignTeamMembers ──────────────────────────────────────────────────────────
+
+func TestAssignTeamMembers_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut, teamMembersRoute, handlers.AssignTeamMembers(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPut, "/rounds/"+validUUID+"/teams/"+validUUID+"/members", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAssignTeamMembers_InvalidTeamID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut, teamMembersRoute, handlers.AssignTeamMembers(nilRoundSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPut, "/rounds/"+validUUID+"/teams/bad-id/members", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// A non-UUID entry in round_player_ids returns 400 before any service call.
+func TestAssignTeamMembers_InvalidMemberUUID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut, teamMembersRoute, handlers.AssignTeamMembers(nilRoundSvc()))
+	resp := doJSON(t, app, http.MethodPut,
+		"/rounds/"+validUUID+"/teams/"+validUUID+"/members",
+		map[string]any{"round_player_ids": []string{"not-a-uuid"}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── DeleteTeam ─────────────────────────────────────────────────────────────────
+
+func TestDeleteTeam_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodDelete, teamByIDRoute, handlers.DeleteTeam(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodDelete, "/rounds/"+validUUID+"/teams/"+validUUID, nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestDeleteTeam_InvalidTeamID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodDelete, teamByIDRoute, handlers.DeleteTeam(nilRoundSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodDelete, "/rounds/"+validUUID+"/teams/bad-id", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── writeRoundError status mapping ──────────────────────────────────────────
 
 // TestWriteRoundError_StatusMapping locks in the status code each known service
@@ -211,6 +300,8 @@ func TestWriteRoundError_StatusMapping(t *testing.T) {
 		{"round forbidden", services.ErrRoundForbidden, http.StatusForbidden},
 		{"group full", services.ErrGroupFull, http.StatusConflict},
 		{"player already in group", services.ErrPlayerAlreadyInGroup, http.StatusConflict},
+		{"team not found", services.ErrTeamNotFound, http.StatusNotFound},
+		{"team full", services.ErrTeamFull, http.StatusConflict},
 		{"unrecognised → 500", errors.New("unexpected"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
@@ -253,4 +344,25 @@ func TestToGroupResponse_WithPlayers(t *testing.T) {
 	got := handlers.ToGroupResponseExported("id-2", 2, nil, nil, 1, players)
 	require.Len(t, got.Players, 1)
 	assert.Equal(t, "Alice", got.Players[0].DisplayName)
+}
+
+func TestToTeamResponse_WithMembers(t *testing.T) {
+	tid := uuid.MustParse(validUUID)
+	got := handlers.ToTeamResponseExported(services.TeamResult{
+		Team: models.Team{ID: tid, Name: "Team A"},
+		Members: []services.GroupPlayerResult{
+			{UserID: "u1", RoundPlayerID: "rp1", DisplayName: "Alice", Email: "a@example.com"},
+			{UserID: "u2", RoundPlayerID: "rp2", DisplayName: "Bob", Email: "b@example.com"},
+		},
+	})
+	assert.Equal(t, validUUID, got.ID)
+	assert.Equal(t, "Team A", got.Name)
+	require.Len(t, got.Members, 2)
+	assert.Equal(t, "Alice", got.Members[0].DisplayName)
+}
+
+func TestToTeamResponse_Empty(t *testing.T) {
+	got := handlers.ToTeamResponseExported(services.TeamResult{Team: models.Team{Name: "Team B"}})
+	assert.Equal(t, "Team B", got.Name)
+	assert.Empty(t, got.Members)
 }

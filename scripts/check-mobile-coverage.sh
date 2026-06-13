@@ -59,12 +59,19 @@ echo "    Baseline:  ${BASELINE}%"
 echo ""
 
 # --coverage:               collect coverage data
-# --coverageReporters=text-summary: print a compact summary to stdout
+# --coverageReporters=text-summary: print a compact summary to stdout (parsed below)
+# --coverageReporters=lcovonly:     ALSO write mobile/coverage/lcov.info fresh on every
+#   run. SonarCloud reads that lcov for "Coverage on New Code". Without it this script
+#   (and the lefthook hook that calls it) would leave a stale lcov.info from whenever
+#   `pnpm test:coverage` last ran — so a newly-added util (e.g. utils/vegas.ts) is
+#   absent from the report and Sonar counts it as 0% covered, failing the gate even
+#   though the tests exist. `lcovonly` writes just lcov.info (no slow HTML report).
 # --passWithNoTests:        don't fail when no test files exist yet
 # CI=true:                  suppress interactive prompts (watches, progress bars)
 JEST_OUTPUT=$(CI=true npx jest \
   --coverage \
   --coverageReporters=text-summary \
+  --coverageReporters=lcovonly \
   --passWithNoTests \
   2>&1) || {
   echo "$JEST_OUTPUT"

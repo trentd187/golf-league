@@ -91,6 +91,8 @@ cd /c/Users/trent/git-repos/golf-league/mobile && bash ../scripts/check-mobile-c
 
 Pass = script exits 0. FAIL = coverage dropped below baseline. Report the Statements % delta.
 
+This run also rewrites `mobile/coverage/lcov.info` (the script passes `--coverageReporters=lcovonly` alongside `text-summary`), so the file SonarCloud reads in step 6 is always current — a newly-added util can't be silently absent from the report.
+
 > If you see a `resolveConfigPathByTraversing` / jest-config error here, you ran it from the wrong directory — re-run from `mobile/` as shown above. It is a cwd mistake, not a real coverage failure.
 
 ### 6. SonarCloud scan
@@ -104,11 +106,31 @@ sonar-scanner.bat --version 2>&1 | head -1 && echo "SONAR_TOKEN=${SONAR_TOKEN:0:
 If `sonar-scanner.bat` is not found: FAIL with message "sonar-scanner not found — expected at ~/.sonar-scanner/".
 If `SONAR_TOKEN` is empty: FAIL with message "SONAR_TOKEN is not set — add `export SONAR_TOKEN=your-token` to ~/.bashrc".
 
-Both present — run from the **repo root** (so sonar-project.properties is found):
+Both present — run from the **repo root** (so sonar-project.properties is found). Two
+local-only normalizations happen first, then the scan:
+
 ```bash
 export PATH="$PATH:/c/Users/trent/.sonar-scanner/sonar-scanner-8.1.0.6389-windows-x64/bin"
-cd /c/Users/trent/git-repos/golf-league && sonar-scanner.bat
+cd /c/Users/trent/git-repos/golf-league
+
+# (a) Normalize Go coverage paths to repo-relative (LOCAL ONLY — do NOT add to ci.yml).
+# backend/coverage.out records Go module paths (github.com/trentd187/golf-league/internal/...).
+# On this machine those resolve against the GOPATH copy at ~/go/src/github.com/trentd187/
+# golf-league, so the Go sensor logs "File ... is not included in the project, ignoring
+# coverage" for EVERY Go file → all Go shows 0% and the gate fails on new_coverage even
+# though backend tests pass. Rewriting to repo-relative (backend/internal/...) resolves in
+# both local and CI. Idempotent. Must run AFTER step 2 — the ratchet's `go tool cover` needs
+# the original module paths. CI's clean Linux checkout has no ~/go/src copy, so it resolves
+# correctly without this and the rewrite is intentionally not in ci.yml.
+sed -i 's#github.com/trentd187/golf-league/#backend/#g' backend/coverage.out
+
+sonar-scanner.bat
 ```
+
+> The mobile `lcov.info` is already fresh here: step 5's ratchet (`check-mobile-coverage.sh`)
+> regenerates `mobile/coverage/lcov.info` on every run via `--coverageReporters=lcovonly`, so
+> a newly-added util can't be silently missing from the Sonar report. If you ever skip step 5
+> and run the scan directly, re-run the ratchet first so lcov isn't stale.
 
 `sonar-project.properties` sets `sonar.qualitygate.wait=true`, so the scanner blocks
 until SonarCloud computes the **quality gate** and exits non-zero if it fails — this

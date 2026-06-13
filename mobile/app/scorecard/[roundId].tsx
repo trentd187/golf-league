@@ -44,6 +44,7 @@ import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { showAlert } from "@/utils/alerts";
+import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -192,20 +193,6 @@ const emptyHoleStat: HoleStatEntry = {
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
   tee_shot_club: null, tee_shot_distance: "",
 };
-
-// withRetry runs fn up to delays.length + 1 times, waiting between each attempt.
-// Used for score and stat saves so transient network blips don't immediately surface an error.
-async function withRetry<T>(fn: () => Promise<T>, delays: number[]): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i <= delays.length; i++) {
-    try { return await fn(); }
-    catch (err) {
-      lastErr = err;
-      if (i < delays.length) await new Promise((r) => setTimeout(r, delays[i]));
-    }
-  }
-  throw lastErr;
-}
 
 // scoreColor returns a NativeWind class string for a score relative to par.
 // Used in both Basic and Advanced views to keep color logic in one place.
@@ -444,22 +431,17 @@ export default function ScorecardScreen() {
 
         try {
           const token = await getToken();
-          // Retry up to 3 times (500 ms → 1 s → 2 s) before surfacing an error.
-          // Saves are optimistic, so nothing is shown unless every retry fails.
-          await withRetry(async () => {
-            const res = await fetch(
-              `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
-              {
-                method:  "PUT",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body:    JSON.stringify({ scores: entries }),
-              }
-            );
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(body?.error ?? "Save failed");
-            }
-          }, [500, 1000, 2000]);
+          // savePut applies the BACKGROUND_SAVE profile: per-attempt AbortController
+          // timeout + Full-Jitter capped backoff (forces a fresh connection so a stale
+          // okhttp socket can't fail every retry identically) + Sentry instrumentation.
+          // Saves are optimistic, so nothing is shown unless every attempt fails.
+          await savePut({
+            url:   `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/scores`,
+            token: token ?? "",
+            body:  { scores: entries },
+            label: "scores",
+            retry: BACKGROUND_SAVE,
+          });
           // Clear any prior failure flag now that the save has succeeded.
           setSaveError((prev) => ({ ...prev, [roundPlayerId]: false }));
           // After saving the last hole, scroll back to the top so the user
@@ -515,23 +497,15 @@ export default function ScorecardScreen() {
         setStatsSaveError(false);
         try {
           const token = await getToken();
-          // Retry up to 3 times (500 ms → 1 s → 2 s) — same cadence as score saves.
-          // withRetry only retries on thrown exceptions, so we must check res.ok and
-          // throw explicitly so HTTP errors (4xx/5xx) are retried and surfaced correctly.
-          await withRetry(async () => {
-            const res = await fetch(
-              `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
-              {
-                method:  "PUT",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body:    JSON.stringify({ stats: [stat] }),
-              }
-            );
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(body?.error ?? "Save failed");
-            }
-          }, [500, 1000, 2000]);
+          // Same BACKGROUND_SAVE resilience as score saves; savePut throws on !res.ok
+          // so HTTP errors are retried and reported, not silently swallowed.
+          await savePut({
+            url:   `${API_URL}/api/v1/rounds/${roundId}/players/${roundPlayerId}/hole-stats`,
+            token: token ?? "",
+            body:  { stats: [stat] },
+            label: "hole-stats",
+            retry: BACKGROUND_SAVE,
+          });
           setStatsSaveError(false);
         } catch {
           setStatsSaveError(true);
@@ -585,19 +559,21 @@ export default function ScorecardScreen() {
     setSavingHandicaps(true);
     try {
       const token = await getToken();
+      // FOREGROUND_SAVE: this is a visible save (spinner + disabled button), so a
+      // shorter retry budget. savePut throws on !res.ok, fixing the previous silent
+      // success-on-5xx (the raw fetch here never checked the response status).
       await Promise.all(
         group.players.map((player) => {
           const hStr = handicaps[player.round_player_id] ?? "";
           const hNum = parseInt(hStr, 10);
           if (isNaN(hNum)) return Promise.resolve();
-          return fetch(
-            `${API_URL}/api/v1/rounds/${roundId}/players/${player.round_player_id}/handicap`,
-            {
-              method:  "PUT",
-              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-              body:    JSON.stringify({ course_handicap: hNum }),
-            }
-          );
+          return savePut({
+            url:   `${API_URL}/api/v1/rounds/${roundId}/players/${player.round_player_id}/handicap`,
+            token: token ?? "",
+            body:  { course_handicap: hNum },
+            label: "handicap",
+            retry: FOREGROUND_SAVE,
+          });
         })
       );
       // Refetch directly so the scorecard data is fresh before the component re-renders —
@@ -625,15 +601,13 @@ export default function ScorecardScreen() {
     setSavingHandicap(true);
     try {
       const token = await getToken();
-      const res = await fetch(
-        `${API_URL}/api/v1/rounds/${roundId}/players/${targetId}/handicap`,
-        {
-          method:  "PUT",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body:    JSON.stringify({ course_handicap: hNum }),
-        }
-      );
-      if (!res.ok) throw new Error("save failed");
+      await savePut({
+        url:   `${API_URL}/api/v1/rounds/${roundId}/players/${targetId}/handicap`,
+        token: token ?? "",
+        body:  { course_handicap: hNum },
+        label: "handicap",
+        retry: FOREGROUND_SAVE,
+      });
       setEditingHandicapFor(null);
       // Refetch scorecard directly so net scores recalculate immediately.
       // Invalidate the round so the leaderboard reflects the updated handicap.

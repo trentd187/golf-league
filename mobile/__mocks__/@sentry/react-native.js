@@ -64,5 +64,6 @@ module.exports = {
   browserReplayIntegration: jest.fn(() => ({ name: "BrowserReplay" })),
   setUser: jest.fn(),
   captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
   logger,
 };

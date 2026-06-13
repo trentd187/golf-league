@@ -63,6 +63,10 @@ import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormat
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import type { Scorecard } from "@/types/scorecard";
 import { buildStats } from "@/utils/stats";
+import { buildRoundMatches } from "@/utils/vegas";
+import { teamsForGroup, type VegasTeamSummary } from "@/utils/vegasTeams";
+import VegasTeamAssignmentModal from "@/components/VegasTeamAssignmentModal";
+import VegasMatchCard from "@/components/VegasMatchCard";
 import StatsCards from "@/components/StatsCards";
 import UserAvatar from "@/components/UserAvatar";
 
@@ -167,7 +171,10 @@ export default function RoundDetailScreen() {
   const [coursePickerVisible, setCoursePickerVisible] = useState(false);
 
   // activeTab: which content panel is shown below the round info card.
-  const [activeTab, setActiveTab] = useState<"groups" | "leaderboard" | "stats">("groups");
+  // "matches" is only shown for las_vegas rounds (the team-vs-team tab).
+  const [activeTab, setActiveTab] = useState<"groups" | "leaderboard" | "stats" | "matches">("groups");
+  // teamAssignGroup: the group whose Vegas team-assignment modal is open, or null.
+  const [teamAssignGroupId, setTeamAssignGroupId] = useState<string | null>(null);
 
   // --- Queries ---
 
@@ -248,6 +255,29 @@ export default function RoundDetailScreen() {
       return res.json();
     },
     enabled: !!id && activeTab !== "groups",
+  });
+
+  // isVegasRound gates the Matches tab and the per-group team-assignment UI.
+  const isVegasRound = round?.scoring_format === "las_vegas";
+
+  // teamsQuery: current Las Vegas teams for the round (organizer assignment UI).
+  // TeamResponse[] from GET /rounds/:id/teams, mapped to the util's VegasTeamSummary shape.
+  const { data: roundTeams } = useQuery<VegasTeamSummary[]>({
+    queryKey: ["round-teams", id],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/teams`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch teams: ${res.status}`);
+      const data = (await res.json()) as { id: string; name: string; members: { round_player_id: string }[] }[];
+      return data.map((tm) => ({
+        id: tm.id,
+        name: tm.name,
+        roundPlayerIds: tm.members.map((m) => m.round_player_id),
+      }));
+    },
+    enabled: !!id && !!isVegasRound && !!round?.is_organizer,
   });
 
   // --- Derived values ---
@@ -866,7 +896,12 @@ export default function RoundDetailScreen() {
 
         {/* ── Tab bar ──────────────────────────────────────────────────────── */}
         <View className="flex-row gap-2 mb-5">
-          {(["groups", "leaderboard", "stats"] as const).map((tab) => {
+          {([
+            "groups",
+            "leaderboard",
+            "stats",
+            ...(isVegasRound ? (["matches"] as const) : []),
+          ] as const).map((tab) => {
             const isActive = activeTab === tab;
             return (
               <TouchableOpacity
@@ -1024,6 +1059,20 @@ export default function RoundDetailScreen() {
                 </TouchableOpacity>
               )}
 
+              {/* Set Teams — Las Vegas only; organizers split the group into two teams */}
+              {isVegasRound && round.is_organizer && group.players.length > 0 && (
+                <TouchableOpacity
+                  className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
+                  onPress={() => setTeamAssignGroupId(group.id)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="people-outline" size={16} color={t.colors.tabBarActive} />
+                  <Text style={{ color: t.colors.tabBarActive }} className="text-sm font-semibold">
+                    Set Teams
+                  </Text>
+                </TouchableOpacity>
+              )}
+
               {/* Scorecard / Enter Scores — primary CTA; prominent so players know this is where scoring happens */}
               {group.players.length > 0 && (
                 <TouchableOpacity
@@ -1164,7 +1213,56 @@ export default function RoundDetailScreen() {
           </View>
         )}
 
+        {/* ── Matches tab (Las Vegas) ──────────────────────────────────────── */}
+        {activeTab === "matches" && (
+          <View className="mb-8">
+            {scorecardLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardError || !scorecard ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load matches.
+              </Text>
+            ) : (() => {
+              const matches = buildRoundMatches(scorecard);
+              if (matches.length === 0) {
+                return (
+                  <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                    No team matchups yet. The organizer assigns two teams of two per
+                    group from the Groups tab.
+                  </Text>
+                );
+              }
+              return (
+                <View className="gap-4">
+                  {matches.map((m) => (
+                    <VegasMatchCard key={m.groupId} match={m} />
+                  ))}
+                </View>
+              );
+            })()}
+          </View>
+        )}
+
       </ScrollView>
+
+      {/* ── Vegas team-assignment modal ─────────────────────────────────────── */}
+      {(() => {
+        const g = round.groups.find((grp) => grp.id === teamAssignGroupId);
+        if (!g) return null;
+        return (
+          <VegasTeamAssignmentModal
+            visible={!!teamAssignGroupId}
+            onClose={() => setTeamAssignGroupId(null)}
+            roundId={id as string}
+            group={{
+              id: g.id,
+              group_number: g.group_number,
+              players: g.players.map((p) => ({ round_player_id: p.round_player_id, display_name: p.display_name })),
+            }}
+            groupTeams={teamsForGroup(g.players.map((p) => p.round_player_id), roundTeams ?? [])}
+          />
+        );
+      })()}
 
       {/* ── Edit Round Modal ────────────────────────────────────────────────── */}
 

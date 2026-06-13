@@ -60,6 +60,8 @@ import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import UserAvatar from "@/components/UserAvatar";
 import { formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
+import { buildEventTally } from "@/utils/vegas";
+import VegasEventTally from "@/components/VegasEventTally";
 import { showAlert, showConfirm } from "@/utils/alerts";
 import StatsCards from "@/components/StatsCards";
 
@@ -148,7 +150,7 @@ export default function EventDetailScreen() {
   const [scheduleRoundModalVisible, setScheduleRoundModalVisible] = useState(false);
 
   // --- Tab state ---
-  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats" | "requests">("members");
+  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats" | "requests" | "matches">("members");
 
   // --- Edit event form state ---
   const [editName, setEditName]               = useState("");
@@ -238,6 +240,9 @@ export default function EventDetailScreen() {
     .filter((r) => r.status === "completed")
     .map((r) => r.id);
 
+  // hasVegasRound gates the event-level Matches tab (any Vegas round in the event).
+  const hasVegasRound = (rounds ?? []).some((r) => r.scoring_format === "las_vegas");
+
   // scorecardQueries: one query per completed round.
   // Lazy — only enabled when the user opens the Leaderboard or Stats tab to avoid
   // fetching N scorecard payloads while just browsing Members or Rounds.
@@ -252,7 +257,7 @@ export default function EventDetailScreen() {
         if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
         return res.json() as Promise<Scorecard>;
       },
-      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats"),
+      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches"),
     })),
   });
 
@@ -579,6 +584,7 @@ export default function EventDetailScreen() {
         roundForm.selectedTeeId,
         roundForm.nineHoleSelection,
         roundForm.scoringFormat,
+        { birdieFlip: roundForm.vegasBirdieFlip, scoringBasis: roundForm.vegasScoringBasis },
       ),
     });
   };
@@ -785,6 +791,7 @@ export default function EventDetailScreen() {
         {/* "Requests" tab only appears for organizers of public events */}
         <View className="flex-row gap-2 mb-5">
           {(["members", "rounds", "leaderboard", "stats",
+            ...(hasVegasRound ? ["matches"] : []),
             ...(isOrganizer && event.is_public ? ["requests"] : []),
           ] as const).map((tab) => {
             const isActive = activeTab === tab;
@@ -1051,6 +1058,36 @@ export default function EventDetailScreen() {
             ) : (
               <StatsCards stats={buildStats(scorecards)} />
             )}
+          </View>
+        )}
+
+        {/* ── Matches tab — cumulative Las Vegas standings across the event ──── */}
+        {activeTab === "matches" && (
+          <View className="mb-8">
+            {completedRoundIds.length === 0 ? (
+              <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                <Ionicons name="people-outline" size={32} color={t.colors.tabBarInactive} />
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
+                  No completed Vegas rounds yet. Team standings appear once a round is finished.
+                </Text>
+              </View>
+            ) : scorecardsLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardsError ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load matches.
+              </Text>
+            ) : (() => {
+              const tallies = buildEventTally(scorecards);
+              if (tallies.length === 0) {
+                return (
+                  <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                    No team matchups recorded. Assign teams on each Vegas round to build standings.
+                  </Text>
+                );
+              }
+              return <VegasEventTally tallies={tallies} />;
+            })()}
           </View>
         )}
 
@@ -1360,12 +1397,16 @@ export default function EventDetailScreen() {
                 selectedTeeId={roundForm.selectedTeeId}
                 nineHoleSelection={roundForm.nineHoleSelection}
                 scoringFormat={roundForm.scoringFormat}
+                vegasBirdieFlip={roundForm.vegasBirdieFlip}
+                vegasScoringBasis={roundForm.vegasScoringBasis}
                 isPending={scheduleRoundMutation.isPending}
                 onOpenCoursePicker={() => roundForm.setCoursePickerVisible(true)}
                 onClearCourse={() => { roundForm.setSelectedCourse(null); roundForm.setSelectedTeeId(null); }}
                 onSelectTee={roundForm.setSelectedTeeId}
                 onChangeNineHoles={roundForm.setNineHoleSelection}
                 onChangeScoringFormat={roundForm.setScoringFormat}
+                onChangeVegasBirdieFlip={roundForm.setVegasBirdieFlip}
+                onChangeVegasScoringBasis={roundForm.setVegasScoringBasis}
               />
 
               <View className="mb-6">

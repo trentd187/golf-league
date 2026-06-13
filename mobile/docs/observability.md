@@ -44,6 +44,10 @@ The `QueryClient` in `_layout.tsx` wires both caches to Sentry so failures aren'
 
 To investigate cellular "phantom save" failures, filter Sentry Issues by `mutation_error_kind:network` — the exception message is the exact transport error (e.g. `Network request failed`), and breadcrumbs carry the request URL.
 
+## Scorecard save reporting
+
+Scorecard saves (scores, hole-stats, course handicap) do **not** go through TanStack mutations — they run through the [`savePut`](../utils/saveRequest.ts) chokepoint (see [network-saves.md](network-saves.md)). On retry exhaustion `savePut` calls `reportSaveFailure` (in [utils/sentry.ts](../utils/sentry.ts)), which captures an Issue tagged `error_source:save`, `save_kind:network|http`, `save_endpoint:<label>`, `connection_type:<type>`, with `extra` carrying `attempts`, `elapsedMs`, `httpStatus`, `cellularGeneration`, `isInternetReachable`. Each failed attempt also drops a `category:"save"` breadcrumb (warning while retries remain, error on the final attempt) via `addSaveBreadcrumb`. To triage a phantom-save recurrence, filter by `error_source:save` and read `connection_type` + `save_endpoint`.
+
 ## User context
 
 `hooks/useUser.ts` calls `syncSentryUser(user)` on every auth state change: it sets `{ id, email }` on sign-in/refresh and `null` on sign-out. This powers release health, per-user error filtering, and replay identification. Don't call `Sentry.setUser` elsewhere — route it through `syncSentryUser` so the lifecycle stays in one place (and stays covered by tests).

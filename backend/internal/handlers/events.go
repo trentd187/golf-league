@@ -138,6 +138,9 @@ type ScheduleRoundRequest struct {
 	DefaultTeeID      *string      `json:"default_tee_id"`
 	CourseName        string       `json:"course_name"`
 	NineHoleSelection *string      `json:"nine_hole_selection"`
+	// Las Vegas toggles; nil = default (flip true, basis "gross").
+	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
+	VegasScoringBasis *string `json:"vegas_scoring_basis"`
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -660,6 +663,8 @@ func ScheduleEventRound(roundSvc *services.RoundService) fiber.Handler {
 			DefaultTeeID:      req.DefaultTeeID,
 			CourseName:        req.CourseName,
 			NineHoleSelection: req.NineHoleSelection,
+			VegasBirdieFlip:   req.VegasBirdieFlip,
+			VegasScoringBasis: req.VegasScoringBasis,
 			Groups:            groups,
 		})
 		if err != nil {

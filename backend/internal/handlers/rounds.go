@@ -17,6 +17,10 @@
 //	DELETE /api/v1/rounds/:roundId/groups/:groupId            → delete group
 //	POST   /api/v1/rounds/:roundId/groups/:groupId/members    → add member
 //	DELETE /api/v1/rounds/:roundId/groups/:groupId/members/:userId → remove member
+//	GET    /api/v1/rounds/:roundId/teams                      → list Las Vegas teams
+//	POST   /api/v1/rounds/:roundId/teams                      → create team
+//	PUT    /api/v1/rounds/:roundId/teams/:teamId/members      → assign team members
+//	DELETE /api/v1/rounds/:roundId/teams/:teamId             → delete team
 package handlers
 
 import (
@@ -49,6 +53,14 @@ type GroupResponse struct {
 	Players      []GroupMemberResponse `json:"players"`
 }
 
+// TeamResponse represents one Las Vegas team with its (up to 2) members.
+// Members reuse the GroupMemberResponse shape.
+type TeamResponse struct {
+	ID      string                `json:"id"`
+	Name    string                `json:"name"`
+	Members []GroupMemberResponse `json:"members"`
+}
+
 // RoundDetailResponse is the full round payload returned by GET /api/v1/rounds/:roundId.
 // EventID is null for eventless (casual) rounds.
 type RoundDetailResponse struct {
@@ -60,6 +72,9 @@ type RoundDetailResponse struct {
 	Status        string  `json:"status"`
 	ScoringFormat string  `json:"scoring_format"`
 	RoundNumber   int     `json:"round_number"`
+	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
+	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
+	VegasScoringBasis string `json:"vegas_scoring_basis"`
 	// IsOrganizer is computed server-side so the client skips a separate permission query.
 	IsOrganizer bool            `json:"is_organizer"`
 	Groups      []GroupResponse `json:"groups"`
@@ -111,6 +126,9 @@ type UpdateRoundRequest struct {
 	DefaultTeeID *string `json:"default_tee_id"`
 	// CourseName is the legacy find-or-create fallback. Prefer CourseID.
 	CourseName *string `json:"course_name"`
+	// Las Vegas toggles; nil = leave unchanged.
+	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
+	VegasScoringBasis *string `json:"vegas_scoring_basis"`
 }
 
 // UpdateGroupRequest is the JSON body for PATCH .../groups/:groupId.
@@ -135,6 +153,20 @@ type CreateEventlessRoundRequest struct {
 	CourseName        string  `json:"course_name"`         // fallback find-or-create
 	ScoringFormat     *string `json:"scoring_format"`      // defaults to "stroke" in service
 	NineHoleSelection *string `json:"nine_hole_selection"` // "front" or "back"; nil = full round
+	// Las Vegas toggles; nil = default (flip true, basis "gross").
+	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
+	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+}
+
+// CreateTeamRequest is the JSON body for POST /api/v1/rounds/:roundId/teams.
+type CreateTeamRequest struct {
+	Name string `json:"name"` // required display name, e.g. "Team A"
+}
+
+// AssignTeamMembersRequest is the JSON body for PUT .../teams/:teamId/members.
+// Replaces the team's membership with these round_players (max 2).
+type AssignTeamMembersRequest struct {
+	RoundPlayerIDs []string `json:"round_player_ids"`
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -159,6 +191,16 @@ func parseGroupID(c *fiber.Ctx) (uuid.UUID, bool) {
 	return id, true
 }
 
+// parseTeamID parses the ":teamId" path param. Writes 400 + returns false on failure.
+func parseTeamID(c *fiber.Ctx) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Params("teamId"))
+	if err != nil {
+		_ = c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid team ID"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
 // writeRoundError translates a service error into HTTP status + JSON body.
 // For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so the
 // HTTPMetrics middleware emits the cause in the Loki http.error log line.
@@ -174,6 +216,8 @@ func writeRoundError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "round not found"})
 	case errors.Is(err, services.ErrGroupNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "group not found for this round"})
+	case errors.Is(err, services.ErrTeamNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "team not found for this round"})
 	case errors.Is(err, services.ErrCourseNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{jsonKeyError: "course not found"})
 	case errors.Is(err, services.ErrTeeNotFound):
@@ -188,6 +232,8 @@ func writeRoundError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "group is full (max 4 players)"})
 	case errors.Is(err, services.ErrPlayerAlreadyInGroup):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "player is already assigned to a group in this round"})
+	case errors.Is(err, services.ErrTeamFull):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{jsonKeyError: "team is full (max 2 players)"})
 	}
 	c.Locals("error_detail", tag+": "+err.Error())
 	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})
@@ -224,6 +270,21 @@ func toGroupResponse(id string, groupNumber int, name *string, teeTime *time.Tim
 		StartingHole: startingHole,
 		Players:      playerResponses,
 	}
+}
+
+// toTeamResponse converts service-layer team data to the JSON response shape.
+func toTeamResponse(t services.TeamResult) TeamResponse {
+	members := make([]GroupMemberResponse, len(t.Members))
+	for i, m := range t.Members {
+		members[i] = GroupMemberResponse{
+			UserID:        m.UserID,
+			RoundPlayerID: m.RoundPlayerID,
+			DisplayName:   m.DisplayName,
+			Email:         m.Email,
+			AvatarURL:     m.AvatarURL,
+		}
+	}
+	return TeamResponse{ID: t.Team.ID.String(), Name: t.Team.Name, Members: members}
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -293,16 +354,18 @@ func GetRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		return c.JSON(RoundDetailResponse{
-			ID:            result.Round.ID.String(),
-			EventID:       uuidPtrStr(result.Round.EventID),
-			Name:          result.Round.Name,
-			CourseName:    result.Round.Course.Name,
-			ScheduledDate: result.Round.ScheduledDate.UTC().Format("2006-01-02"),
-			Status:        string(result.Round.Status),
-			ScoringFormat: string(result.Round.ScoringFormat),
-			RoundNumber:   result.Round.RoundNumber,
-			IsOrganizer:   result.IsOrganizer,
-			Groups:        groupResponses,
+			ID:                result.Round.ID.String(),
+			EventID:           uuidPtrStr(result.Round.EventID),
+			Name:              result.Round.Name,
+			CourseName:        result.Round.Course.Name,
+			ScheduledDate:     result.Round.ScheduledDate.UTC().Format("2006-01-02"),
+			Status:            string(result.Round.Status),
+			ScoringFormat:     string(result.Round.ScoringFormat),
+			RoundNumber:       result.Round.RoundNumber,
+			VegasBirdieFlip:   result.Round.VegasBirdieFlip,
+			VegasScoringBasis: result.Round.VegasScoringBasis,
+			IsOrganizer:       result.IsOrganizer,
+			Groups:            groupResponses,
 		})
 	}
 }
@@ -326,13 +389,15 @@ func UpdateRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.Update(c.UserContext(), roundID, callerID, callerRole, services.UpdateRoundInput{
-			Name:          req.Name,
-			ScheduledDate: req.ScheduledDate,
-			ScoringFormat: req.ScoringFormat,
-			Status:        req.Status,
-			CourseID:      req.CourseID,
-			DefaultTeeID:  req.DefaultTeeID,
-			CourseName:    req.CourseName,
+			Name:              req.Name,
+			ScheduledDate:     req.ScheduledDate,
+			ScoringFormat:     req.ScoringFormat,
+			Status:            req.Status,
+			CourseID:          req.CourseID,
+			DefaultTeeID:      req.DefaultTeeID,
+			CourseName:        req.CourseName,
+			VegasBirdieFlip:   req.VegasBirdieFlip,
+			VegasScoringBasis: req.VegasScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.update", "failed to update round")
@@ -559,6 +624,8 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 			DefaultTeeID:      req.DefaultTeeID,
 			CourseName:        req.CourseName,
 			NineHoleSelection: req.NineHoleSelection,
+			VegasBirdieFlip:   req.VegasBirdieFlip,
+			VegasScoringBasis: req.VegasScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.create_eventless", "failed to create round")
@@ -571,5 +638,121 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 			"status":         string(result.Round.Status),
 			"scoring_format": string(result.Round.ScoringFormat),
 		})
+	}
+}
+
+// ─── Las Vegas team handlers ────────────────────────────────────────────────────
+
+// ListTeams returns a handler for GET /api/v1/rounds/:roundId/teams.
+// Returns all Las Vegas teams for the round with their members. Organizer-only.
+func ListTeams(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+
+		results, err := svc.ListTeams(c.UserContext(), roundID, callerID, callerRole)
+		if err != nil {
+			return writeRoundError(c, err, "round.list_teams", "failed to load teams")
+		}
+
+		out := make([]TeamResponse, len(results))
+		for i, t := range results {
+			out[i] = toTeamResponse(t)
+		}
+		return c.JSON(out)
+	}
+}
+
+// CreateTeam returns a handler for POST /api/v1/rounds/:roundId/teams.
+// Creates a named, empty team. Organizer-only.
+func CreateTeam(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+
+		var req CreateTeamRequest
+		if err := c.BodyParser(&req); err != nil || req.Name == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "name is required"})
+		}
+
+		result, err := svc.CreateTeam(c.UserContext(), roundID, callerID, callerRole, req.Name)
+		if err != nil {
+			return writeRoundError(c, err, "round.create_team", "failed to create team")
+		}
+		return c.Status(fiber.StatusCreated).JSON(toTeamResponse(result))
+	}
+}
+
+// AssignTeamMembers returns a handler for PUT .../teams/:teamId/members.
+// Replaces the team's membership with the given round_players (max 2). Organizer-only.
+func AssignTeamMembers(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+		teamID, ok := parseTeamID(c)
+		if !ok {
+			return nil
+		}
+
+		var req AssignTeamMembersRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "round_player_ids is required"})
+		}
+		ids := make([]uuid.UUID, 0, len(req.RoundPlayerIDs))
+		for _, s := range req.RoundPlayerIDs {
+			id, err := uuid.Parse(s)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round_player_id"})
+			}
+			ids = append(ids, id)
+		}
+
+		result, err := svc.AssignTeamMembers(c.UserContext(), roundID, teamID, callerID, callerRole, ids)
+		if err != nil {
+			return writeRoundError(c, err, "round.assign_team_members", "failed to assign team members")
+		}
+		return c.JSON(toTeamResponse(result))
+	}
+}
+
+// DeleteTeam returns a handler for DELETE /api/v1/rounds/:roundId/teams/:teamId.
+// Removes a team; team_members cascade. Organizer-only.
+func DeleteTeam(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+		teamID, ok := parseTeamID(c)
+		if !ok {
+			return nil
+		}
+
+		if err := svc.DeleteTeam(c.UserContext(), roundID, teamID, callerID, callerRole); err != nil {
+			return writeRoundError(c, err, "round.delete_team", "failed to delete team")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }

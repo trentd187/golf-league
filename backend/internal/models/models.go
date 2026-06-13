@@ -92,6 +92,20 @@ const (
 	ScoringFormatIrishRumbleStableford ScoringFormat = "irish_rumble_stableford"
 	ScoringFormatScramble              ScoringFormat = "scramble"
 	ScoringFormatMatchPlay             ScoringFormat = "match_play"
+	// ScoringFormatLasVegas is the 2v2 team betting game: each twosome combines its
+	// two players' scores into a two-digit number; the gap between the two teams'
+	// numbers is the hole's point differential. Players play individual balls, so
+	// scores are stored per-player (not in team_scores) and the Vegas math is derived.
+	ScoringFormatLasVegas ScoringFormat = "las_vegas"
+)
+
+// VegasScoringBasis selects whether the Las Vegas two-digit combination uses gross
+// or net (handicap-adjusted) scores. Stored as TEXT on rounds, not a Postgres enum.
+type VegasScoringBasis string
+
+const (
+	VegasScoringBasisGross VegasScoringBasis = "gross"
+	VegasScoringBasisNet   VegasScoringBasis = "net"
 )
 
 // RoundPlayerStatus tracks a player's state in a single round.
@@ -216,6 +230,17 @@ type Round struct {
 	// NineHoleSelection: "front" (holes 1–9), "back" (holes 10–18), or nil (full round).
 	// Only meaningful for 18-hole courses.
 	NineHoleSelection *string `gorm:"column:nine_hole_selection;type:text"`
+	// VegasBirdieFlip toggles the Las Vegas flip rule (a birdie-or-better flips the
+	// opponents' two-digit number high-digit-first). Only meaningful when
+	// ScoringFormat is las_vegas; ignored for other formats. No GORM `default` tag:
+	// it would make GORM omit an explicit `false` on insert (zero-value omission),
+	// so "flip off" would be lost. The DB column keeps DEFAULT TRUE (migration 000021)
+	// for raw inserts; every Round create here sets this field via applyVegasToggles.
+	VegasBirdieFlip bool `gorm:"column:vegas_birdie_flip;not null"`
+	// VegasScoringBasis selects gross vs net for the Las Vegas combination ("gross"
+	// or "net"). Only meaningful when ScoringFormat is las_vegas. DB column keeps
+	// DEFAULT 'gross' (migration 000021); set explicitly via applyVegasToggles.
+	VegasScoringBasis string `gorm:"column:vegas_scoring_basis;type:text;not null"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }

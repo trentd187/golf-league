@@ -172,6 +172,78 @@ export function reportMutationError(error: unknown, mutationKey?: unknown): void
   }
 }
 
+// SaveFailureContext carries the diagnostic data captured when a scorecard save
+// exhausts all retries. connection_* fields come from a NetInfo snapshot taken
+// lazily on failure (see utils/saveRequest.ts) — the cellular phantom-save bug is
+// the reason we want connection type / generation alongside attempts + elapsed.
+export interface SaveFailureContext {
+  label: string; // save endpoint label: "scores" | "hole-stats" | "handicap"
+  attempts: number; // how many attempts ran before giving up
+  elapsedMs: number; // wall-clock time across all attempts
+  httpStatus?: number; // set only when the final failure was an HTTP non-2xx
+  connectionType?: string; // NetInfo type: "cellular" | "wifi" | "none" | "unknown" | …
+  cellularGeneration?: string | null; // "2g" | "3g" | "4g" | "5g" when on cellular
+  isInternetReachable?: boolean | null;
+}
+
+// reportSaveFailure routes an exhausted scorecard save to Sentry as an Issue. This
+// is the telemetry the raw-fetch save paths previously lacked (they bypassed
+// reportMutationError). An HTTP non-2xx that survived every retry is a real server
+// rejection (save_kind "http"); a transport reject / abort-timeout is the lost-response
+// phantom path we are hunting (save_kind "network"). Tags are filterable in Sentry;
+// the connection + attempt detail rides in `extra`.
+export function reportSaveFailure(error: unknown, ctx: SaveFailureContext): void {
+  if (!(error instanceof Error)) return;
+
+  const kind =
+    ctx.httpStatus !== undefined
+      ? "http"
+      : NETWORK_ERROR_RE.test(error.message)
+        ? "network"
+        : "unknown";
+
+  Sentry.captureException(error, {
+    tags: {
+      error_source: "save",
+      save_kind: kind,
+      save_endpoint: ctx.label,
+      connection_type: ctx.connectionType ?? "unknown",
+    },
+    extra: {
+      attempts: ctx.attempts,
+      elapsedMs: ctx.elapsedMs,
+      httpStatus: ctx.httpStatus,
+      cellularGeneration: ctx.cellularGeneration,
+      isInternetReachable: ctx.isInternetReachable,
+    },
+  });
+}
+
+// SaveBreadcrumbContext describes one failed save attempt (before a retry, or the
+// final give-up when nextDelayMs is null).
+export interface SaveBreadcrumbContext {
+  label: string;
+  attempt: number; // 1-based attempt number that just failed
+  nextDelayMs: number | null; // backoff before the next try; null on the final attempt
+  message: string; // the attempt's error message
+}
+
+// addSaveBreadcrumb records a per-attempt breadcrumb so that, if a later attempt
+// succeeds (no Issue is captured), the trail of transient failures is still visible
+// on whatever event the session does produce. Wired from withRetry's onAttemptError.
+export function addSaveBreadcrumb(ctx: SaveBreadcrumbContext): void {
+  Sentry.addBreadcrumb({
+    category: "save",
+    level: ctx.nextDelayMs === null ? "error" : "warning",
+    message: `save ${ctx.label} attempt ${ctx.attempt} failed: ${ctx.message}`,
+    data: {
+      label: ctx.label,
+      attempt: ctx.attempt,
+      nextDelayMs: ctx.nextDelayMs,
+    },
+  });
+}
+
 // initSentry initialises the SDK once at app start. Reads runtime config from
 // EXPO_PUBLIC_* env vars (inlined into the bundle by Expo at build time).
 export function initSentry(): void {

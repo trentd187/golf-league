@@ -11,6 +11,8 @@ import {
   syncSentryUser,
   reportQueryError,
   reportMutationError,
+  reportSaveFailure,
+  addSaveBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
 
@@ -211,6 +213,98 @@ describe("reportMutationError", () => {
     reportMutationError(12345);
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("reportSaveFailure", () => {
+  const conn = {
+    connectionType: "cellular",
+    cellularGeneration: "4g",
+    isInternetReachable: true,
+  };
+
+  it("captures a transport failure as save_kind network with connection + attempt extra", () => {
+    reportSaveFailure(new Error("Network request failed"), {
+      label: "scores",
+      attempts: 5,
+      elapsedMs: 1234,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Network request failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "save",
+          save_kind: "network",
+          save_endpoint: "scores",
+          connection_type: "cellular",
+        }),
+        extra: expect.objectContaining({
+          attempts: 5,
+          elapsedMs: 1234,
+          cellularGeneration: "4g",
+          isInternetReachable: true,
+        }),
+      }),
+    );
+  });
+
+  it("captures an HTTP non-2xx as save_kind http carrying the status", () => {
+    reportSaveFailure(new Error("Save failed: HTTP 500"), {
+      label: "handicap",
+      attempts: 3,
+      elapsedMs: 800,
+      httpStatus: 500,
+      ...conn,
+    });
+    const [, ctx] = (Sentry.captureException as jest.Mock).mock.calls[0];
+    expect(ctx.tags.save_kind).toBe("http");
+    expect(ctx.tags.save_endpoint).toBe("handicap");
+    expect(ctx.extra.httpStatus).toBe(500);
+  });
+
+  it("defaults connection_type to unknown when not provided", () => {
+    reportSaveFailure(new Error("Network request failed"), {
+      label: "hole-stats",
+      attempts: 5,
+      elapsedMs: 10,
+    });
+    const [, ctx] = (Sentry.captureException as jest.Mock).mock.calls[0];
+    expect(ctx.tags.connection_type).toBe("unknown");
+  });
+
+  it("ignores non-Error values", () => {
+    reportSaveFailure("nope", { label: "scores", attempts: 1, elapsedMs: 0 });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe("addSaveBreadcrumb", () => {
+  it("adds a save breadcrumb at warning level when a retry follows", () => {
+    addSaveBreadcrumb({
+      label: "scores",
+      attempt: 1,
+      nextDelayMs: 500,
+      message: "Network request failed",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "save",
+        level: "warning",
+        data: expect.objectContaining({ label: "scores", attempt: 1, nextDelayMs: 500 }),
+      }),
+    );
+  });
+
+  it("uses error level on the final attempt (nextDelayMs null)", () => {
+    addSaveBreadcrumb({
+      label: "handicap",
+      attempt: 3,
+      nextDelayMs: null,
+      message: "boom",
+    });
+    const arg = (Sentry.addBreadcrumb as jest.Mock).mock.calls[0][0];
+    expect(arg.level).toBe("error");
   });
 });
 

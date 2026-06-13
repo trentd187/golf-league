@@ -17,6 +17,7 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 | `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
 | `@expo/vector-icons` | `~15.1.1` | Transitive dep of expo; pnpm strict mode means TypeScript can't find its types unless it's a direct dep — causes `Cannot find module '@expo/vector-icons/Ionicons'` in CI |
 | `expo-font` | `~14.0.11` | Required peer dep of `@expo/vector-icons`; missing causes expo-doctor check failure and potential runtime crash outside Expo Go |
+| `@react-native-community/netinfo` | `11.4.1` | SDK-54-compatible; installed via `npx expo install`. Used by `utils/saveRequest.ts` to snapshot connection type/cellular generation when a save fails — see [network-saves.md](network-saves.md). Jest resolves it via the manual mock in `__mocks__/@react-native-community/netinfo.js` |
 
 **Important:** pnpm `overrides` do NOT work for peer dependency resolution — you must add the package as a direct `dependency` to control what version peer-dependent packages get.
 

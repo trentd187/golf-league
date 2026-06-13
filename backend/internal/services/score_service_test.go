@@ -682,6 +682,58 @@ func TestScoreService_GetScorecard_Success(t *testing.T) {
 	assert.Equal(t, 4, data.Groups[0].Players[0].Scores[0].GrossScore)
 }
 
+// TestScoreService_GetScorecard_VegasTeamsAndToggles verifies the Las Vegas
+// additions to the scorecard payload: the per-round toggles ride along, and each
+// player carries their team_id/team_name (nil when unassigned) from the LEFT JOIN.
+func TestScoreService_GetScorecard_VegasTeamsAndToggles(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+
+	creator := seedUser(t, db, "vegasSc1")
+	course, tee := seedCourseWithTee(t, db, "Vegas Scorecard Course")
+	seedHoles(t, db, tee.ID)
+
+	// Eventless las_vegas round with non-default toggles.
+	round := models.Round{
+		EventID: nil, CreatedBy: &creator.ID, CourseID: course.ID, DefaultTeeID: tee.ID,
+		ScheduledDate: time.Now().UTC(), Status: models.RoundStatusActive,
+		ScoringFormat:   models.ScoringFormatLasVegas,
+		VegasBirdieFlip: false, VegasScoringBasis: "net",
+	}
+	require.NoError(t, db.Omit(clause.Associations).Create(&round).Error)
+
+	other := seedUser(t, db, "vegasSc1p1")
+	rp1 := addEventlessRoundPlayer(t, db, round.ID, other.ID)
+	rp2 := addEventlessRoundPlayer(t, db, round.ID, creator.ID)
+	addGroupWithPlayer(t, db, round.ID, 1, rp1.ID)
+	addGroupWithPlayer(t, db, round.ID, 1, rp2.ID)
+
+	// Assign rp1 to a team; leave rp2 unassigned.
+	team := models.Team{RoundID: round.ID, Name: "Team A"}
+	require.NoError(t, db.Omit(clause.Associations).Create(&team).Error)
+	require.NoError(t, db.Omit(clause.Associations).Create(&models.TeamMember{TeamID: team.ID, RoundPlayerID: rp1.ID}).Error)
+
+	data, err := svc.GetScorecard(context.Background(), round.ID, creator.ID, "user")
+	require.NoError(t, err)
+	assert.False(t, data.VegasBirdieFlip)
+	assert.Equal(t, "net", data.VegasScoringBasis)
+
+	require.Len(t, data.Groups, 1)
+	byRP := map[string]services.ScorecardPlayerData{}
+	for _, p := range data.Groups[0].Players {
+		byRP[p.RoundPlayerID] = p
+	}
+	assigned := byRP[rp1.ID.String()]
+	require.NotNil(t, assigned.TeamID)
+	assert.Equal(t, team.ID.String(), *assigned.TeamID)
+	require.NotNil(t, assigned.TeamName)
+	assert.Equal(t, "Team A", *assigned.TeamName)
+
+	unassigned := byRP[rp2.ID.String()]
+	assert.Nil(t, unassigned.TeamID, "unassigned player should have nil team_id")
+	assert.Nil(t, unassigned.TeamName)
+}
+
 // TestScoreService_GetScorecard_RoundNotFound verifies that a missing round
 // returns ErrRoundNotFound.
 func TestScoreService_GetScorecard_RoundNotFound(t *testing.T) {

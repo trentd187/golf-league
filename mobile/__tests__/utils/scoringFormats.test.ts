@@ -10,6 +10,10 @@ describe("formatLabel", () => {
     }
   });
 
+  it("labels the las_vegas format", () => {
+    expect(formatLabel("las_vegas")).toBe("Las Vegas");
+  });
+
   it("falls back to the raw value for an unknown format", () => {
     expect(formatLabel("future_format")).toBe("future_format");
   });

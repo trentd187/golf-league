@@ -82,13 +82,16 @@ export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH" &
 cd /c/Users/trent/git-repos/golf-league/mobile && pnpm test:coverage
 ```
 
-Then enforce the ratchet:
+Then enforce the ratchet. **Run it from `mobile/`, not the repo root** — the script invokes `npx jest` (which resolves its config from the `mobile/` cwd) and reads the baseline via the relative path `../.mobile-coverage-baseline`. Running it from the repo root makes jest fail with a config-resolution error and the script reports a false "Tests are failing":
 
 ```bash
-cd /c/Users/trent/git-repos/golf-league && bash scripts/check-mobile-coverage.sh
+export PATH="/c/Program Files/nodejs:/c/Users/trent/AppData/Roaming/npm:$PATH" && \
+cd /c/Users/trent/git-repos/golf-league/mobile && bash ../scripts/check-mobile-coverage.sh
 ```
 
 Pass = script exits 0. FAIL = coverage dropped below baseline. Report the Statements % delta.
+
+> If you see a `resolveConfigPathByTraversing` / jest-config error here, you ran it from the wrong directory — re-run from `mobile/` as shown above. It is a cwd mistake, not a real coverage failure.
 
 ### 6. SonarCloud scan
 

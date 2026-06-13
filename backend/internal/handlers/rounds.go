@@ -41,6 +41,7 @@ type GroupMemberResponse struct {
 	DisplayName   string  `json:"display_name"`
 	Email         string  `json:"email"`
 	AvatarURL     *string `json:"avatar_url"`
+	IsGuest       bool    `json:"is_guest"` // score-only guest player (no account); UI hides synthetic email
 }
 
 // GroupResponse represents one tee-time group with its assigned players.
@@ -75,6 +76,8 @@ type RoundDetailResponse struct {
 	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
 	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis string `json:"vegas_scoring_basis"`
+	// Best Ball toggle — only meaningful when ScoringFormat is "best_ball".
+	BestBallScoringBasis string `json:"best_ball_scoring_basis"`
 	// IsOrganizer is computed server-side so the client skips a separate permission query.
 	IsOrganizer bool            `json:"is_organizer"`
 	Groups      []GroupResponse `json:"groups"`
@@ -129,6 +132,8 @@ type UpdateRoundRequest struct {
 	// Las Vegas toggles; nil = leave unchanged.
 	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+	// Best Ball toggle; nil = leave unchanged.
+	BestBallScoringBasis *string `json:"best_ball_scoring_basis"`
 }
 
 // UpdateGroupRequest is the JSON body for PATCH .../groups/:groupId.
@@ -141,6 +146,13 @@ type UpdateGroupRequest struct {
 // AddGroupMemberRequest is the JSON body for POST .../groups/:groupId/members.
 type AddGroupMemberRequest struct {
 	UserID string `json:"user_id"` // UUID of the event member to add
+}
+
+// AddGuestRequest is the JSON body for POST .../groups/:groupId/guests.
+// Name is required; CourseHandicap is optional (nil = no strokes for net games).
+type AddGuestRequest struct {
+	Name           string `json:"name"`
+	CourseHandicap *int   `json:"course_handicap"`
 }
 
 // CreateEventlessRoundRequest is the JSON body for POST /api/v1/rounds.
@@ -156,6 +168,8 @@ type CreateEventlessRoundRequest struct {
 	// Las Vegas toggles; nil = default (flip true, basis "gross").
 	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+	// Best Ball toggle; nil = default (basis "gross").
+	BestBallScoringBasis *string `json:"best_ball_scoring_basis"`
 }
 
 // CreateTeamRequest is the JSON body for POST /api/v1/rounds/:roundId/teams.
@@ -260,6 +274,7 @@ func toGroupResponse(id string, groupNumber int, name *string, teeTime *time.Tim
 			DisplayName:   p.DisplayName,
 			Email:         p.Email,
 			AvatarURL:     p.AvatarURL,
+			IsGuest:       p.IsGuest,
 		}
 	}
 	return GroupResponse{
@@ -282,6 +297,7 @@ func toTeamResponse(t services.TeamResult) TeamResponse {
 			DisplayName:   m.DisplayName,
 			Email:         m.Email,
 			AvatarURL:     m.AvatarURL,
+			IsGuest:       m.IsGuest,
 		}
 	}
 	return TeamResponse{ID: t.Team.ID.String(), Name: t.Team.Name, Members: members}
@@ -354,18 +370,19 @@ func GetRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		return c.JSON(RoundDetailResponse{
-			ID:                result.Round.ID.String(),
-			EventID:           uuidPtrStr(result.Round.EventID),
-			Name:              result.Round.Name,
-			CourseName:        result.Round.Course.Name,
-			ScheduledDate:     result.Round.ScheduledDate.UTC().Format("2006-01-02"),
-			Status:            string(result.Round.Status),
-			ScoringFormat:     string(result.Round.ScoringFormat),
-			RoundNumber:       result.Round.RoundNumber,
-			VegasBirdieFlip:   result.Round.VegasBirdieFlip,
-			VegasScoringBasis: result.Round.VegasScoringBasis,
-			IsOrganizer:       result.IsOrganizer,
-			Groups:            groupResponses,
+			ID:                   result.Round.ID.String(),
+			EventID:              uuidPtrStr(result.Round.EventID),
+			Name:                 result.Round.Name,
+			CourseName:           result.Round.Course.Name,
+			ScheduledDate:        result.Round.ScheduledDate.UTC().Format("2006-01-02"),
+			Status:               string(result.Round.Status),
+			ScoringFormat:        string(result.Round.ScoringFormat),
+			RoundNumber:          result.Round.RoundNumber,
+			VegasBirdieFlip:      result.Round.VegasBirdieFlip,
+			VegasScoringBasis:    result.Round.VegasScoringBasis,
+			BestBallScoringBasis: result.Round.BestBallScoringBasis,
+			IsOrganizer:          result.IsOrganizer,
+			Groups:               groupResponses,
 		})
 	}
 }
@@ -389,15 +406,16 @@ func UpdateRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.Update(c.UserContext(), roundID, callerID, callerRole, services.UpdateRoundInput{
-			Name:              req.Name,
-			ScheduledDate:     req.ScheduledDate,
-			ScoringFormat:     req.ScoringFormat,
-			Status:            req.Status,
-			CourseID:          req.CourseID,
-			DefaultTeeID:      req.DefaultTeeID,
-			CourseName:        req.CourseName,
-			VegasBirdieFlip:   req.VegasBirdieFlip,
-			VegasScoringBasis: req.VegasScoringBasis,
+			Name:                 req.Name,
+			ScheduledDate:        req.ScheduledDate,
+			ScoringFormat:        req.ScoringFormat,
+			Status:               req.Status,
+			CourseID:             req.CourseID,
+			DefaultTeeID:         req.DefaultTeeID,
+			CourseName:           req.CourseName,
+			VegasBirdieFlip:      req.VegasBirdieFlip,
+			VegasScoringBasis:    req.VegasScoringBasis,
+			BestBallScoringBasis: req.BestBallScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.update", "failed to update round")
@@ -560,6 +578,40 @@ func AddGroupMember(svc *services.RoundService) fiber.Handler {
 	}
 }
 
+// AddGuestToGroup returns a handler for POST .../groups/:groupId/guests.
+// Creates a score-only guest player (no account) and adds them to the group.
+// Enforces the same 4-player maximum as AddGroupMember. Organizer-only.
+func AddGuestToGroup(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+		groupID, ok := parseGroupID(c)
+		if !ok {
+			return nil
+		}
+
+		var req AddGuestRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
+		}
+
+		result, err := svc.AddGuestToGroup(c.UserContext(), roundID, groupID, callerID, callerRole, req.Name, req.CourseHandicap)
+		if err != nil {
+			return writeRoundError(c, err, "round.add_guest", "failed to add guest to group")
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(
+			toGroupResponse(result.Group.ID.String(), result.Group.GroupNumber, result.Group.Name, result.Group.TeeTime, result.Group.StartingHole, result.Players),
+		)
+	}
+}
+
 // RemoveGroupMember returns a handler for DELETE .../groups/:groupId/members/:userId.
 // Removes a player from a group by deleting their RoundPlayer. The GroupPlayer join
 // row cascades automatically via ON DELETE CASCADE. Organizer-only.
@@ -617,15 +669,16 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.CreateEventlessRound(c.UserContext(), callerID, services.CreateEventlessRoundInput{
-			Name:              req.Name,
-			ScheduledDate:     req.ScheduledDate,
-			ScoringFormat:     req.ScoringFormat,
-			CourseID:          req.CourseID,
-			DefaultTeeID:      req.DefaultTeeID,
-			CourseName:        req.CourseName,
-			NineHoleSelection: req.NineHoleSelection,
-			VegasBirdieFlip:   req.VegasBirdieFlip,
-			VegasScoringBasis: req.VegasScoringBasis,
+			Name:                 req.Name,
+			ScheduledDate:        req.ScheduledDate,
+			ScoringFormat:        req.ScoringFormat,
+			CourseID:             req.CourseID,
+			DefaultTeeID:         req.DefaultTeeID,
+			CourseName:           req.CourseName,
+			NineHoleSelection:    req.NineHoleSelection,
+			VegasBirdieFlip:      req.VegasBirdieFlip,
+			VegasScoringBasis:    req.VegasScoringBasis,
+			BestBallScoringBasis: req.BestBallScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.create_eventless", "failed to create round")

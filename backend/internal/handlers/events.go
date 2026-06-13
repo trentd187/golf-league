@@ -141,6 +141,8 @@ type ScheduleRoundRequest struct {
 	// Las Vegas toggles; nil = default (flip true, basis "gross").
 	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+	// Best Ball toggle; nil = default (basis "gross").
+	BestBallScoringBasis *string `json:"best_ball_scoring_basis"`
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -656,16 +658,17 @@ func ScheduleEventRound(roundSvc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := roundSvc.Schedule(c.UserContext(), eventID, userID, userRole, services.ScheduleRoundInput{
-			Name:              req.Name,
-			ScheduledDate:     req.ScheduledDate,
-			ScoringFormat:     req.ScoringFormat,
-			CourseID:          req.CourseID,
-			DefaultTeeID:      req.DefaultTeeID,
-			CourseName:        req.CourseName,
-			NineHoleSelection: req.NineHoleSelection,
-			VegasBirdieFlip:   req.VegasBirdieFlip,
-			VegasScoringBasis: req.VegasScoringBasis,
-			Groups:            groups,
+			Name:                 req.Name,
+			ScheduledDate:        req.ScheduledDate,
+			ScoringFormat:        req.ScoringFormat,
+			CourseID:             req.CourseID,
+			DefaultTeeID:         req.DefaultTeeID,
+			CourseName:           req.CourseName,
+			NineHoleSelection:    req.NineHoleSelection,
+			VegasBirdieFlip:      req.VegasBirdieFlip,
+			VegasScoringBasis:    req.VegasScoringBasis,
+			BestBallScoringBasis: req.BestBallScoringBasis,
+			Groups:               groups,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "event.schedule_round", "failed to schedule round")

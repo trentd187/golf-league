@@ -97,6 +97,11 @@ const (
 	// numbers is the hole's point differential. Players play individual balls, so
 	// scores are stored per-player (not in team_scores) and the Vegas math is derived.
 	ScoringFormatLasVegas ScoringFormat = "las_vegas"
+	// ScoringFormatBestBall is a team game where every player plays their own ball the
+	// whole hole, but only the single lowest score on a team counts for that hole.
+	// Teams partition a playing group (free-form sizes: 2v2, 4v4, 2v2v2v2, ...). Like
+	// Vegas, scores stay per-player (not in team_scores) and the team math is derived.
+	ScoringFormatBestBall ScoringFormat = "best_ball"
 )
 
 // VegasScoringBasis selects whether the Las Vegas two-digit combination uses gross
@@ -141,8 +146,11 @@ type User struct {
 	Email       string    `gorm:"uniqueIndex;not null"`
 	AvatarURL   *string   // Pointer = nullable in DB
 	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// IsGuest marks a score-only participant created per-round (no account, no auth_id,
+	// synthetic email). Guests track scores for team games but carry no advanced stats.
+	IsGuest   bool `gorm:"column:is_guest;not null;default:false"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Follow records a directed follow relationship: FollowerID follows FolloweeID.
@@ -241,8 +249,12 @@ type Round struct {
 	// or "net"). Only meaningful when ScoringFormat is las_vegas. DB column keeps
 	// DEFAULT 'gross' (migration 000021); set explicitly via applyVegasToggles.
 	VegasScoringBasis string `gorm:"column:vegas_scoring_basis;type:text;not null"`
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// BestBallScoringBasis selects gross vs net for the Best Ball comparison ("gross"
+	// or "net"). Only meaningful when ScoringFormat is best_ball. DB column keeps
+	// DEFAULT 'gross' (migration 000022); set explicitly via applyBestBallToggles.
+	BestBallScoringBasis string `gorm:"column:best_ball_scoring_basis;type:text;not null"`
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // RoundPlayer links a player to a specific Round and stores per-round results.

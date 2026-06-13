@@ -93,6 +93,7 @@ type ScorecardPlayerData struct {
 	UserID         string  `json:"user_id"`
 	DisplayName    string  `json:"display_name"`
 	AvatarURL      *string `json:"avatar_url"`
+	IsGuest        bool    `json:"is_guest"` // score-only guest; UI hides synthetic email and skips advanced stats
 	CourseHandicap *int    `json:"course_handicap"`
 	// EffectiveCourseHandicap is CourseHandicap after applying the event's handicap allowance.
 	// Nil when CourseHandicap is nil; equals CourseHandicap when no allowance is set.
@@ -127,6 +128,8 @@ type ScorecardData struct {
 	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
 	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis string `json:"vegas_scoring_basis"`
+	// Best Ball toggle — only meaningful when ScoringFormat is "best_ball".
+	BestBallScoringBasis string `json:"best_ball_scoring_basis"`
 	// CallerUserID is the DB UUID of the requesting user. The mobile client needs
 	// this to locate its own player entry (Supabase UUID ≠ DB UUID).
 	CallerUserID      string               `json:"caller_user_id"`
@@ -316,20 +319,21 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 	}
 
 	return &ScorecardData{
-		RoundID:           round.ID.String(),
-		RoundName:         round.Name,
-		Status:            string(round.Status),
-		HoleCount:         effectiveHoleCount,
-		RequiresHandicap:  round.RequiresHandicap,
-		ScoringFormat:     string(round.ScoringFormat),
-		VegasBirdieFlip:   round.VegasBirdieFlip,
-		VegasScoringBasis: round.VegasScoringBasis,
-		CallerUserID:      callerID.String(),
-		IsOrganizer:       isOrg,
-		HandicapAllowance: handicapAllowance,
-		NineHoleSelection: round.NineHoleSelection,
-		Holes:             holeRows,
-		Groups:            groupData,
+		RoundID:              round.ID.String(),
+		RoundName:            round.Name,
+		Status:               string(round.Status),
+		HoleCount:            effectiveHoleCount,
+		RequiresHandicap:     round.RequiresHandicap,
+		ScoringFormat:        string(round.ScoringFormat),
+		VegasBirdieFlip:      round.VegasBirdieFlip,
+		VegasScoringBasis:    round.VegasScoringBasis,
+		BestBallScoringBasis: round.BestBallScoringBasis,
+		CallerUserID:         callerID.String(),
+		IsOrganizer:          isOrg,
+		HandicapAllowance:    handicapAllowance,
+		NineHoleSelection:    round.NineHoleSelection,
+		Holes:                holeRows,
+		Groups:               groupData,
 	}, nil
 }
 
@@ -343,6 +347,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		UserID         string
 		DisplayName    string
 		AvatarURL      *string
+		IsGuest        bool
 		CourseHandicap *int
 		// TeamID/TeamName come from the LEFT JOIN — nil when the player has no team.
 		TeamID   *string
@@ -353,7 +358,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 	// membership rides along on the scorecard. Non-Vegas rounds simply have no teams,
 	// so these columns stay nil.
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap, t.id as team_id, t.name as team_name").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, u.is_guest, rp.course_handicap, t.id as team_id, t.name as team_name").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Joins("LEFT JOIN team_members tm ON tm.round_player_id = gp.round_player_id").
@@ -415,7 +420,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 
 		players = append(players, ScorecardPlayerData{
 			RoundPlayerID: pr.RoundPlayerID, UserID: pr.UserID, DisplayName: pr.DisplayName,
-			AvatarURL: pr.AvatarURL, CourseHandicap: pr.CourseHandicap,
+			AvatarURL: pr.AvatarURL, IsGuest: pr.IsGuest, CourseHandicap: pr.CourseHandicap,
 			EffectiveCourseHandicap: effHCP, TeamID: pr.TeamID, TeamName: pr.TeamName,
 			Scores: scores, HoleStats: holeStats,
 			TotalGross: tg, TotalNet: tn,

@@ -15,6 +15,8 @@ export interface RoundFormState {
   // Las Vegas toggles — only used when scoringFormat is "las_vegas".
   vegasBirdieFlip: boolean;
   vegasScoringBasis: "gross" | "net";
+  // Best Ball toggle — only used when scoringFormat is "best_ball".
+  bestBallScoringBasis: "gross" | "net";
   coursePickerVisible: boolean;
   setSelectedCourse: (c: PickedCourse | null) => void;
   setSelectedTeeId: (id: string | null) => void;
@@ -22,6 +24,7 @@ export interface RoundFormState {
   setScoringFormat: (v: string) => void;
   setVegasBirdieFlip: (v: boolean) => void;
   setVegasScoringBasis: (v: "gross" | "net") => void;
+  setBestBallScoringBasis: (v: "gross" | "net") => void;
   setCoursePickerVisible: (v: boolean) => void;
   // resetForm: clears all course/tee/format state back to defaults.
   // Call on modal close, form submit, or course clear.
@@ -35,6 +38,7 @@ export function useRoundForm(): RoundFormState {
   const [scoringFormat, setScoringFormat] = useState("stroke");
   const [vegasBirdieFlip, setVegasBirdieFlip] = useState(true);
   const [vegasScoringBasis, setVegasScoringBasis] = useState<"gross" | "net">("gross");
+  const [bestBallScoringBasis, setBestBallScoringBasis] = useState<"gross" | "net">("gross");
   const [coursePickerVisible, setCoursePickerVisible] = useState(false);
 
   const resetForm = () => {
@@ -44,6 +48,7 @@ export function useRoundForm(): RoundFormState {
     setScoringFormat("stroke");
     setVegasBirdieFlip(true);
     setVegasScoringBasis("gross");
+    setBestBallScoringBasis("gross");
   };
 
   return {
@@ -53,6 +58,7 @@ export function useRoundForm(): RoundFormState {
     scoringFormat,
     vegasBirdieFlip,
     vegasScoringBasis,
+    bestBallScoringBasis,
     coursePickerVisible,
     setSelectedCourse,
     setSelectedTeeId,
@@ -60,6 +66,7 @@ export function useRoundForm(): RoundFormState {
     setScoringFormat,
     setVegasBirdieFlip,
     setVegasScoringBasis,
+    setBestBallScoringBasis,
     setCoursePickerVisible,
     resetForm,
   };

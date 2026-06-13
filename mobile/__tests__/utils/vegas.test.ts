@@ -74,6 +74,7 @@ function mkScorecard(opts: {
     scoring_format: opts.format ?? "las_vegas",
     vegas_birdie_flip: opts.flip ?? true,
     vegas_scoring_basis: opts.basis ?? "gross",
+    best_ball_scoring_basis: "gross",
     caller_user_id: "u-a1",
     is_organizer: false,
     handicap_allowance: null,

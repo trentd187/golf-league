@@ -67,8 +67,12 @@ import { buildRoundMatches } from "@/utils/vegas";
 import { teamsForGroup, type VegasTeamSummary } from "@/utils/vegasTeams";
 import VegasTeamAssignmentModal from "@/components/VegasTeamAssignmentModal";
 import VegasMatchCard from "@/components/VegasMatchCard";
+import { buildBestBallRoundMatches } from "@/utils/bestBall";
+import BestBallTeamAssignmentModal from "@/components/BestBallTeamAssignmentModal";
+import BestBallMatchCard from "@/components/BestBallMatchCard";
 import StatsCards from "@/components/StatsCards";
 import UserAvatar from "@/components/UserAvatar";
+import AddGuestModal from "@/components/AddGuestModal";
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 
@@ -104,6 +108,8 @@ type GroupMember = {
   display_name: string;
   email: string;
   avatar_url: string | null;
+  // is_guest marks a score-only guest player (no account); UI hides the synthetic email.
+  is_guest?: boolean;
 };
 
 type RoundGroup = {
@@ -151,6 +157,8 @@ export default function RoundDetailScreen() {
 
   // selectedGroupId: which group's "+ Add Player" was tapped; null = modal closed.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  // guestGroupId: which group's "+ Add Guest" was tapped; null = guest modal closed.
+  const [guestGroupId, setGuestGroupId] = useState<string | null>(null);
   // memberSearch: owned here so it resets when the modal closes.
   const [memberSearch, setMemberSearch] = useState("");
 
@@ -172,7 +180,7 @@ export default function RoundDetailScreen() {
 
   // activeTab: which content panel is shown below the round info card.
   // "matches" is only shown for las_vegas rounds (the team-vs-team tab).
-  const [activeTab, setActiveTab] = useState<"groups" | "leaderboard" | "stats" | "matches">("groups");
+  const [activeTab, setActiveTab] = useState<"groups" | "leaderboard" | "stats" | "matches" | "teams">("groups");
   // teamAssignGroup: the group whose Vegas team-assignment modal is open, or null.
   const [teamAssignGroupId, setTeamAssignGroupId] = useState<string | null>(null);
 
@@ -257,11 +265,15 @@ export default function RoundDetailScreen() {
     enabled: !!id && activeTab !== "groups",
   });
 
-  // isVegasRound gates the Matches tab and the per-group team-assignment UI.
+  // isVegasRound / isBestBallRound gate their respective result tabs and team UI.
+  // isTeamRound is true for any format that uses the teams/team_members tables.
   const isVegasRound = round?.scoring_format === "las_vegas";
+  const isBestBallRound = round?.scoring_format === "best_ball";
+  const isTeamRound = isVegasRound || isBestBallRound;
 
-  // teamsQuery: current Las Vegas teams for the round (organizer assignment UI).
-  // TeamResponse[] from GET /rounds/:id/teams, mapped to the util's VegasTeamSummary shape.
+  // teamsQuery: current teams for the round (organizer assignment UI), shared by every
+  // team format. TeamResponse[] from GET /rounds/:id/teams, mapped to VegasTeamSummary
+  // (BestBallTeamSummary is structurally identical).
   const { data: roundTeams } = useQuery<VegasTeamSummary[]>({
     queryKey: ["round-teams", id],
     queryFn: async () => {
@@ -277,7 +289,7 @@ export default function RoundDetailScreen() {
         roundPlayerIds: tm.members.map((m) => m.round_player_id),
       }));
     },
-    enabled: !!id && !!isVegasRound && !!round?.is_organizer,
+    enabled: !!id && !!isTeamRound && !!round?.is_organizer,
   });
 
   // --- Derived values ---
@@ -901,6 +913,7 @@ export default function RoundDetailScreen() {
             "leaderboard",
             "stats",
             ...(isVegasRound ? (["matches"] as const) : []),
+            ...(isBestBallRound ? (["teams"] as const) : []),
           ] as const).map((tab) => {
             const isActive = activeTab === tab;
             return (
@@ -996,14 +1009,24 @@ export default function RoundDetailScreen() {
                         >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
-                            <Text
-                              className={`font-semibold text-sm ${t.textPrimary}`}
-                              numberOfLines={1}
-                            >
-                              {player.display_name}
-                            </Text>
+                            <View className="flex-row items-center gap-1.5">
+                              <Text
+                                className={`font-semibold text-sm shrink ${t.textPrimary}`}
+                                numberOfLines={1}
+                              >
+                                {player.display_name}
+                              </Text>
+                              {player.is_guest ? (
+                                <View className={`px-1.5 py-0.5 rounded border ${t.borderInput}`}>
+                                  <Text className={`text-[10px] font-semibold ${t.textTertiary}`}>
+                                    GUEST
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {/* Guests have only a synthetic email — show a label instead. */}
                             <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
-                              {player.email}
+                              {player.is_guest ? "Guest player" : player.email}
                             </Text>
                           </View>
                           <Ionicons
@@ -1013,22 +1036,34 @@ export default function RoundDetailScreen() {
                           />
                         </TouchableOpacity>
                       ) : (
-                        // Non-organizer: player row navigates to the player's public profile
+                        // Non-organizer: player row navigates to the player's public profile.
+                        // Guests have no profile, so their row is not tappable.
                         <TouchableOpacity
                           className="flex-1 flex-row items-center gap-3"
-                          activeOpacity={0.7}
+                          activeOpacity={player.is_guest ? 1 : 0.7}
+                          disabled={player.is_guest}
                           onPress={() => router.push(`/users/${player.user_id}`)}
                         >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
-                            <Text
-                              className={`font-semibold text-sm ${t.textPrimary}`}
-                              numberOfLines={1}
-                            >
-                              {player.display_name}
-                            </Text>
+                            <View className="flex-row items-center gap-1.5">
+                              <Text
+                                className={`font-semibold text-sm shrink ${t.textPrimary}`}
+                                numberOfLines={1}
+                              >
+                                {player.display_name}
+                              </Text>
+                              {player.is_guest ? (
+                                <View className={`px-1.5 py-0.5 rounded border ${t.borderInput}`}>
+                                  <Text className={`text-[10px] font-semibold ${t.textTertiary}`}>
+                                    GUEST
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {/* Guests have only a synthetic email — show a label instead. */}
                             <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
-                              {player.email}
+                              {player.is_guest ? "Guest player" : player.email}
                             </Text>
                           </View>
                         </TouchableOpacity>
@@ -1042,25 +1077,40 @@ export default function RoundDetailScreen() {
                 );
               })}
 
-              {/* "+ Add Player" — only for organizers when the group has fewer than 4 players */}
+              {/* "+ Add Player" / "+ Add Guest" — organizers only, while the group has room */}
               {round.is_organizer && group.players.length < 4 && (
-                <TouchableOpacity
-                  className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
-                  onPress={() => setSelectedGroupId(group.id)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
-                  <Text
-                    style={{ color: t.colors.tabBarActive }}
-                    className="text-sm font-semibold"
+                <View className={`flex-row border-t ${t.divider}`}>
+                  <TouchableOpacity
+                    className="flex-1 px-4 py-3 flex-row items-center gap-2"
+                    onPress={() => setSelectedGroupId(group.id)}
+                    activeOpacity={0.7}
                   >
-                    Add Player
-                  </Text>
-                </TouchableOpacity>
+                    <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
+                    <Text
+                      style={{ color: t.colors.tabBarActive }}
+                      className="text-sm font-semibold"
+                    >
+                      Add Player
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    className={`flex-1 px-4 py-3 flex-row items-center gap-2 border-l ${t.divider}`}
+                    onPress={() => setGuestGroupId(group.id)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="person-outline" size={16} color={t.colors.tabBarActive} />
+                    <Text
+                      style={{ color: t.colors.tabBarActive }}
+                      className="text-sm font-semibold"
+                    >
+                      Add Guest
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               )}
 
-              {/* Set Teams — Las Vegas only; organizers split the group into two teams */}
-              {isVegasRound && round.is_organizer && group.players.length > 0 && (
+              {/* Set Teams — any team format; organizers partition the group into teams */}
+              {isTeamRound && round.is_organizer && group.players.length > 0 && (
                 <TouchableOpacity
                   className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
                   onPress={() => setTeamAssignGroupId(group.id)}
@@ -1243,23 +1293,66 @@ export default function RoundDetailScreen() {
           </View>
         )}
 
+        {/* ── Teams tab (Best Ball) ────────────────────────────────────────── */}
+        {activeTab === "teams" && (
+          <View className="mb-8">
+            {scorecardLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardError || !scorecard ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load team results.
+              </Text>
+            ) : (() => {
+              const matches = buildBestBallRoundMatches(scorecard);
+              if (matches.length === 0) {
+                return (
+                  <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                    No teams assigned yet. The organizer sets teams per group from the
+                    Groups tab.
+                  </Text>
+                );
+              }
+              return (
+                <View className="gap-4">
+                  {matches.map((m) => (
+                    <BestBallMatchCard key={m.groupId} match={m} holeCount={scorecard.holes.length} />
+                  ))}
+                </View>
+              );
+            })()}
+          </View>
+        )}
+
       </ScrollView>
 
-      {/* ── Vegas team-assignment modal ─────────────────────────────────────── */}
+      {/* ── Team-assignment modal — Vegas (fixed 2v2) or Best Ball (free-form) ── */}
       {(() => {
         const g = round.groups.find((grp) => grp.id === teamAssignGroupId);
         if (!g) return null;
+        const modalGroup = {
+          id: g.id,
+          group_number: g.group_number,
+          players: g.players.map((p) => ({ round_player_id: p.round_player_id, display_name: p.display_name })),
+        };
+        const groupTeams = teamsForGroup(g.players.map((p) => p.round_player_id), roundTeams ?? []);
+        if (isBestBallRound) {
+          return (
+            <BestBallTeamAssignmentModal
+              visible={!!teamAssignGroupId}
+              onClose={() => setTeamAssignGroupId(null)}
+              roundId={id as string}
+              group={modalGroup}
+              groupTeams={groupTeams}
+            />
+          );
+        }
         return (
           <VegasTeamAssignmentModal
             visible={!!teamAssignGroupId}
             onClose={() => setTeamAssignGroupId(null)}
             roundId={id as string}
-            group={{
-              id: g.id,
-              group_number: g.group_number,
-              players: g.players.map((p) => ({ round_player_id: p.round_player_id, display_name: p.display_name })),
-            }}
-            groupTeams={teamsForGroup(g.players.map((p) => p.round_player_id), roundTeams ?? [])}
+            group={modalGroup}
+            groupTeams={groupTeams}
           />
         );
       })()}
@@ -1507,6 +1600,15 @@ export default function RoundDetailScreen() {
 
         </View>
       </Modal>
+
+      {/* ── Add Guest Modal ─────────────────────────────────────────────────── */}
+
+      <AddGuestModal
+        visible={!!guestGroupId}
+        onClose={() => setGuestGroupId(null)}
+        roundId={id}
+        groupId={guestGroupId}
+      />
 
       {/* ── Edit Group Modal ─────────────────────────────────────────────────── */}
 

@@ -14,6 +14,8 @@ export interface RoundCoursePayload {
   // Las Vegas toggles — included only when scoring_format is "las_vegas".
   vegas_birdie_flip?: boolean;
   vegas_scoring_basis?: string;
+  // Best Ball toggle — included only when scoring_format is "best_ball".
+  best_ball_scoring_basis?: string;
 }
 
 // VegasOptions carries the Las Vegas toggle state into the payload builder.
@@ -22,17 +24,23 @@ export interface VegasOptions {
   scoringBasis: "gross" | "net";
 }
 
+// BestBallOptions carries the Best Ball toggle state into the payload builder.
+export interface BestBallOptions {
+  scoringBasis: "gross" | "net";
+}
+
 // buildRoundCoursePayload: converts selected course/tee/format state into the
 // API payload fields shared by POST /api/v1/rounds and POST /api/v1/events/:id/rounds.
 // Uses course_id + default_tee_id (preferred) when a tee is selected; falls back
 // to course_name (find-or-create path) when the course has no tees configured.
-// The vegas toggles are attached only for a las_vegas round so other formats stay clean.
+// The format toggles are attached only for the matching format so others stay clean.
 export function buildRoundCoursePayload(
   selectedCourse: PickedCourse,
   selectedTeeId: string | null,
   nineHoleSelection: "18" | "front" | "back",
   scoringFormat: string,
   vegas?: VegasOptions,
+  bestBall?: BestBallOptions,
 ): RoundCoursePayload {
   const payload: RoundCoursePayload = {
     scoring_format: scoringFormat,
@@ -41,6 +49,9 @@ export function buildRoundCoursePayload(
   if (scoringFormat === "las_vegas" && vegas) {
     payload.vegas_birdie_flip = vegas.birdieFlip;
     payload.vegas_scoring_basis = vegas.scoringBasis;
+  }
+  if (scoringFormat === "best_ball" && bestBall) {
+    payload.best_ball_scoring_basis = bestBall.scoringBasis;
   }
   if (selectedTeeId) {
     payload.course_id = selectedCourse.id;

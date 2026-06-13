@@ -303,6 +303,10 @@ The creator is auto-added as organizer in the `POST /api/v1/events` transaction.
 
 **Organizer event actions** — cancel (`PATCH /events/:id` with `{status:"cancelled"}`) or delete (`DELETE /events/:id`). Both go through `isEventOrganizer`. Deletion cascades via DB constraints.
 
+### Guest Players
+
+Score-only participants with no account, for tracking scores of people who don't use the app. A guest is a normal `users` row with `is_guest = true`, `auth_id = NULL`, and a synthetic unique email (`guest-<uuid>@guest.local`, never shown — the API flags `is_guest` and the UI hides it). Guests are **per-round, one-off**: created when added to a group via `POST /rounds/:roundId/groups/:groupId/guests` (`{name, course_handicap?}`), they join the round directly as a `round_player` with `event_player_id = NULL` **even on event-linked rounds** (they never touch the event roster). Because groups/teams/scores key off `round_player`, guests slot into Vegas/Best Ball team assignment and the leaderboard with no extra code; only advanced stats are skipped. Removal reuses `DELETE .../members/:userId` (guest-aware: looks up by `user_id` and also deletes the orphan guest `users` row). Mobile: `components/AddGuestModal.tsx`, input helpers in [`mobile/utils/guest.ts`](mobile/utils/guest.ts) (pure + tested).
+
 ### Handicap Rule
 
 Player-entered per round — **no automatic WHS calculation.**
@@ -320,6 +324,10 @@ Player-entered per round — **no automatic WHS calculation.**
 ### Las Vegas (`scoring_format = 'las_vegas'`)
 
 2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables (organizer assigns two teams of two per group via `RoundService` team CRUD: `GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`); `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
+
+### Best Ball (`scoring_format = 'best_ball'`)
+
+Team game where everyone plays their own ball the whole hole but only the team's **lowest** score counts; the team with the lowest cumulative total wins. **Free-form** — any number of teams of any size partition one playing group (2v2, 4v4, 2v2v2v2, …); no equal-size enforcement. One per-round toggle on `rounds`: `best_ball_scoring_basis` (`gross`/`net`, default `gross`). Reuses the same **`teams`/`team_members`** tables and team CRUD routes as Vegas — `team_scores` stays unused. All Best Ball math is **derived client-side** in [`mobile/utils/bestBall.ts`](mobile/utils/bestBall.ts) (pure + Jest-tested); the free-form N-team assignment model lives in [`mobile/utils/bestBallTeams.ts`](mobile/utils/bestBallTeams.ts). Net-stroke helpers (`normalizeStrokeIndexes`, `holeHandicapStrokes`) are shared by both formats from [`mobile/utils/handicap.ts`](mobile/utils/handicap.ts) (re-exported by `vegas.ts`). A **"Teams" tab** on the round and event detail screens (shown only for Best Ball) surfaces the team leaderboard + per-hole best-ball detail; the Basic scorecard becomes an editable combined view. **`AssignTeamMembers` is format-aware**: the max-2-per-team cap (`ErrTeamFull`) applies only to `las_vegas`; Best Ball (and any future team format) allows free-form team sizes.
 
 ---
 

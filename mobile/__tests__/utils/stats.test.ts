@@ -43,6 +43,7 @@ function makeScorecard(overrides: Partial<Scorecard> & { player?: ScorecardPlaye
     scoring_format: "stroke",
     vegas_birdie_flip: true,
     vegas_scoring_basis: "gross",
+    best_ball_scoring_basis: "gross",
     caller_user_id: "user-1",
     is_organizer: false,
     handicap_allowance: null,

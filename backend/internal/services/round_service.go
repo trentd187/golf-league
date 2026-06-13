@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,17 +34,19 @@ import (
 // Prevents S1192 duplicate-literal findings for strings repeated 3+ times
 // across the Schedule, Update, and CreateEventlessRound validation blocks.
 const (
-	colScheduledDate     = "scheduled_date"
-	colDefaultTeeID      = "default_tee_id"
-	colNineHoleSelection = "nine_hole_selection"
-	nineHoleFront        = "front"
-	nineHoleBack         = "back"
-	colVegasScoringBasis = "vegas_scoring_basis"
+	colScheduledDate        = "scheduled_date"
+	colDefaultTeeID         = "default_tee_id"
+	colNineHoleSelection    = "nine_hole_selection"
+	nineHoleFront           = "front"
+	nineHoleBack            = "back"
+	colVegasScoringBasis    = "vegas_scoring_basis"
+	colBestBallScoringBasis = "best_ball_scoring_basis"
 )
 
-// validateVegasScoringBasis returns a ValidationError when basis is set to anything
-// other than "gross" or "net". A nil pointer (omitted) is valid — the caller defaults it.
-func validateVegasScoringBasis(basis *string) error {
+// validateGrossNetBasis returns a ValidationError when basis is set to anything other
+// than "gross" or "net". A nil pointer (omitted) is valid — the caller defaults it.
+// field names the offending column for the error message.
+func validateGrossNetBasis(basis *string, field string) error {
 	if basis == nil {
 		return nil
 	}
@@ -51,8 +54,18 @@ func validateVegasScoringBasis(basis *string) error {
 	case models.VegasScoringBasisGross, models.VegasScoringBasisNet:
 		return nil
 	default:
-		return &ValidationError{Field: colVegasScoringBasis, Message: `vegas_scoring_basis must be "gross" or "net"`}
+		return &ValidationError{Field: field, Message: field + ` must be "gross" or "net"`}
 	}
+}
+
+// validateVegasScoringBasis validates the Las Vegas gross/net toggle.
+func validateVegasScoringBasis(basis *string) error {
+	return validateGrossNetBasis(basis, colVegasScoringBasis)
+}
+
+// validateBestBallScoringBasis validates the Best Ball gross/net toggle.
+func validateBestBallScoringBasis(basis *string) error {
+	return validateGrossNetBasis(basis, colBestBallScoringBasis)
 }
 
 // applyVegasToggles sets the Las Vegas configuration on a round being created,
@@ -65,6 +78,15 @@ func applyVegasToggles(round *models.Round, flip *bool, basis *string) {
 	round.VegasScoringBasis = string(models.VegasScoringBasisGross)
 	if basis != nil && *basis != "" {
 		round.VegasScoringBasis = *basis
+	}
+}
+
+// applyBestBallToggles sets the Best Ball configuration on a round being created,
+// defaulting basis to "gross" when the caller omits it. Best Ball has no flip rule.
+func applyBestBallToggles(round *models.Round, basis *string) {
+	round.BestBallScoringBasis = string(models.VegasScoringBasisGross)
+	if basis != nil && *basis != "" {
+		round.BestBallScoringBasis = *basis
 	}
 }
 
@@ -108,7 +130,9 @@ type ScheduleRoundInput struct {
 	// ScoringFormat is las_vegas, but stored regardless so they survive a format change.
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
-	Groups            []GroupScheduleInput
+	// Best Ball toggle; nil = default (basis "gross"). Stored regardless of format.
+	BestBallScoringBasis *string
+	Groups               []GroupScheduleInput
 }
 
 // GroupScheduleInput is one initial tee-time group in a Schedule call.
@@ -132,6 +156,8 @@ type UpdateRoundInput struct {
 	// Las Vegas toggles; nil = leave unchanged.
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
+	// Best Ball toggle; nil = leave unchanged.
+	BestBallScoringBasis *string
 }
 
 // UpdateGroupInput is the optional-fields payload for UpdateGroup.
@@ -195,6 +221,7 @@ type GroupPlayerResult struct {
 	DisplayName   string
 	Email         string
 	AvatarURL     *string
+	IsGuest       bool
 }
 
 // TeamResult is one Las Vegas team with its (up to 2) members. Reuses
@@ -379,6 +406,9 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
 		return ScheduleRoundResult{}, err
 	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
+	}
 
 	authorized, err := s.EventSvc.IsOrganizer(ctx, eventID, callerID, callerRole)
 	if err != nil {
@@ -494,6 +524,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			NineHoleSelection: in.NineHoleSelection,
 		}
 		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
+		applyBestBallToggles(&createdRound, in.BestBallScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}
@@ -568,6 +599,9 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
 		return RoundUpdateResult{}, err
 	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
+		return RoundUpdateResult{}, err
+	}
 
 	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
 	if errors.Is(err, ErrRoundNotFound) {
@@ -609,6 +643,9 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	}
 	if in.VegasScoringBasis != nil && *in.VegasScoringBasis != "" {
 		round.VegasScoringBasis = *in.VegasScoringBasis
+	}
+	if in.BestBallScoringBasis != nil && *in.BestBallScoringBasis != "" {
+		round.BestBallScoringBasis = *in.BestBallScoringBasis
 	}
 
 	if in.CourseID != nil {
@@ -934,6 +971,85 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 	return GroupMutationResult{Group: group, Players: players}, nil
 }
 
+// AddGuestToGroup creates a score-only guest player and adds them to a tee-time group.
+// A guest is a lightweight users row (no auth_id, synthetic unique email, is_guest=true)
+// that joins the round directly via round_players with event_player_id NULL — even on
+// event-linked rounds, so guests never touch the event roster. Reuses the same 4-player
+// cap as AddGroupMember. courseHandicap is optional. Organizer-only.
+func (s *RoundService) AddGuestToGroup(ctx context.Context, roundID, groupID, callerID uuid.UUID, callerRole, name string, courseHandicap *int) (GroupMutationResult, error) {
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return GroupMutationResult{}, ErrRoundNotFound
+	}
+	if err != nil {
+		return GroupMutationResult{}, err
+	}
+	if !isOrg {
+		return GroupMutationResult{}, ErrRoundForbidden
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return GroupMutationResult{}, &ValidationError{Field: "name", Message: "name is required"}
+	}
+	if len(name) > 80 {
+		return GroupMutationResult{}, &ValidationError{Field: "name", Message: "name must be 80 characters or fewer"}
+	}
+
+	var group models.Group
+	if err := s.DB.WithContext(ctx).First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return GroupMutationResult{}, ErrGroupNotFound
+		}
+		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
+	}
+
+	var currentCount int64
+	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if currentCount >= 4 {
+		return GroupMutationResult{}, ErrGroupFull
+	}
+
+	// Create the guest user, round_player, and group_player atomically so a failure
+	// can't leave an orphan guest users row behind.
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Synthetic email keeps users.email UNIQUE/NOT NULL satisfied; never shown to clients.
+		guest := models.User{
+			DisplayName: name,
+			Email:       "guest-" + uuid.NewString() + "@guest.local",
+			IsGuest:     true,
+			Role:        models.UserRoleUser,
+		}
+		if err := tx.Create(&guest).Error; err != nil {
+			return fmt.Errorf("create guest user: %w", err)
+		}
+
+		roundPlayer := models.RoundPlayer{
+			RoundID:        roundID,
+			UserID:         guest.ID,
+			CourseHandicap: courseHandicap,
+			Status:         models.RoundPlayerStatusRegistered,
+		}
+		if err := tx.Create(&roundPlayer).Error; err != nil {
+			return fmt.Errorf("create round player: %w", err)
+		}
+
+		gp := models.GroupPlayer{GroupID: groupID, RoundPlayerID: roundPlayer.ID}
+		if err := tx.Create(&gp).Error; err != nil {
+			return fmt.Errorf("add group player: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return GroupMutationResult{}, err
+	}
+
+	players, err := s.loadGroupPlayers(ctx, group.ID)
+	if err != nil {
+		return GroupMutationResult{}, err
+	}
+	return GroupMutationResult{Group: group, Players: players}, nil
+}
+
 // RemoveGroupMember removes a player from a group by deleting their RoundPlayer.
 // The GroupPlayer join row is removed automatically via ON DELETE CASCADE.
 // Organizer-only.
@@ -963,9 +1079,20 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 		return fmt.Errorf("load group: %w", err)
 	}
 
-	// Look up RoundPlayer via event_player (event rounds) or user_id directly (eventless).
+	// Guests have no event_players row even on event-linked rounds, so look them up
+	// by user_id directly regardless of event linkage.
+	var targetUser models.User
+	if err := s.DB.WithContext(ctx).Select("id, is_guest").First(&targetUser, "id = ?", targetUserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrPlayerNotInRound
+		}
+		return fmt.Errorf("load target user: %w", err)
+	}
+
+	// Look up RoundPlayer via event_player (non-guest event rounds) or user_id directly
+	// (eventless rounds and all guests).
 	var roundPlayer models.RoundPlayer
-	if round.EventID != nil {
+	if round.EventID != nil && !targetUser.IsGuest {
 		var eventPlayer models.EventPlayer
 		if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
 			First(&eventPlayer).Error; err != nil {
@@ -994,6 +1121,13 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 	// Deleting RoundPlayer cascades to GroupPlayer via ON DELETE CASCADE.
 	if err := s.DB.WithContext(ctx).Delete(&roundPlayer).Error; err != nil {
 		return fmt.Errorf("delete round player: %w", err)
+	}
+
+	// A guest user exists only for this one round_player, so remove the orphan row too.
+	if targetUser.IsGuest {
+		if err := s.DB.WithContext(ctx).Delete(&models.User{}, "id = ?", targetUserID).Error; err != nil {
+			return fmt.Errorf("delete guest user: %w", err)
+		}
 	}
 	return nil
 }
@@ -1057,7 +1191,17 @@ func (s *RoundService) CreateTeam(ctx context.Context, roundID, callerID uuid.UU
 // player is never on two teams. All round_players must belong to the round.
 // Organizer-only.
 func (s *RoundService) AssignTeamMembers(ctx context.Context, roundID, teamID, callerID uuid.UUID, callerRole string, roundPlayerIDs []uuid.UUID) (TeamResult, error) {
-	if len(roundPlayerIDs) > 2 {
+	// The 2-player cap is Las Vegas–specific (twosomes). Best Ball (and any future
+	// team format) allows free-form team sizes, so load the round's format and only
+	// enforce the cap for las_vegas.
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Select("scoring_format").First(&round, "id = ?", roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return TeamResult{}, ErrRoundNotFound
+		}
+		return TeamResult{}, fmt.Errorf("load round: %w", err)
+	}
+	if round.ScoringFormat == models.ScoringFormatLasVegas && len(roundPlayerIDs) > 2 {
 		return TeamResult{}, ErrTeamFull
 	}
 
@@ -1165,10 +1309,11 @@ func (s *RoundService) loadTeamMembers(ctx context.Context, teamID uuid.UUID) ([
 		DisplayName   string
 		Email         string
 		AvatarURL     *string
+		IsGuest       bool
 	}
 	var rows []playerRow
 	if err := s.DB.WithContext(ctx).Table("team_members tm").
-		Select("tm.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
+		Select("tm.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url, u.is_guest").
 		Joins("JOIN round_players rp ON rp.id = tm.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("tm.team_id = ?", teamID).
@@ -1199,6 +1344,8 @@ type CreateEventlessRoundInput struct {
 	// Las Vegas toggles; nil = default (flip true, basis "gross").
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
+	// Best Ball toggle; nil = default (basis "gross").
+	BestBallScoringBasis *string
 }
 
 // CreateEventlessRound creates a standalone round with no event association.
@@ -1225,6 +1372,9 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 		}
 	}
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
+	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
 		return ScheduleRoundResult{}, err
 	}
 
@@ -1319,6 +1469,7 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 			NineHoleSelection: in.NineHoleSelection,
 		}
 		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
+		applyBestBallToggles(&createdRound, in.BestBallScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}
@@ -1379,10 +1530,11 @@ func (s *RoundService) loadGroupPlayers(ctx context.Context, groupID uuid.UUID) 
 		DisplayName   string
 		Email         string
 		AvatarURL     *string
+		IsGuest       bool
 	}
 	var rows []playerRow
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url, u.is_guest").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("gp.group_id = ?", groupID).

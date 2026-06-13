@@ -17,6 +17,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,36 @@ func TestAddGroupMember_InvalidGroupID(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPost, membersRoute, handlers.AddGroupMember(nilRoundSvc()))
 	resp, err := app.Test(
 		httptest.NewRequest(http.MethodPost, "/rounds/"+validUUID+"/groups/bad-id/members", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ─── AddGuestToGroup ──────────────────────────────────────────────────────────
+
+const guestsRoute = "/rounds/:roundId/groups/:groupId/guests"
+
+func TestAddGuestToGroup_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPost, guestsRoute, handlers.AddGuestToGroup(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPost, "/rounds/"+validUUID+"/groups/"+validUUID+"/guests", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAddGuestToGroup_InvalidGroupID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, guestsRoute, handlers.AddGuestToGroup(nilRoundSvc()))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPost, "/rounds/"+validUUID+"/groups/bad-id/guests", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestAddGuestToGroup_InvalidBody(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPost, guestsRoute, handlers.AddGuestToGroup(nilRoundSvc()))
+	req := httptest.NewRequest(http.MethodPost,
+		"/rounds/"+validUUID+"/groups/"+validUUID+"/guests", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

@@ -142,6 +142,7 @@ func main() {
 	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(roundService))
 	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
+	api.Post("/rounds/:roundId/groups/:groupId/guests", handlers.AddGuestToGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
 	// Las Vegas team routes — organizer-only partner assignment for las_vegas rounds.

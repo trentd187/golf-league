@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -220,6 +221,7 @@ type GroupPlayerResult struct {
 	DisplayName   string
 	Email         string
 	AvatarURL     *string
+	IsGuest       bool
 }
 
 // TeamResult is one Las Vegas team with its (up to 2) members. Reuses
@@ -969,6 +971,85 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 	return GroupMutationResult{Group: group, Players: players}, nil
 }
 
+// AddGuestToGroup creates a score-only guest player and adds them to a tee-time group.
+// A guest is a lightweight users row (no auth_id, synthetic unique email, is_guest=true)
+// that joins the round directly via round_players with event_player_id NULL — even on
+// event-linked rounds, so guests never touch the event roster. Reuses the same 4-player
+// cap as AddGroupMember. courseHandicap is optional. Organizer-only.
+func (s *RoundService) AddGuestToGroup(ctx context.Context, roundID, groupID, callerID uuid.UUID, callerRole, name string, courseHandicap *int) (GroupMutationResult, error) {
+	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if errors.Is(err, ErrRoundNotFound) {
+		return GroupMutationResult{}, ErrRoundNotFound
+	}
+	if err != nil {
+		return GroupMutationResult{}, err
+	}
+	if !isOrg {
+		return GroupMutationResult{}, ErrRoundForbidden
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return GroupMutationResult{}, &ValidationError{Field: "name", Message: "name is required"}
+	}
+	if len(name) > 80 {
+		return GroupMutationResult{}, &ValidationError{Field: "name", Message: "name must be 80 characters or fewer"}
+	}
+
+	var group models.Group
+	if err := s.DB.WithContext(ctx).First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return GroupMutationResult{}, ErrGroupNotFound
+		}
+		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
+	}
+
+	var currentCount int64
+	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if currentCount >= 4 {
+		return GroupMutationResult{}, ErrGroupFull
+	}
+
+	// Create the guest user, round_player, and group_player atomically so a failure
+	// can't leave an orphan guest users row behind.
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Synthetic email keeps users.email UNIQUE/NOT NULL satisfied; never shown to clients.
+		guest := models.User{
+			DisplayName: name,
+			Email:       "guest-" + uuid.NewString() + "@guest.local",
+			IsGuest:     true,
+			Role:        models.UserRoleUser,
+		}
+		if err := tx.Create(&guest).Error; err != nil {
+			return fmt.Errorf("create guest user: %w", err)
+		}
+
+		roundPlayer := models.RoundPlayer{
+			RoundID:        roundID,
+			UserID:         guest.ID,
+			CourseHandicap: courseHandicap,
+			Status:         models.RoundPlayerStatusRegistered,
+		}
+		if err := tx.Create(&roundPlayer).Error; err != nil {
+			return fmt.Errorf("create round player: %w", err)
+		}
+
+		gp := models.GroupPlayer{GroupID: groupID, RoundPlayerID: roundPlayer.ID}
+		if err := tx.Create(&gp).Error; err != nil {
+			return fmt.Errorf("add group player: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return GroupMutationResult{}, err
+	}
+
+	players, err := s.loadGroupPlayers(ctx, group.ID)
+	if err != nil {
+		return GroupMutationResult{}, err
+	}
+	return GroupMutationResult{Group: group, Players: players}, nil
+}
+
 // RemoveGroupMember removes a player from a group by deleting their RoundPlayer.
 // The GroupPlayer join row is removed automatically via ON DELETE CASCADE.
 // Organizer-only.
@@ -998,9 +1079,20 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 		return fmt.Errorf("load group: %w", err)
 	}
 
-	// Look up RoundPlayer via event_player (event rounds) or user_id directly (eventless).
+	// Guests have no event_players row even on event-linked rounds, so look them up
+	// by user_id directly regardless of event linkage.
+	var targetUser models.User
+	if err := s.DB.WithContext(ctx).Select("id, is_guest").First(&targetUser, "id = ?", targetUserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrPlayerNotInRound
+		}
+		return fmt.Errorf("load target user: %w", err)
+	}
+
+	// Look up RoundPlayer via event_player (non-guest event rounds) or user_id directly
+	// (eventless rounds and all guests).
 	var roundPlayer models.RoundPlayer
-	if round.EventID != nil {
+	if round.EventID != nil && !targetUser.IsGuest {
 		var eventPlayer models.EventPlayer
 		if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
 			First(&eventPlayer).Error; err != nil {
@@ -1029,6 +1121,13 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 	// Deleting RoundPlayer cascades to GroupPlayer via ON DELETE CASCADE.
 	if err := s.DB.WithContext(ctx).Delete(&roundPlayer).Error; err != nil {
 		return fmt.Errorf("delete round player: %w", err)
+	}
+
+	// A guest user exists only for this one round_player, so remove the orphan row too.
+	if targetUser.IsGuest {
+		if err := s.DB.WithContext(ctx).Delete(&models.User{}, "id = ?", targetUserID).Error; err != nil {
+			return fmt.Errorf("delete guest user: %w", err)
+		}
 	}
 	return nil
 }
@@ -1210,10 +1309,11 @@ func (s *RoundService) loadTeamMembers(ctx context.Context, teamID uuid.UUID) ([
 		DisplayName   string
 		Email         string
 		AvatarURL     *string
+		IsGuest       bool
 	}
 	var rows []playerRow
 	if err := s.DB.WithContext(ctx).Table("team_members tm").
-		Select("tm.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
+		Select("tm.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url, u.is_guest").
 		Joins("JOIN round_players rp ON rp.id = tm.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("tm.team_id = ?", teamID).
@@ -1430,10 +1530,11 @@ func (s *RoundService) loadGroupPlayers(ctx context.Context, groupID uuid.UUID) 
 		DisplayName   string
 		Email         string
 		AvatarURL     *string
+		IsGuest       bool
 	}
 	var rows []playerRow
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.email, u.avatar_url, u.is_guest").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Where("gp.group_id = ?", groupID).

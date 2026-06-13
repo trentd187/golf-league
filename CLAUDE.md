@@ -303,6 +303,10 @@ The creator is auto-added as organizer in the `POST /api/v1/events` transaction.
 
 **Organizer event actions** — cancel (`PATCH /events/:id` with `{status:"cancelled"}`) or delete (`DELETE /events/:id`). Both go through `isEventOrganizer`. Deletion cascades via DB constraints.
 
+### Guest Players
+
+Score-only participants with no account, for tracking scores of people who don't use the app. A guest is a normal `users` row with `is_guest = true`, `auth_id = NULL`, and a synthetic unique email (`guest-<uuid>@guest.local`, never shown — the API flags `is_guest` and the UI hides it). Guests are **per-round, one-off**: created when added to a group via `POST /rounds/:roundId/groups/:groupId/guests` (`{name, course_handicap?}`), they join the round directly as a `round_player` with `event_player_id = NULL` **even on event-linked rounds** (they never touch the event roster). Because groups/teams/scores key off `round_player`, guests slot into Vegas/Best Ball team assignment and the leaderboard with no extra code; only advanced stats are skipped. Removal reuses `DELETE .../members/:userId` (guest-aware: looks up by `user_id` and also deletes the orphan guest `users` row). Mobile: `components/AddGuestModal.tsx`, input helpers in [`mobile/utils/guest.ts`](mobile/utils/guest.ts) (pure + tested).
+
 ### Handicap Rule
 
 Player-entered per round — **no automatic WHS calculation.**

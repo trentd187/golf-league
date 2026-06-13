@@ -78,6 +78,8 @@ export interface ScorecardPlayer {
   user_id: string;
   display_name: string;
   avatar_url: string | null;
+  // is_guest marks a score-only guest player (no account, no advanced stats).
+  is_guest?: boolean;
   course_handicap: number | null;
   // effective_course_handicap is course_handicap after applying the event's handicap allowance.
   // Equal to course_handicap when no allowance is set. Null when course_handicap is null.

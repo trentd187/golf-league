@@ -72,6 +72,7 @@ import BestBallTeamAssignmentModal from "@/components/BestBallTeamAssignmentModa
 import BestBallMatchCard from "@/components/BestBallMatchCard";
 import StatsCards from "@/components/StatsCards";
 import UserAvatar from "@/components/UserAvatar";
+import AddGuestModal from "@/components/AddGuestModal";
 
 // ─── Tee time helpers ─────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ type GroupMember = {
   display_name: string;
   email: string;
   avatar_url: string | null;
+  // is_guest marks a score-only guest player (no account); UI hides the synthetic email.
+  is_guest?: boolean;
 };
 
 type RoundGroup = {
@@ -154,6 +157,8 @@ export default function RoundDetailScreen() {
 
   // selectedGroupId: which group's "+ Add Player" was tapped; null = modal closed.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  // guestGroupId: which group's "+ Add Guest" was tapped; null = guest modal closed.
+  const [guestGroupId, setGuestGroupId] = useState<string | null>(null);
   // memberSearch: owned here so it resets when the modal closes.
   const [memberSearch, setMemberSearch] = useState("");
 
@@ -1004,14 +1009,24 @@ export default function RoundDetailScreen() {
                         >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
-                            <Text
-                              className={`font-semibold text-sm ${t.textPrimary}`}
-                              numberOfLines={1}
-                            >
-                              {player.display_name}
-                            </Text>
+                            <View className="flex-row items-center gap-1.5">
+                              <Text
+                                className={`font-semibold text-sm shrink ${t.textPrimary}`}
+                                numberOfLines={1}
+                              >
+                                {player.display_name}
+                              </Text>
+                              {player.is_guest ? (
+                                <View className={`px-1.5 py-0.5 rounded border ${t.borderInput}`}>
+                                  <Text className={`text-[10px] font-semibold ${t.textTertiary}`}>
+                                    GUEST
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {/* Guests have only a synthetic email — show a label instead. */}
                             <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
-                              {player.email}
+                              {player.is_guest ? "Guest player" : player.email}
                             </Text>
                           </View>
                           <Ionicons
@@ -1021,22 +1036,34 @@ export default function RoundDetailScreen() {
                           />
                         </TouchableOpacity>
                       ) : (
-                        // Non-organizer: player row navigates to the player's public profile
+                        // Non-organizer: player row navigates to the player's public profile.
+                        // Guests have no profile, so their row is not tappable.
                         <TouchableOpacity
                           className="flex-1 flex-row items-center gap-3"
-                          activeOpacity={0.7}
+                          activeOpacity={player.is_guest ? 1 : 0.7}
+                          disabled={player.is_guest}
                           onPress={() => router.push(`/users/${player.user_id}`)}
                         >
                           <UserAvatar avatarUrl={player.avatar_url} displayName={player.display_name} size={32} />
                           <View className="flex-1 min-w-0">
-                            <Text
-                              className={`font-semibold text-sm ${t.textPrimary}`}
-                              numberOfLines={1}
-                            >
-                              {player.display_name}
-                            </Text>
+                            <View className="flex-row items-center gap-1.5">
+                              <Text
+                                className={`font-semibold text-sm shrink ${t.textPrimary}`}
+                                numberOfLines={1}
+                              >
+                                {player.display_name}
+                              </Text>
+                              {player.is_guest ? (
+                                <View className={`px-1.5 py-0.5 rounded border ${t.borderInput}`}>
+                                  <Text className={`text-[10px] font-semibold ${t.textTertiary}`}>
+                                    GUEST
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {/* Guests have only a synthetic email — show a label instead. */}
                             <Text className={`text-xs ${t.textTertiary}`} numberOfLines={1}>
-                              {player.email}
+                              {player.is_guest ? "Guest player" : player.email}
                             </Text>
                           </View>
                         </TouchableOpacity>
@@ -1050,21 +1077,36 @@ export default function RoundDetailScreen() {
                 );
               })}
 
-              {/* "+ Add Player" — only for organizers when the group has fewer than 4 players */}
+              {/* "+ Add Player" / "+ Add Guest" — organizers only, while the group has room */}
               {round.is_organizer && group.players.length < 4 && (
-                <TouchableOpacity
-                  className={`px-4 py-3 flex-row items-center gap-2 border-t ${t.divider}`}
-                  onPress={() => setSelectedGroupId(group.id)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
-                  <Text
-                    style={{ color: t.colors.tabBarActive }}
-                    className="text-sm font-semibold"
+                <View className={`flex-row border-t ${t.divider}`}>
+                  <TouchableOpacity
+                    className="flex-1 px-4 py-3 flex-row items-center gap-2"
+                    onPress={() => setSelectedGroupId(group.id)}
+                    activeOpacity={0.7}
                   >
-                    Add Player
-                  </Text>
-                </TouchableOpacity>
+                    <Ionicons name="person-add-outline" size={16} color={t.colors.tabBarActive} />
+                    <Text
+                      style={{ color: t.colors.tabBarActive }}
+                      className="text-sm font-semibold"
+                    >
+                      Add Player
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    className={`flex-1 px-4 py-3 flex-row items-center gap-2 border-l ${t.divider}`}
+                    onPress={() => setGuestGroupId(group.id)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="person-outline" size={16} color={t.colors.tabBarActive} />
+                    <Text
+                      style={{ color: t.colors.tabBarActive }}
+                      className="text-sm font-semibold"
+                    >
+                      Add Guest
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               )}
 
               {/* Set Teams — any team format; organizers partition the group into teams */}
@@ -1558,6 +1600,15 @@ export default function RoundDetailScreen() {
 
         </View>
       </Modal>
+
+      {/* ── Add Guest Modal ─────────────────────────────────────────────────── */}
+
+      <AddGuestModal
+        visible={!!guestGroupId}
+        onClose={() => setGuestGroupId(null)}
+        roundId={id}
+        groupId={guestGroupId}
+      />
 
       {/* ── Edit Group Modal ─────────────────────────────────────────────────── */}
 

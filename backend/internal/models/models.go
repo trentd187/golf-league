@@ -146,8 +146,11 @@ type User struct {
 	Email       string    `gorm:"uniqueIndex;not null"`
 	AvatarURL   *string   // Pointer = nullable in DB
 	Role        UserRole  `gorm:"type:user_role;not null;default:'user'"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// IsGuest marks a score-only participant created per-round (no account, no auth_id,
+	// synthetic email). Guests track scores for team games but carry no advanced stats.
+	IsGuest   bool `gorm:"column:is_guest;not null;default:false"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Follow records a directed follow relationship: FollowerID follows FolloweeID.

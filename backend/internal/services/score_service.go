@@ -93,6 +93,7 @@ type ScorecardPlayerData struct {
 	UserID         string  `json:"user_id"`
 	DisplayName    string  `json:"display_name"`
 	AvatarURL      *string `json:"avatar_url"`
+	IsGuest        bool    `json:"is_guest"` // score-only guest; UI hides synthetic email and skips advanced stats
 	CourseHandicap *int    `json:"course_handicap"`
 	// EffectiveCourseHandicap is CourseHandicap after applying the event's handicap allowance.
 	// Nil when CourseHandicap is nil; equals CourseHandicap when no allowance is set.
@@ -346,6 +347,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		UserID         string
 		DisplayName    string
 		AvatarURL      *string
+		IsGuest        bool
 		CourseHandicap *int
 		// TeamID/TeamName come from the LEFT JOIN — nil when the player has no team.
 		TeamID   *string
@@ -356,7 +358,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 	// membership rides along on the scorecard. Non-Vegas rounds simply have no teams,
 	// so these columns stay nil.
 	if err := s.DB.WithContext(ctx).Table("group_players gp").
-		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, rp.course_handicap, t.id as team_id, t.name as team_name").
+		Select("gp.round_player_id, u.id as user_id, u.display_name, u.avatar_url, u.is_guest, rp.course_handicap, t.id as team_id, t.name as team_name").
 		Joins("JOIN round_players rp ON rp.id = gp.round_player_id").
 		Joins("JOIN users u ON u.id = rp.user_id").
 		Joins("LEFT JOIN team_members tm ON tm.round_player_id = gp.round_player_id").
@@ -418,7 +420,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 
 		players = append(players, ScorecardPlayerData{
 			RoundPlayerID: pr.RoundPlayerID, UserID: pr.UserID, DisplayName: pr.DisplayName,
-			AvatarURL: pr.AvatarURL, CourseHandicap: pr.CourseHandicap,
+			AvatarURL: pr.AvatarURL, IsGuest: pr.IsGuest, CourseHandicap: pr.CourseHandicap,
 			EffectiveCourseHandicap: effHCP, TeamID: pr.TeamID, TeamName: pr.TeamName,
 			Scores: scores, HoleStats: holeStats,
 			TotalGross: tg, TotalNet: tn,

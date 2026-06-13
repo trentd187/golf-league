@@ -43,6 +43,8 @@ import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, Tee
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
+import { buildLiveBestBallMatch, type BestBallBasis } from "@/utils/bestBall";
+import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import type { ComponentProps } from "react";
@@ -749,6 +751,16 @@ export default function ScorecardScreen() {
     ? buildLiveVegasMatch(group, holeRows, scores, vegasBasis, scorecard.vegas_birdie_flip, vegasEffHandicaps, myPlayer?.team_id ?? undefined)
     : null;
 
+  // ── Best Ball live match ──────────────────────────────────────────────────────
+  // For a best_ball round the Basic view is the team leaderboard + per-hole best-ball
+  // grid, built live from the local gross scores. Reuses the same effective-handicap
+  // map; null until the group has at least two teams.
+  const isBestBall = scorecard.scoring_format === "best_ball";
+  const bestBallBasis: BestBallBasis = scorecard.best_ball_scoring_basis === "net" ? "net" : "gross";
+  const bestBallMatch = isBestBall
+    ? buildLiveBestBallMatch(group, holeRows, scores, bestBallBasis, vegasEffHandicaps, myPlayer?.team_id ?? undefined)
+    : null;
+
   // Normalize stroke indexes to ranks 1–N within the played holes so that
   // 9-hole handicap previews distribute correctly (mirrors Go NormalizeStrokeIndexes).
   // holeRows is already filtered to the played set (front/back/full).
@@ -1034,6 +1046,38 @@ export default function ScorecardScreen() {
               </Text>
               <Text className={`mt-1 text-xs text-center ${t.textTertiary}`}>
                 This group needs two teams of two before the Vegas matchup can be scored.
+                The organizer assigns teams from the round screen.
+              </Text>
+            </View>
+          )
+
+        ) : viewMode === "basic" && isBestBall ? (
+
+          /* ── Basic Best Ball view: team leaderboard + per-hole best-ball grid ── */
+          bestBallMatch ? (
+            <BestBallBasicScorecard
+              match={bestBallMatch}
+              holes={holeRows}
+              scores={scores}
+              onChangeScore={(rpId, hole, v) =>
+                setScores((prev) => ({
+                  ...prev,
+                  [rpId]: { ...(prev[rpId] ?? {}), [hole]: v },
+                }))
+              }
+              onBlurScore={(rpId) => autoSavePlayer(rpId)}
+              canEdit={canEditPlayer}
+              saveError={saveError}
+              editableDisabled={savingHandicaps || needsHandicap}
+            />
+          ) : (
+            <View className={`mt-6 items-center rounded-xl border ${t.border} ${t.surfaceSunken} p-6`}>
+              <Ionicons name="people-outline" size={28} color={t.colors.tabBarInactive} />
+              <Text className={`mt-2 text-sm font-semibold text-center ${t.textSecondary}`}>
+                Waiting for teams
+              </Text>
+              <Text className={`mt-1 text-xs text-center ${t.textTertiary}`}>
+                This group needs at least two teams before Best Ball can be scored.
                 The organizer assigns teams from the round screen.
               </Text>
             </View>

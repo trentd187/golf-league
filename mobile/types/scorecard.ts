@@ -82,8 +82,8 @@ export interface ScorecardPlayer {
   // effective_course_handicap is course_handicap after applying the event's handicap allowance.
   // Equal to course_handicap when no allowance is set. Null when course_handicap is null.
   effective_course_handicap: number | null;
-  // team_id/team_name identify the player's Las Vegas team within their group.
-  // Null when unassigned (or the round isn't las_vegas).
+  // team_id/team_name identify the player's team within their group, for any team
+  // format (Las Vegas, Best Ball). Null when unassigned (or the round isn't a team format).
   team_id: string | null;
   team_name: string | null;
   scores: ScorecardScore[];
@@ -125,6 +125,9 @@ export interface Scorecard {
   // vegas_scoring_basis: "gross" or "net" — which scores feed the combination.
   vegas_birdie_flip: boolean;
   vegas_scoring_basis: string;
+  // best_ball_scoring_basis: "gross" or "net" — which scores feed the team best-ball
+  // total. Only meaningful when scoring_format is "best_ball".
+  best_ball_scoring_basis: string;
   // caller_user_id is the database UUID of the requesting user. The Supabase auth UUID
   // differs from the DB UUID, so the server returns the DB UUID here to allow the
   // client to reliably identify its own player entry in the groups list.

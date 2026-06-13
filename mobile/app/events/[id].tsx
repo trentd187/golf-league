@@ -61,7 +61,9 @@ import UserAvatar from "@/components/UserAvatar";
 import { formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
 import { buildEventTally } from "@/utils/vegas";
+import { buildBestBallEventTally } from "@/utils/bestBall";
 import VegasEventTally from "@/components/VegasEventTally";
+import BestBallEventTally from "@/components/BestBallEventTally";
 import { showAlert, showConfirm } from "@/utils/alerts";
 import StatsCards from "@/components/StatsCards";
 
@@ -150,7 +152,7 @@ export default function EventDetailScreen() {
   const [scheduleRoundModalVisible, setScheduleRoundModalVisible] = useState(false);
 
   // --- Tab state ---
-  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats" | "requests" | "matches">("members");
+  const [activeTab, setActiveTab] = useState<"members" | "rounds" | "leaderboard" | "stats" | "requests" | "matches" | "teams">("members");
 
   // --- Edit event form state ---
   const [editName, setEditName]               = useState("");
@@ -242,6 +244,8 @@ export default function EventDetailScreen() {
 
   // hasVegasRound gates the event-level Matches tab (any Vegas round in the event).
   const hasVegasRound = (rounds ?? []).some((r) => r.scoring_format === "las_vegas");
+  // hasBestBallRound gates the event-level Teams tab (any Best Ball round in the event).
+  const hasBestBallRound = (rounds ?? []).some((r) => r.scoring_format === "best_ball");
 
   // scorecardQueries: one query per completed round.
   // Lazy — only enabled when the user opens the Leaderboard or Stats tab to avoid
@@ -257,7 +261,7 @@ export default function EventDetailScreen() {
         if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
         return res.json() as Promise<Scorecard>;
       },
-      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches"),
+      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches" || activeTab === "teams"),
     })),
   });
 
@@ -585,6 +589,7 @@ export default function EventDetailScreen() {
         roundForm.nineHoleSelection,
         roundForm.scoringFormat,
         { birdieFlip: roundForm.vegasBirdieFlip, scoringBasis: roundForm.vegasScoringBasis },
+        { scoringBasis: roundForm.bestBallScoringBasis },
       ),
     });
   };
@@ -792,6 +797,7 @@ export default function EventDetailScreen() {
         <View className="flex-row gap-2 mb-5">
           {(["members", "rounds", "leaderboard", "stats",
             ...(hasVegasRound ? ["matches"] : []),
+            ...(hasBestBallRound ? ["teams"] : []),
             ...(isOrganizer && event.is_public ? ["requests"] : []),
           ] as const).map((tab) => {
             const isActive = activeTab === tab;
@@ -1087,6 +1093,36 @@ export default function EventDetailScreen() {
                 );
               }
               return <VegasEventTally tallies={tallies} />;
+            })()}
+          </View>
+        )}
+
+        {/* ── Teams tab — cumulative Best Ball standings across the event ────── */}
+        {activeTab === "teams" && (
+          <View className="mb-8">
+            {completedRoundIds.length === 0 ? (
+              <View className={`${t.surface} rounded-2xl border ${t.border} p-6 items-center gap-2`}>
+                <Ionicons name="people-outline" size={32} color={t.colors.tabBarInactive} />
+                <Text className={`text-sm text-center ${t.textSecondary}`}>
+                  No completed Best Ball rounds yet. Team standings appear once a round is finished.
+                </Text>
+              </View>
+            ) : scorecardsLoading ? (
+              <ActivityIndicator size="large" color={t.colors.tabBarActive} className="mt-8" />
+            ) : scorecardsError ? (
+              <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                Failed to load team standings.
+              </Text>
+            ) : (() => {
+              const tallies = buildBestBallEventTally(scorecards);
+              if (tallies.length === 0) {
+                return (
+                  <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
+                    No team results recorded. Assign teams on each Best Ball round to build standings.
+                  </Text>
+                );
+              }
+              return <BestBallEventTally tallies={tallies} />;
             })()}
           </View>
         )}
@@ -1399,6 +1435,7 @@ export default function EventDetailScreen() {
                 scoringFormat={roundForm.scoringFormat}
                 vegasBirdieFlip={roundForm.vegasBirdieFlip}
                 vegasScoringBasis={roundForm.vegasScoringBasis}
+                bestBallScoringBasis={roundForm.bestBallScoringBasis}
                 isPending={scheduleRoundMutation.isPending}
                 onOpenCoursePicker={() => roundForm.setCoursePickerVisible(true)}
                 onClearCourse={() => { roundForm.setSelectedCourse(null); roundForm.setSelectedTeeId(null); }}
@@ -1407,6 +1444,7 @@ export default function EventDetailScreen() {
                 onChangeScoringFormat={roundForm.setScoringFormat}
                 onChangeVegasBirdieFlip={roundForm.setVegasBirdieFlip}
                 onChangeVegasScoringBasis={roundForm.setVegasScoringBasis}
+                onChangeBestBallScoringBasis={roundForm.setBestBallScoringBasis}
               />
 
               <View className="mb-6">

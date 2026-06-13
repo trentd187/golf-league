@@ -14,6 +14,10 @@ describe("formatLabel", () => {
     expect(formatLabel("las_vegas")).toBe("Las Vegas");
   });
 
+  it("labels the best_ball format", () => {
+    expect(formatLabel("best_ball")).toBe("Best Ball");
+  });
+
   it("falls back to the raw value for an unknown format", () => {
     expect(formatLabel("future_format")).toBe("future_format");
   });

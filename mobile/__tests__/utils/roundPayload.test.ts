@@ -81,4 +81,23 @@ describe("buildRoundCoursePayload", () => {
     expect(result.vegas_birdie_flip).toBeUndefined();
     expect(result.vegas_scoring_basis).toBeUndefined();
   });
+
+  it("includes best_ball_scoring_basis only for a best_ball round", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "best_ball", undefined, {
+      scoringBasis: "net",
+    });
+    expect(result.best_ball_scoring_basis).toBe("net");
+  });
+
+  it("omits best_ball_scoring_basis for non-best-ball formats even when supplied", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "stroke", undefined, {
+      scoringBasis: "net",
+    });
+    expect(result.best_ball_scoring_basis).toBeUndefined();
+  });
+
+  it("omits best_ball_scoring_basis for a best_ball round when no options are supplied", () => {
+    const result = buildRoundCoursePayload(course, "tee-uuid-1", "18", "best_ball");
+    expect(result.best_ball_scoring_basis).toBeUndefined();
+  });
 });

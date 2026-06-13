@@ -75,6 +75,8 @@ type RoundDetailResponse struct {
 	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
 	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis string `json:"vegas_scoring_basis"`
+	// Best Ball toggle — only meaningful when ScoringFormat is "best_ball".
+	BestBallScoringBasis string `json:"best_ball_scoring_basis"`
 	// IsOrganizer is computed server-side so the client skips a separate permission query.
 	IsOrganizer bool            `json:"is_organizer"`
 	Groups      []GroupResponse `json:"groups"`
@@ -129,6 +131,8 @@ type UpdateRoundRequest struct {
 	// Las Vegas toggles; nil = leave unchanged.
 	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+	// Best Ball toggle; nil = leave unchanged.
+	BestBallScoringBasis *string `json:"best_ball_scoring_basis"`
 }
 
 // UpdateGroupRequest is the JSON body for PATCH .../groups/:groupId.
@@ -156,6 +160,8 @@ type CreateEventlessRoundRequest struct {
 	// Las Vegas toggles; nil = default (flip true, basis "gross").
 	VegasBirdieFlip   *bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis *string `json:"vegas_scoring_basis"`
+	// Best Ball toggle; nil = default (basis "gross").
+	BestBallScoringBasis *string `json:"best_ball_scoring_basis"`
 }
 
 // CreateTeamRequest is the JSON body for POST /api/v1/rounds/:roundId/teams.
@@ -354,18 +360,19 @@ func GetRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		return c.JSON(RoundDetailResponse{
-			ID:                result.Round.ID.String(),
-			EventID:           uuidPtrStr(result.Round.EventID),
-			Name:              result.Round.Name,
-			CourseName:        result.Round.Course.Name,
-			ScheduledDate:     result.Round.ScheduledDate.UTC().Format("2006-01-02"),
-			Status:            string(result.Round.Status),
-			ScoringFormat:     string(result.Round.ScoringFormat),
-			RoundNumber:       result.Round.RoundNumber,
-			VegasBirdieFlip:   result.Round.VegasBirdieFlip,
-			VegasScoringBasis: result.Round.VegasScoringBasis,
-			IsOrganizer:       result.IsOrganizer,
-			Groups:            groupResponses,
+			ID:                   result.Round.ID.String(),
+			EventID:              uuidPtrStr(result.Round.EventID),
+			Name:                 result.Round.Name,
+			CourseName:           result.Round.Course.Name,
+			ScheduledDate:        result.Round.ScheduledDate.UTC().Format("2006-01-02"),
+			Status:               string(result.Round.Status),
+			ScoringFormat:        string(result.Round.ScoringFormat),
+			RoundNumber:          result.Round.RoundNumber,
+			VegasBirdieFlip:      result.Round.VegasBirdieFlip,
+			VegasScoringBasis:    result.Round.VegasScoringBasis,
+			BestBallScoringBasis: result.Round.BestBallScoringBasis,
+			IsOrganizer:          result.IsOrganizer,
+			Groups:               groupResponses,
 		})
 	}
 }
@@ -389,15 +396,16 @@ func UpdateRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.Update(c.UserContext(), roundID, callerID, callerRole, services.UpdateRoundInput{
-			Name:              req.Name,
-			ScheduledDate:     req.ScheduledDate,
-			ScoringFormat:     req.ScoringFormat,
-			Status:            req.Status,
-			CourseID:          req.CourseID,
-			DefaultTeeID:      req.DefaultTeeID,
-			CourseName:        req.CourseName,
-			VegasBirdieFlip:   req.VegasBirdieFlip,
-			VegasScoringBasis: req.VegasScoringBasis,
+			Name:                 req.Name,
+			ScheduledDate:        req.ScheduledDate,
+			ScoringFormat:        req.ScoringFormat,
+			Status:               req.Status,
+			CourseID:             req.CourseID,
+			DefaultTeeID:         req.DefaultTeeID,
+			CourseName:           req.CourseName,
+			VegasBirdieFlip:      req.VegasBirdieFlip,
+			VegasScoringBasis:    req.VegasScoringBasis,
+			BestBallScoringBasis: req.BestBallScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.update", "failed to update round")
@@ -617,15 +625,16 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 		}
 
 		result, err := svc.CreateEventlessRound(c.UserContext(), callerID, services.CreateEventlessRoundInput{
-			Name:              req.Name,
-			ScheduledDate:     req.ScheduledDate,
-			ScoringFormat:     req.ScoringFormat,
-			CourseID:          req.CourseID,
-			DefaultTeeID:      req.DefaultTeeID,
-			CourseName:        req.CourseName,
-			NineHoleSelection: req.NineHoleSelection,
-			VegasBirdieFlip:   req.VegasBirdieFlip,
-			VegasScoringBasis: req.VegasScoringBasis,
+			Name:                 req.Name,
+			ScheduledDate:        req.ScheduledDate,
+			ScoringFormat:        req.ScoringFormat,
+			CourseID:             req.CourseID,
+			DefaultTeeID:         req.DefaultTeeID,
+			CourseName:           req.CourseName,
+			NineHoleSelection:    req.NineHoleSelection,
+			VegasBirdieFlip:      req.VegasBirdieFlip,
+			VegasScoringBasis:    req.VegasScoringBasis,
+			BestBallScoringBasis: req.BestBallScoringBasis,
 		})
 		if err != nil {
 			return writeRoundError(c, err, "round.create_eventless", "failed to create round")

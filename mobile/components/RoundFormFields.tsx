@@ -22,6 +22,8 @@ interface RoundFormFieldsProps {
   // Las Vegas toggles — only rendered when scoringFormat is "las_vegas".
   vegasBirdieFlip: boolean;
   vegasScoringBasis: "gross" | "net";
+  // Best Ball toggle — only rendered when scoringFormat is "best_ball".
+  bestBallScoringBasis: "gross" | "net";
   isPending: boolean;
   onOpenCoursePicker: () => void;
   onClearCourse: () => void;
@@ -30,6 +32,7 @@ interface RoundFormFieldsProps {
   onChangeScoringFormat: (val: string) => void;
   onChangeVegasBirdieFlip: (val: boolean) => void;
   onChangeVegasScoringBasis: (val: "gross" | "net") => void;
+  onChangeBestBallScoringBasis: (val: "gross" | "net") => void;
 }
 
 export default function RoundFormFields({
@@ -39,6 +42,7 @@ export default function RoundFormFields({
   scoringFormat,
   vegasBirdieFlip,
   vegasScoringBasis,
+  bestBallScoringBasis,
   isPending,
   onOpenCoursePicker,
   onClearCourse,
@@ -47,6 +51,7 @@ export default function RoundFormFields({
   onChangeScoringFormat,
   onChangeVegasBirdieFlip,
   onChangeVegasScoringBasis,
+  onChangeBestBallScoringBasis,
 }: RoundFormFieldsProps) {
   const t = useTheme();
 
@@ -179,7 +184,7 @@ export default function RoundFormFields({
       )}
 
       {/* ── Scoring format picker — 2-column pill grid ────────────────────── */}
-      <View className={scoringFormat === "las_vegas" ? "mb-4" : "mb-8"}>
+      <View className={scoringFormat === "las_vegas" || scoringFormat === "best_ball" ? "mb-4" : "mb-8"}>
         <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
           Scoring Format
         </Text>
@@ -269,6 +274,41 @@ export default function RoundFormFields({
               );
             })}
           </View>
+        </View>
+      )}
+
+      {/* ── Best Ball options — only for a best_ball round ────────────────── */}
+      {scoringFormat === "best_ball" && (
+        <View className="mb-8">
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-2 ${t.textTertiary}`}>
+            Scoring Basis
+          </Text>
+          <View className="flex-row gap-2">
+            {([
+              { value: "gross", label: "Gross" },
+              { value: "net",   label: "Net"   },
+            ] as const).map((opt) => {
+              const selected = bestBallScoringBasis === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  className={`flex-1 rounded-xl py-2.5 items-center border ${
+                    selected ? `${t.primaryBg} border-transparent` : `${t.surface} ${t.borderInput}`
+                  }`}
+                  onPress={() => onChangeBestBallScoringBasis(opt.value)}
+                  disabled={isPending}
+                >
+                  <Text className={`text-sm font-semibold ${selected ? "text-white" : t.textSecondary}`}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text className={`text-xs mt-3 ${t.textTertiary}`}>
+            Each team{"'"}s lowest score on a hole counts. Assign teams from the round screen
+            once players have joined.
+          </Text>
         </View>
       )}
     </>

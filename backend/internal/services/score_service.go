@@ -127,6 +127,8 @@ type ScorecardData struct {
 	// Las Vegas toggles — only meaningful when ScoringFormat is "las_vegas".
 	VegasBirdieFlip   bool   `json:"vegas_birdie_flip"`
 	VegasScoringBasis string `json:"vegas_scoring_basis"`
+	// Best Ball toggle — only meaningful when ScoringFormat is "best_ball".
+	BestBallScoringBasis string `json:"best_ball_scoring_basis"`
 	// CallerUserID is the DB UUID of the requesting user. The mobile client needs
 	// this to locate its own player entry (Supabase UUID ≠ DB UUID).
 	CallerUserID      string               `json:"caller_user_id"`
@@ -316,20 +318,21 @@ func (s *ScoreService) GetScorecard(ctx context.Context, roundID, callerID uuid.
 	}
 
 	return &ScorecardData{
-		RoundID:           round.ID.String(),
-		RoundName:         round.Name,
-		Status:            string(round.Status),
-		HoleCount:         effectiveHoleCount,
-		RequiresHandicap:  round.RequiresHandicap,
-		ScoringFormat:     string(round.ScoringFormat),
-		VegasBirdieFlip:   round.VegasBirdieFlip,
-		VegasScoringBasis: round.VegasScoringBasis,
-		CallerUserID:      callerID.String(),
-		IsOrganizer:       isOrg,
-		HandicapAllowance: handicapAllowance,
-		NineHoleSelection: round.NineHoleSelection,
-		Holes:             holeRows,
-		Groups:            groupData,
+		RoundID:              round.ID.String(),
+		RoundName:            round.Name,
+		Status:               string(round.Status),
+		HoleCount:            effectiveHoleCount,
+		RequiresHandicap:     round.RequiresHandicap,
+		ScoringFormat:        string(round.ScoringFormat),
+		VegasBirdieFlip:      round.VegasBirdieFlip,
+		VegasScoringBasis:    round.VegasScoringBasis,
+		BestBallScoringBasis: round.BestBallScoringBasis,
+		CallerUserID:         callerID.String(),
+		IsOrganizer:          isOrg,
+		HandicapAllowance:    handicapAllowance,
+		NineHoleSelection:    round.NineHoleSelection,
+		Holes:                holeRows,
+		Groups:               groupData,
 	}, nil
 }
 

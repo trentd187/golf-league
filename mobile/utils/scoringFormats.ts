@@ -11,6 +11,7 @@ export const SCORING_FORMATS: { value: string; label: string }[] = [
   { value: "scramble",                label: "Scramble" },
   { value: "match_play",              label: "Match Play" },
   { value: "las_vegas",               label: "Las Vegas" },
+  { value: "best_ball",               label: "Best Ball" },
 ];
 
 // formatLabel converts a scoring_format DB value to a human-readable label.

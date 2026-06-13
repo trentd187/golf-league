@@ -734,6 +734,51 @@ func TestScoreService_GetScorecard_VegasTeamsAndToggles(t *testing.T) {
 	assert.Nil(t, unassigned.TeamName)
 }
 
+// TestScoreService_GetScorecard_BestBallBasis verifies the scorecard response
+// carries the Best Ball gross/net basis plus per-player team assignment (the same
+// team_members join Vegas uses) so the client can derive best-ball results.
+func TestScoreService_GetScorecard_BestBallBasis(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+
+	creator := seedUser(t, db, "bbSc1")
+	course, tee := seedCourseWithTee(t, db, "Best Ball Scorecard Course")
+	seedHoles(t, db, tee.ID)
+
+	// Eventless best_ball round with a non-default (net) basis.
+	round := models.Round{
+		EventID: nil, CreatedBy: &creator.ID, CourseID: course.ID, DefaultTeeID: tee.ID,
+		ScheduledDate: time.Now().UTC(), Status: models.RoundStatusActive,
+		ScoringFormat:        models.ScoringFormatBestBall,
+		BestBallScoringBasis: "net",
+	}
+	require.NoError(t, db.Omit(clause.Associations).Create(&round).Error)
+
+	other := seedUser(t, db, "bbSc1p1")
+	rp1 := addEventlessRoundPlayer(t, db, round.ID, other.ID)
+	rp2 := addEventlessRoundPlayer(t, db, round.ID, creator.ID)
+	addGroupWithPlayer(t, db, round.ID, 1, rp1.ID)
+	addGroupWithPlayer(t, db, round.ID, 1, rp2.ID)
+
+	team := models.Team{RoundID: round.ID, Name: "Team A"}
+	require.NoError(t, db.Omit(clause.Associations).Create(&team).Error)
+	require.NoError(t, db.Omit(clause.Associations).Create(&models.TeamMember{TeamID: team.ID, RoundPlayerID: rp1.ID}).Error)
+
+	data, err := svc.GetScorecard(context.Background(), round.ID, creator.ID, "user")
+	require.NoError(t, err)
+	assert.Equal(t, string(models.ScoringFormatBestBall), data.ScoringFormat)
+	assert.Equal(t, "net", data.BestBallScoringBasis)
+
+	require.Len(t, data.Groups, 1)
+	byRP := map[string]services.ScorecardPlayerData{}
+	for _, p := range data.Groups[0].Players {
+		byRP[p.RoundPlayerID] = p
+	}
+	assigned := byRP[rp1.ID.String()]
+	require.NotNil(t, assigned.TeamID)
+	assert.Equal(t, team.ID.String(), *assigned.TeamID)
+}
+
 // TestScoreService_GetScorecard_RoundNotFound verifies that a missing round
 // returns ErrRoundNotFound.
 func TestScoreService_GetScorecard_RoundNotFound(t *testing.T) {

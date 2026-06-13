@@ -33,17 +33,19 @@ import (
 // Prevents S1192 duplicate-literal findings for strings repeated 3+ times
 // across the Schedule, Update, and CreateEventlessRound validation blocks.
 const (
-	colScheduledDate     = "scheduled_date"
-	colDefaultTeeID      = "default_tee_id"
-	colNineHoleSelection = "nine_hole_selection"
-	nineHoleFront        = "front"
-	nineHoleBack         = "back"
-	colVegasScoringBasis = "vegas_scoring_basis"
+	colScheduledDate        = "scheduled_date"
+	colDefaultTeeID         = "default_tee_id"
+	colNineHoleSelection    = "nine_hole_selection"
+	nineHoleFront           = "front"
+	nineHoleBack            = "back"
+	colVegasScoringBasis    = "vegas_scoring_basis"
+	colBestBallScoringBasis = "best_ball_scoring_basis"
 )
 
-// validateVegasScoringBasis returns a ValidationError when basis is set to anything
-// other than "gross" or "net". A nil pointer (omitted) is valid — the caller defaults it.
-func validateVegasScoringBasis(basis *string) error {
+// validateGrossNetBasis returns a ValidationError when basis is set to anything other
+// than "gross" or "net". A nil pointer (omitted) is valid — the caller defaults it.
+// field names the offending column for the error message.
+func validateGrossNetBasis(basis *string, field string) error {
 	if basis == nil {
 		return nil
 	}
@@ -51,8 +53,18 @@ func validateVegasScoringBasis(basis *string) error {
 	case models.VegasScoringBasisGross, models.VegasScoringBasisNet:
 		return nil
 	default:
-		return &ValidationError{Field: colVegasScoringBasis, Message: `vegas_scoring_basis must be "gross" or "net"`}
+		return &ValidationError{Field: field, Message: field + ` must be "gross" or "net"`}
 	}
+}
+
+// validateVegasScoringBasis validates the Las Vegas gross/net toggle.
+func validateVegasScoringBasis(basis *string) error {
+	return validateGrossNetBasis(basis, colVegasScoringBasis)
+}
+
+// validateBestBallScoringBasis validates the Best Ball gross/net toggle.
+func validateBestBallScoringBasis(basis *string) error {
+	return validateGrossNetBasis(basis, colBestBallScoringBasis)
 }
 
 // applyVegasToggles sets the Las Vegas configuration on a round being created,
@@ -65,6 +77,15 @@ func applyVegasToggles(round *models.Round, flip *bool, basis *string) {
 	round.VegasScoringBasis = string(models.VegasScoringBasisGross)
 	if basis != nil && *basis != "" {
 		round.VegasScoringBasis = *basis
+	}
+}
+
+// applyBestBallToggles sets the Best Ball configuration on a round being created,
+// defaulting basis to "gross" when the caller omits it. Best Ball has no flip rule.
+func applyBestBallToggles(round *models.Round, basis *string) {
+	round.BestBallScoringBasis = string(models.VegasScoringBasisGross)
+	if basis != nil && *basis != "" {
+		round.BestBallScoringBasis = *basis
 	}
 }
 
@@ -108,7 +129,9 @@ type ScheduleRoundInput struct {
 	// ScoringFormat is las_vegas, but stored regardless so they survive a format change.
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
-	Groups            []GroupScheduleInput
+	// Best Ball toggle; nil = default (basis "gross"). Stored regardless of format.
+	BestBallScoringBasis *string
+	Groups               []GroupScheduleInput
 }
 
 // GroupScheduleInput is one initial tee-time group in a Schedule call.
@@ -132,6 +155,8 @@ type UpdateRoundInput struct {
 	// Las Vegas toggles; nil = leave unchanged.
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
+	// Best Ball toggle; nil = leave unchanged.
+	BestBallScoringBasis *string
 }
 
 // UpdateGroupInput is the optional-fields payload for UpdateGroup.
@@ -379,6 +404,9 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
 		return ScheduleRoundResult{}, err
 	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
+	}
 
 	authorized, err := s.EventSvc.IsOrganizer(ctx, eventID, callerID, callerRole)
 	if err != nil {
@@ -494,6 +522,7 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			NineHoleSelection: in.NineHoleSelection,
 		}
 		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
+		applyBestBallToggles(&createdRound, in.BestBallScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}
@@ -568,6 +597,9 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
 		return RoundUpdateResult{}, err
 	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
+		return RoundUpdateResult{}, err
+	}
 
 	isOrg, err := s.IsRoundOrganizer(ctx, roundID, callerID, callerRole)
 	if errors.Is(err, ErrRoundNotFound) {
@@ -609,6 +641,9 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 	}
 	if in.VegasScoringBasis != nil && *in.VegasScoringBasis != "" {
 		round.VegasScoringBasis = *in.VegasScoringBasis
+	}
+	if in.BestBallScoringBasis != nil && *in.BestBallScoringBasis != "" {
+		round.BestBallScoringBasis = *in.BestBallScoringBasis
 	}
 
 	if in.CourseID != nil {
@@ -1057,7 +1092,17 @@ func (s *RoundService) CreateTeam(ctx context.Context, roundID, callerID uuid.UU
 // player is never on two teams. All round_players must belong to the round.
 // Organizer-only.
 func (s *RoundService) AssignTeamMembers(ctx context.Context, roundID, teamID, callerID uuid.UUID, callerRole string, roundPlayerIDs []uuid.UUID) (TeamResult, error) {
-	if len(roundPlayerIDs) > 2 {
+	// The 2-player cap is Las Vegas–specific (twosomes). Best Ball (and any future
+	// team format) allows free-form team sizes, so load the round's format and only
+	// enforce the cap for las_vegas.
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Select("scoring_format").First(&round, "id = ?", roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return TeamResult{}, ErrRoundNotFound
+		}
+		return TeamResult{}, fmt.Errorf("load round: %w", err)
+	}
+	if round.ScoringFormat == models.ScoringFormatLasVegas && len(roundPlayerIDs) > 2 {
 		return TeamResult{}, ErrTeamFull
 	}
 
@@ -1199,6 +1244,8 @@ type CreateEventlessRoundInput struct {
 	// Las Vegas toggles; nil = default (flip true, basis "gross").
 	VegasBirdieFlip   *bool
 	VegasScoringBasis *string
+	// Best Ball toggle; nil = default (basis "gross").
+	BestBallScoringBasis *string
 }
 
 // CreateEventlessRound creates a standalone round with no event association.
@@ -1225,6 +1272,9 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 		}
 	}
 	if err := validateVegasScoringBasis(in.VegasScoringBasis); err != nil {
+		return ScheduleRoundResult{}, err
+	}
+	if err := validateBestBallScoringBasis(in.BestBallScoringBasis); err != nil {
 		return ScheduleRoundResult{}, err
 	}
 
@@ -1319,6 +1369,7 @@ func (s *RoundService) CreateEventlessRound(ctx context.Context, callerID uuid.U
 			NineHoleSelection: in.NineHoleSelection,
 		}
 		applyVegasToggles(&createdRound, in.VegasBirdieFlip, in.VegasScoringBasis)
+		applyBestBallToggles(&createdRound, in.BestBallScoringBasis)
 		if err := tx.Create(&createdRound).Error; err != nil {
 			return fmt.Errorf("create round: %w", err)
 		}

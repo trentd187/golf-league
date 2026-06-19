@@ -28,8 +28,9 @@ import (
 // ─── Error helper ─────────────────────────────────────────────────────────────
 
 // writeUserError translates a UserService error to an HTTP response.
-// For 5xx it sets c.Locals("error_detail") so the Loki http.error log line
-// includes the root cause. Always returns nil.
+// For 5xx it sets c.Locals("error_detail") so the http.error log line
+// (emitted by middleware.ErrorLogger to Sentry) includes the root cause.
+// Always returns nil.
 func writeUserError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 	var ve *services.ValidationError
 	if errors.As(err, &ve) {
@@ -249,7 +250,7 @@ func UpsertScorecardSettings(svc *services.UserService) fiber.Handler {
 
 		data, err := svc.UpsertScorecardSettings(c.UserContext(), callerID, body)
 		if err != nil {
-			// Preserve the error_detail visibility hook for Loki — writeUserError sets it for 5xx.
+			// Preserve the error_detail visibility hook — writeUserError sets it for 5xx (Sentry).
 			return writeUserError(c, err, "user.upsert_scorecard_settings", "failed to save settings")
 		}
 		return c.JSON(data)

@@ -3,7 +3,7 @@
 // All business logic lives in internal/services.RoundService. Each handler
 // here parses HTTP input (URL params, JSON body), calls the service, and
 // translates the (value, error) result into HTTP status + JSON via
-// writeRoundError (which records error_detail on every 5xx for Loki).
+// writeRoundError (which records error_detail on every 5xx for Sentry).
 //
 // Endpoints:
 //
@@ -216,8 +216,8 @@ func parseTeamID(c *fiber.Ctx) (uuid.UUID, bool) {
 }
 
 // writeRoundError translates a service error into HTTP status + JSON body.
-// For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so the
-// HTTPMetrics middleware emits the cause in the Loki http.error log line.
+// For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so
+// middleware.ErrorLogger emits the cause in the http.error log line (Sentry).
 //
 // Always returns nil — handlers do `return writeRoundError(c, err, ...)`.
 func writeRoundError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {

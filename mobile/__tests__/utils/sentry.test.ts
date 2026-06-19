@@ -13,6 +13,8 @@ import {
   reportMutationError,
   reportSaveFailure,
   reportSaveReconciled,
+  reportWsLifecycle,
+  reportWsError,
   addSaveBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
@@ -326,6 +328,77 @@ describe("reportSaveReconciled", () => {
     reportSaveReconciled({ label: "scores", attempts: 3, elapsedMs: 10 });
     const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
     expect(ctx.tags.connection_type).toBe("unknown");
+  });
+});
+
+describe("reportWsLifecycle", () => {
+  it("drops an info breadcrumb on connect (no Issue/log noise)", () => {
+    reportWsLifecycle("connected", { roundId: "r1" });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ category: "ws", level: "info" }),
+    );
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("drops a warning breadcrumb on a reconnect attempt with attempt + delay", () => {
+    reportWsLifecycle("reconnect_attempt", {
+      roundId: "r1",
+      attempt: 2,
+      delayMs: 1500,
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "ws",
+        level: "warning",
+        data: expect.objectContaining({ attempt: 2, delayMs: 1500 }),
+      }),
+    );
+  });
+
+  it("logs a warning (not an Issue) on disconnect with code + reason", () => {
+    reportWsLifecycle("disconnected", {
+      roundId: "r1",
+      code: 1006,
+      reason: "abnormal",
+    });
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "ws disconnected",
+      expect.objectContaining({ event: "ws.disconnected", code: 1006 }),
+    );
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("captures an Issue tagged ws_state:gave_up when reconnects are exhausted", () => {
+    reportWsLifecycle("gave_up", { roundId: "r1", attempt: 8 });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("gave up"),
+      expect.objectContaining({
+        level: "warning",
+        tags: expect.objectContaining({
+          error_source: "ws",
+          ws_state: "gave_up",
+        }),
+        extra: expect.objectContaining({ roundId: "r1", attempts: 8 }),
+      }),
+    );
+  });
+});
+
+describe("reportWsError", () => {
+  it("captures an Error as an Issue tagged error_source:ws", () => {
+    reportWsError(new Error("bad frame"), "r1");
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: { error_source: "ws" },
+        extra: { roundId: "r1" },
+      }),
+    );
+  });
+
+  it("ignores non-Error values", () => {
+    reportWsError("just a string", "r1");
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 });
 

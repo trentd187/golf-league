@@ -5,6 +5,7 @@
 package websocket
 
 import (
+	"log/slog"    // slog emits the drop/eviction signals; the default logger fans out to Sentry Logs
 	"sync"        // sync provides the RWMutex for safe concurrent map access
 	"sync/atomic" // atomic provides lock-free integer operations for the connection counter
 )
@@ -69,42 +70,80 @@ func (h *Hub) Run() {
 			atomic.AddInt32(&h.connCount, 1)
 
 		case client := <-h.unregister:
-			h.mu.Lock()
-			if clients, ok := h.clients[client.RoundID]; ok {
-				if _, ok := clients[client]; ok {
-					delete(clients, client)
-					close(client.Send) // Closing the channel signals the WebSocket writer goroutine to stop
-					if len(clients) == 0 {
-						delete(h.clients, client.RoundID)
-					}
-					atomic.AddInt32(&h.connCount, -1)
-				}
-			}
-			h.mu.Unlock()
+			h.removeClient(client)
 
 		case msg := <-h.broadcast:
-			// RLock: we're only reading the clients map, not modifying it.
+			// Snapshot the round's clients under RLock, then release before sending so a
+			// slow send never holds the map lock. We're only reading the map here.
 			h.mu.RLock()
-			clients := h.clients[msg.RoundID]
+			targets := make([]*Client, 0, len(h.clients[msg.RoundID]))
+			for client := range h.clients[msg.RoundID] {
+				targets = append(targets, client)
+			}
 			h.mu.RUnlock()
 
-			for client := range clients {
+			var slow []*Client
+			for _, client := range targets {
 				select {
 				case client.Send <- msg.Data:
-				// If the channel buffer is full, the client is too slow — drop and disconnect.
-				// The default case makes this non-blocking so we don't stall all other clients.
+				// Full buffer = the client is too slow. The default case keeps this
+				// non-blocking so one stuck client can't stall the others.
 				default:
-					h.unregister <- client
+					slow = append(slow, client)
 				}
+			}
+
+			// Evict slow clients AFTER the send loop. Doing this inline (via removeClient)
+			// instead of `h.unregister <- client` is the deadlock fix: unregister is
+			// unbuffered and consumed only by this same goroutine, so sending to it from
+			// inside this case would block the Hub forever and freeze all broadcasts.
+			for _, client := range slow {
+				slog.Warn("WebSocket client dropped: send buffer full",
+					"event_type_label", "ws.send_dropped", "round_id", msg.RoundID)
+				h.removeClient(client)
 			}
 		}
 	}
 }
 
+// removeClient unregisters a single client: deletes it from its round set, closes its
+// Send channel (signalling the writer goroutine to stop), and decrements the counter.
+// Idempotent — a second call for an already-removed client is a no-op, so the broadcast
+// slow-consumer path and the connection's own deferred Unregister can't double-close.
+// Only called from the Hub's Run goroutine, so the map is never touched concurrently.
+func (h *Hub) removeClient(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients, ok := h.clients[client.RoundID]
+	if !ok {
+		return
+	}
+	if _, ok := clients[client]; !ok {
+		return
+	}
+	delete(clients, client)
+	close(client.Send)
+	if len(clients) == 0 {
+		delete(h.clients, client.RoundID)
+	}
+	atomic.AddInt32(&h.connCount, -1)
+}
+
 // BroadcastToRound sends data to all clients currently watching the given round.
 // Called by handlers when a score is submitted.
+//
+// Non-blocking: if the broadcast buffer is full (the Hub goroutine is momentarily
+// behind) the message is dropped rather than stalling the calling HTTP handler — a
+// dropped live update is harmless because clients still have the 60s scorecard poll
+// as a floor. A drop is logged so a saturated hub is visible, not silent.
 func (h *Hub) BroadcastToRound(roundID string, data []byte) {
-	h.broadcast <- &Message{RoundID: roundID, Data: data}
+	select {
+	case h.broadcast <- &Message{RoundID: roundID, Data: data}:
+	default:
+		slog.Warn("WebSocket broadcast dropped: hub buffer full",
+			"event_type_label", "ws.broadcast_dropped", "round_id", roundID)
+	}
 }
 
 // Register adds a client to the Hub so it starts receiving broadcasts for its round.

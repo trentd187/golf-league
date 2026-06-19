@@ -4,11 +4,14 @@
 package middleware
 
 import (
+	"errors"
 	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
+	gofiberws "github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 
@@ -20,6 +23,11 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// errInvalidToken is the single error returned by validateToken for any rejection
+// (bad signature, expired, malformed claims, missing subject). All map to 401, so
+// callers don't need to distinguish — they just deny.
+var errInvalidToken = errors.New("invalid token")
 
 // Claims defines the data we expect inside a Supabase JWT payload.
 // Standard fields (Subject = Supabase user UUID, expiry, etc.) come from jwt.RegisteredClaims.
@@ -34,6 +42,35 @@ type Claims struct {
 // bearerPrefix is the standard HTTP Authorization header prefix for JWTs.
 const bearerPrefix = "Bearer "
 
+// newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying
+// key function (keyfunc handles caching + automatic key rotation). Without the
+// JWKS we cannot verify any token, so a failure here is fatal at startup rather
+// than a silent per-request failure later.
+func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
+	jwks, err := keyfunc.NewDefault([]string{cfg.SupabaseJWKSURL})
+	if err != nil {
+		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
+	}
+	return jwks.Keyfunc
+}
+
+// validateToken parses and cryptographically verifies a Supabase JWT, returning its
+// claims. Shared by the header-based Auth middleware and the query-param WSAuth path
+// (browsers cannot set an Authorization header on a WebSocket upgrade, so the token
+// rides in ?token=). Any failure — bad signature/kid, expiry, malformed claims, or a
+// missing subject — collapses to errInvalidToken (all are 401s to the caller).
+func validateToken(tokenStr string, keyfn jwt.Keyfunc) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
+	if err != nil || !token.Valid {
+		return nil, errInvalidToken
+	}
+	claims, ok := token.Claims.(*Claims)
+	if !ok || claims.Subject == "" {
+		return nil, errInvalidToken
+	}
+	return claims, nil
+}
+
 // Auth returns a Fiber middleware handler that:
 //  1. Validates the JWT from the "Authorization: Bearer <token>" header.
 //  2. Finds the matching user in our database (or creates one on first visit).
@@ -43,13 +80,7 @@ const bearerPrefix = "Bearer "
 // The JWKS key function is initialized once here (at server startup) via a closure
 // and reused on every request, avoiding repeated network calls to Supabase.
 func Auth(cfg *config.Config, db *gorm.DB) fiber.Handler {
-	// Fetch Supabase's JWKS at startup and cache it. keyfunc handles automatic key rotation.
-	// Without the JWKS we cannot verify any token — fatal at startup, not silently at request time.
-	jwks, err := keyfunc.NewDefault([]string{cfg.SupabaseJWKSURL})
-	if err != nil {
-		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
-	}
-	return MakeAuthHandler(jwks.Keyfunc, db)
+	return MakeAuthHandler(newJWKSKeyfunc(cfg), db)
 }
 
 // MakeAuthHandler returns the auth handler closure using a jwt.Keyfunc and DB.
@@ -67,30 +98,18 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		tokenStr := strings.TrimPrefix(authHeader, bearerPrefix)
 
-		// jwt.ParseWithClaims verifies the cryptographic signature, the key ID (kid),
-		// and the expiry claim. An attacker cannot forge a valid signature without
-		// Supabase's private key.
-		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
-		if err != nil || !token.Valid {
+		// validateToken verifies the cryptographic signature, the key ID (kid), and the
+		// expiry claim, and guarantees a non-empty subject. An attacker cannot forge a
+		// valid signature without Supabase's private key.
+		claims, err := validateToken(tokenStr, keyfn)
+		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "invalid token",
 			})
 		}
 
-		claims, ok := token.Claims.(*Claims)
-		if !ok {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid token claims",
-			})
-		}
-
 		// claims.Subject is the standard JWT "sub" field — Supabase sets it to the user's UUID.
 		authID := claims.Subject
-		if authID == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "token missing subject",
-			})
-		}
 
 		email := claims.Email
 		// full_name and avatar_url are set by Google OAuth; custom_avatar_url is set
@@ -177,4 +196,52 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		return c.Next()
 	}
+}
+
+// WSAuth returns a pre-upgrade middleware for the WebSocket route. WebSockets can't
+// carry an Authorization header from a browser, so the JWT rides in the ?token= query
+// param instead. This validates the token (no DB lookup — a live-score subscription is
+// read-only, so any authenticated user may watch) and stores the auth subject in Locals
+// for the connection handler. The JWKS keyfunc is fetched once at startup.
+func WSAuth(cfg *config.Config) fiber.Handler {
+	return MakeWSAuthHandler(newJWKSKeyfunc(cfg))
+}
+
+// MakeWSAuthHandler is the testable core of WSAuth. Exported so tests can supply a
+// keyfunc (or nil for the pre-parse paths that reject before JWT parsing).
+func MakeWSAuthHandler(keyfn jwt.Keyfunc) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Reject anything that isn't an actual WS upgrade so this route can't be hit
+		// as a plain GET (which would hang waiting for an upgrade that never comes).
+		if !gofiberws.IsWebSocketUpgrade(c) {
+			return c.SendStatus(fiber.StatusUpgradeRequired) // 426
+		}
+
+		tokenStr := c.Query("token")
+		if tokenStr == "" {
+			logWSAuthFailed(c, "missing token")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing token"})
+		}
+
+		claims, err := validateToken(tokenStr, keyfn)
+		if err != nil {
+			logWSAuthFailed(c, "invalid token")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid token"})
+		}
+
+		// Subject is the Supabase user UUID — sufficient identity for a read-only
+		// subscription and for the connection-lifecycle logs.
+		c.Locals("userID", claims.Subject)
+		return c.Next()
+	}
+}
+
+// logWSAuthFailed records a rejected WebSocket upgrade. It's the first row of the WS
+// observability matrix — a spike here means clients can't subscribe (expired tokens,
+// a bad WS_URL, or an attack).
+func logWSAuthFailed(c *fiber.Ctx, reason string) {
+	slog.WarnContext(c.UserContext(), "WebSocket auth rejected",
+		"event_type_label", "ws.auth_failed",
+		"reason", reason,
+		"path", c.Path())
 }

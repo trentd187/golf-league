@@ -50,10 +50,11 @@ func main() {
 	}
 	fmt.Println("Migrations applied successfully")
 
-	// NewHub + go hub.Run() starts the WebSocket broadcast loop as a background goroutine
-	// so it doesn't block the rest of startup.
+	// NewHub + supervised run starts the WebSocket broadcast loop as a background
+	// goroutine (so it doesn't block startup). RunHubSupervised recovers + restarts
+	// on panic so one bad broadcast can't permanently kill live updates.
 	hub := websocket.NewHub()
-	go hub.Run()
+	go websocket.RunHubSupervised(hub)
 
 	// GolfCourseAPIClient is created once and shared across requests.
 	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
@@ -163,8 +164,13 @@ func main() {
 	replayLog := middleware.IdempotencyReplayLog(idempotencyStore)
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService, hub))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService, hub))
+
+	// Live-score WebSocket. Registered on `app` (not the `api` group) because it uses
+	// query-param auth — a browser can't set an Authorization header on a WS upgrade.
+	// middleware.WSAuth validates ?token= and rejects non-upgrade requests with 426.
+	app.Get("/api/v1/ws/rounds/:roundId", middleware.WSAuth(cfg), websocket.ServeRoundWS(hub))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))

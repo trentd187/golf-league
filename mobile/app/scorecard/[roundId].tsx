@@ -33,6 +33,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
+import { useRoundLiveUpdates } from "@/hooks/useRoundLiveUpdates";
 import { useUser } from "@/hooks/useUser";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
@@ -249,6 +250,11 @@ export default function ScorecardScreen() {
   const { user }      = useUser();
   const t             = useTheme();
   const queryClient   = useQueryClient();
+
+  // Live score updates: a WebSocket pushes "scores_updated" → invalidate the scorecard
+  // query so it refetches instantly. The 60s poll below stays as the floor, so this is a
+  // pure latency win with no regression if the socket can't connect.
+  useRoundLiveUpdates(roundId);
 
   // ── View mode ───────────────────────────────────────────────────────────────
   // "basic": all players shown in columns (always available).

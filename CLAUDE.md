@@ -14,6 +14,7 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
 | Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Scorecard saves, retry/backoff, `savePut`, phantom-save observability | [`mobile/docs/network-saves.md`](mobile/docs/network-saves.md) |
+| Live score updates, WebSocket hub/route, heartbeat/reconnect, `ws.*` observability | [`backend/docs/websockets.md`](backend/docs/websockets.md) |
 | Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated

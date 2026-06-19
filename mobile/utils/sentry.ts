@@ -262,6 +262,77 @@ export function reportSaveReconciled(ctx: SaveReconciledContext): void {
   });
 }
 
+// ─── Live-update WebSocket reporting ────────────────────────────────────────────
+
+// WsLifecycleContext carries the per-event detail for the live-score WebSocket. The
+// socket is an enhancement over the 60s scorecard poll, so these signals exist to tell
+// whether the realtime layer is healthy — and the poll guarantees no regression if not.
+export interface WsLifecycleContext {
+  roundId: string;
+  attempt?: number; // reconnect attempt number (reconnect_attempt / gave_up)
+  delayMs?: number; // scheduled backoff before the next attempt
+  code?: number; // WebSocket close code (disconnected)
+  reason?: string; // close/disconnect reason string
+}
+
+// reportWsLifecycle routes a WebSocket lifecycle event to the right Sentry channel —
+// the mobile half of the WS observability matrix (backend/docs/websockets.md). Healthy
+// transitions are breadcrumbs/logs (no Issues noise); only "gave_up" (reconnects
+// exhausted → falling back to the poll) becomes a searchable Issue, because that's the
+// "realtime is unhealthy for this user" signal worth alerting on.
+export function reportWsLifecycle(
+  event: "connected" | "reconnect_attempt" | "disconnected" | "gave_up",
+  ctx: WsLifecycleContext,
+): void {
+  switch (event) {
+    case "connected":
+      Sentry.addBreadcrumb({
+        category: "ws",
+        level: "info",
+        message: `ws connected (round ${ctx.roundId})`,
+        data: { roundId: ctx.roundId },
+      });
+      break;
+    case "reconnect_attempt":
+      Sentry.addBreadcrumb({
+        category: "ws",
+        level: "warning",
+        message: `ws reconnect attempt ${ctx.attempt}`,
+        data: { roundId: ctx.roundId, attempt: ctx.attempt, delayMs: ctx.delayMs },
+      });
+      break;
+    case "disconnected":
+      Sentry.logger.warn("ws disconnected", {
+        event: "ws.disconnected",
+        roundId: ctx.roundId,
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+      break;
+    case "gave_up":
+      Sentry.captureMessage(
+        "WebSocket gave up reconnecting; falling back to the scorecard poll",
+        {
+          level: "warning",
+          tags: { error_source: "ws", ws_state: "gave_up" },
+          extra: { roundId: ctx.roundId, attempts: ctx.attempt },
+        },
+      );
+      break;
+  }
+}
+
+// reportWsError captures an unexpected WebSocket error (e.g. a message that couldn't be
+// handled) as a Sentry Issue tagged error_source:ws. Non-Error values are ignored so a
+// stray reject doesn't create a useless Issue.
+export function reportWsError(error: unknown, roundId: string): void {
+  if (!(error instanceof Error)) return;
+  Sentry.captureException(error, {
+    tags: { error_source: "ws" },
+    extra: { roundId },
+  });
+}
+
 // SaveBreadcrumbContext describes one failed save attempt (before a retry, or the
 // final give-up when nextDelayMs is null).
 export interface SaveBreadcrumbContext {

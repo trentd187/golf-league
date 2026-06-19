@@ -26,8 +26,19 @@ type Config struct {
 	// Empty SentryDSN disables Sentry entirely: slog writes to stdout only and no
 	// network call is made on startup. Lets local dev and CI run without credentials.
 	SentryDSN              string
-	SentryRelease          string  // typically the git SHA, set via Docker build arg
+	SentryRelease          string  // git SHA tying events to a deploy; SENTRY_RELEASE, else Railway's RAILWAY_GIT_COMMIT_SHA
 	SentryTracesSampleRate float64 // 0.0–1.0; default 0.1 in prod, 1.0 in dev
+}
+
+// firstNonEmpty returns the first argument that is not the empty string, or "" if
+// all are empty. Used so a config value can fall back through a chain of env vars.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Load reads configuration from environment variables and returns a populated Config.
@@ -50,6 +61,12 @@ func Load() *Config {
 		logLevel = "info"
 	}
 
+	// Release tag for Sentry. Prefer an explicit SENTRY_RELEASE; otherwise fall back to
+	// RAILWAY_GIT_COMMIT_SHA, which Railway injects automatically on every deploy. Without
+	// this fallback the Dockerfile sets no SENTRY_RELEASE, so backend events shipped with an
+	// empty release — no release-health or regression-by-deploy. Empty is still valid (local dev).
+	sentryRelease := firstNonEmpty(os.Getenv("SENTRY_RELEASE"), os.Getenv("RAILWAY_GIT_COMMIT_SHA"))
+
 	// Default traces sample rate: 1.0 in dev (capture everything for local debugging),
 	// 0.1 in prod (free-tier-friendly). Operator can override via SENTRY_TRACES_SAMPLE_RATE.
 	tracesRate := 0.1
@@ -70,7 +87,7 @@ func Load() *Config {
 		GolfCourseAPIKey:       os.Getenv("GOLF_COURSE_API_KEY"),
 		LogLevel:               logLevel,
 		SentryDSN:              os.Getenv("SENTRY_DSN"),
-		SentryRelease:          os.Getenv("SENTRY_RELEASE"),
+		SentryRelease:          sentryRelease,
 		SentryTracesSampleRate: tracesRate,
 	}
 }

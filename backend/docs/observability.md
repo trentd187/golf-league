@@ -20,7 +20,7 @@ slog.SetDefault(logger)
 | Var | Required? | Notes |
 |---|---|---|
 | `SENTRY_DSN` | No (omit to disable Sentry entirely) | The Sentry project DSN. |
-| `SENTRY_RELEASE` | Recommended | Set to the git SHA via Docker build arg so events and stack traces are tied to a release. |
+| `SENTRY_RELEASE` | No | Git SHA tying events/stack traces to a deploy. The Dockerfile sets no build arg for it, so [`config.Load`](../internal/config/config.go) falls back to **`RAILWAY_GIT_COMMIT_SHA`** (injected automatically on every Railway deploy) when it's unset — releases tag with zero manual config. Empty only in local dev. |
 | `SENTRY_TRACES_SAMPLE_RATE` | No | Override the default. Defaults: `1.0` in `development`, `0.1` elsewhere. |
 | `LOG_LEVEL` | No | `debug` / `info` / `warn` / `error`. Default: `info`. Controls the minimum level emitted by `slog`. |
 
@@ -67,22 +67,37 @@ Every handler records a server fault's root cause in `c.Locals("error_detail")` 
 
 The mobile client sends a stable `Idempotency-Key` per logical save, reused across its internal retries (`mobile/utils/saveRequest.ts` + `utils/idempotency.ts`). [`internal/middleware/idempotency.go`](../internal/middleware/idempotency.go) keeps a best-effort in-memory TTL set of seen keys and, on a repeat within the TTL, logs `event_type_label:score.idempotent_replay` — direct evidence that a cellular "phantom save" committed and the client retried after losing the ack. It's applied to the score/hole-stats PUT routes. It **detects and logs only**; it does not block or response-cache, because those endpoints are already idempotent upserts. The store is in-memory (lost on restart, not shared across instances) — fine for a metric, but a **durable** store is still required before any non-idempotent POST create is allowed to retry.
 
+## WebSocket live-score observability
+
+The live-score WebSocket emits its own `ws.*` events (auth rejections, connect/disconnect with
+reason, slow-consumer/broadcast drops, hub-panic Issues). The full matrix and the supervised-run
++ heartbeat design live in [websockets.md](websockets.md).
+
 ## Background goroutines
 
-The active hub is per-request and dies with the request. For work that outlives the request (course refresh, async jobs) clone the current hub onto a fresh context so any captured event still belongs to "this request" lineage:
+`defer sentry.Recover()` is the one non-negotiable rule for any goroutine — without it a panic
+crashes the process without ever reaching Sentry. The process-level WebSocket hub loop and each
+WS connection goroutine follow exactly this (supervised restart on the hub loop) — see
+[websockets.md](websockets.md).
+
+There are two flavors:
+
+- **Process-level** background loops (the WS hub) are not tied to any request — just
+  `defer sentry.Recover()` and capture via `sentry.CurrentHub()`.
+- **Request-scoped** work that outlives the request would also clone the per-request hub so a
+  captured event keeps "this request" lineage. No such async work exists today (course refresh is
+  synchronous), but when you add some, use this shape:
 
 ```go
 hub := sentry.CurrentHub().Clone()
 go func() {
     defer sentry.Recover()
     ctx := sentry.SetHubOnContext(context.Background(), hub)
-    if err := svc.RefreshCourse(ctx, id); err != nil {
+    if err := svc.SomeAsyncJob(ctx, id); err != nil {
         hub.CaptureException(err)
     }
 }()
 ```
-
-`defer sentry.Recover()` is critical — without it a panic in the goroutine crashes the process without ever reaching Sentry.
 
 ## Distributed tracing
 

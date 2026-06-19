@@ -406,8 +406,8 @@ func TestWriteCourseError_StatusMapping(t *testing.T) {
 }
 
 // TestWriteCourseError_ErrorDetailFor5xx asserts the visibility hook is set on
-// every response that produces a 5xx — the metrics middleware reads this Local
-// to emit the `error` field on the http.error log line in Loki. A regression
+// every response that produces a 5xx — middleware.ErrorLogger reads this Local
+// to emit the `error` field on the http.error log line (Sentry). A regression
 // here is exactly the visibility bug that hid the refresh failure: the 500 went
 // out, no detail was logged, and we had nothing to debug from.
 func TestWriteCourseError_ErrorDetailFor5xx(t *testing.T) {
@@ -435,12 +435,12 @@ func TestWriteCourseError_ErrorDetailFor5xx(t *testing.T) {
 			_, err := app.Test(httptest.NewRequest(http.MethodGet, "/x", nil), -1)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantInDetail, *captured,
-				"the metrics middleware reads error_detail to emit the `error` field in Loki — keep this populated for every 5xx")
+				"middleware.ErrorLogger reads error_detail to emit the `error` field (Sentry) — keep this populated for every 5xx")
 		})
 	}
 }
 
-// TestWriteCourseError_NoDetailFor4xx asserts we don't pollute Loki with
+// TestWriteCourseError_NoDetailFor4xx asserts we don't pollute the error logs with
 // expected client-side errors. ValidationError, NotFound, etc. produce 4xx
 // responses with no error_detail set — they're not bugs, they're the API
 // behaving correctly.

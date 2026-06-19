@@ -44,7 +44,9 @@ We keep `slog` as the structured logger and route it through the official `sentr
 | slog level | Where it lands |
 |---|---|
 | `Debug`, `Info`, `Warn` | Sentry Logs (searchable; doesn't consume Issues quota) + stdout JSON |
-| `Error`, `Fatal` | Sentry Issues (with stack traces, breadcrumbs, user context) + stdout JSON |
+| `Error`, `Fatal` | Sentry **Issues** (stack traces, breadcrumbs, user context) **and** Sentry **Logs** (so `level:error` is searchable in the timeline) + stdout JSON |
+
+The `sentryslog` handler routes each record to `EventLevel` and `LogLevel` *independently*, so a level in both lists produces an Issue and a log. `Error`/`Fatal` are in both. They were once omitted from `LogLevel`, which made `level:error` queries in the Logs view return nothing even during 5xx faults — don't remove them again. (`EventLevel` is deprecated upstream in favour of driving Issues from logs; keep it until that path lands.)
 
 Use the `*Context` variants so the active hub is attached:
 
@@ -56,6 +58,14 @@ slog.InfoContext(c.UserContext(), "Round scheduled",
 ```
 
 The `event_type_label` attr is a convention left over from the Loki era — it gives Sentry's "All Logs" view a stable search facet per business event.
+
+## 5xx error logging (`middleware.ErrorLogger`)
+
+Every handler records a server fault's root cause in `c.Locals("error_detail")` via its `write<Domain>Error` helper. [`internal/middleware/errorlog.go`](../internal/middleware/errorlog.go) is the **single consumer** of that value: registered right after `sentryfiber`, it inspects the final status after `c.Next()` and, for any 5xx, emits `slog.ErrorContext(..., "event_type_label", "http.error", ...)` — which lands as both a Sentry Issue and a searchable `level:error` / `event_type_label:http.error` log. Before it existed the legacy metrics middleware that read `error_detail` had been removed in the Sentry migration and not replaced, so non-panic 5xx faults produced **no** Issue and **no** log (only uncaught *panics* reached Sentry, via `fiberrecover`/`sentryfiber`). 4xx are expected client errors and are deliberately not logged. Keep `error_detail` populated for every 5xx in the `write*Error` helpers.
+
+## Idempotency-Key replay detection (`middleware.IdempotencyReplayLog`)
+
+The mobile client sends a stable `Idempotency-Key` per logical save, reused across its internal retries (`mobile/utils/saveRequest.ts` + `utils/idempotency.ts`). [`internal/middleware/idempotency.go`](../internal/middleware/idempotency.go) keeps a best-effort in-memory TTL set of seen keys and, on a repeat within the TTL, logs `event_type_label:score.idempotent_replay` — direct evidence that a cellular "phantom save" committed and the client retried after losing the ack. It's applied to the score/hole-stats PUT routes. It **detects and logs only**; it does not block or response-cache, because those endpoints are already idempotent upserts. The store is in-memory (lost on restart, not shared across instances) — fine for a metric, but a **durable** store is still required before any non-idempotent POST create is allowed to retry.
 
 ## Background goroutines
 

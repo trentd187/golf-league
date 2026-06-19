@@ -54,6 +54,15 @@ export function buildSentryOptions(opts: {
   const { dsn, environment, isDev, platformOS } = opts;
   const isWeb = platformOS === "web";
 
+  // Preview is our pre-release league-testing channel: low volume, and event days
+  // (Vegas/Best Ball rounds) are exactly when we need every trace to debug the
+  // cellular save path. So preview gets full trace sampling like dev; only the
+  // high-volume production build is throttled to stay within quota.
+  // NOTE: we deliberately do NOT add a beforeSend/ignoreErrors filter for abort
+  // ("Aborted"/AbortError) noise — a rise in aborts is itself a signal (e.g. the
+  // per-attempt save timeout firing more often), so we keep that visible.
+  const fullTrace = isDev || environment === "preview";
+
   // Native replay sampling: full in dev for verification, 10% of sessions in prod.
   // Web is forced to 0 below so rrweb never records (see the integration note below).
   const nativeSessionReplayRate = isDev ? 1.0 : 0.1;
@@ -65,8 +74,8 @@ export function buildSentryOptions(opts: {
     sendDefaultPii: true,
     // Route Sentry.logger.* records to Sentry Logs (searchable, no Issues quota).
     enableLogs: true,
-    // Full trace sampling in dev for easy verification; 10% in prod to stay in quota.
-    tracesSampleRate: isDev ? 1.0 : 0.1,
+    // Full trace sampling in dev + preview for easy verification; 10% in production.
+    tracesSampleRate: fullTrace ? 1.0 : 0.1,
     // Relative to tracesSampleRate — profile every sampled transaction.
     profilesSampleRate: 1.0,
     // Replay sampling applies to native only; web records nothing (see below).
@@ -215,6 +224,40 @@ export function reportSaveFailure(error: unknown, ctx: SaveFailureContext): void
       httpStatus: ctx.httpStatus,
       cellularGeneration: ctx.cellularGeneration,
       isInternetReachable: ctx.isInternetReachable,
+    },
+  });
+}
+
+// SaveReconciledContext describes a save that exhausted every retry with a transport
+// failure but whose data was found already committed on the server — a confirmed
+// cellular "phantom save" (write landed, last-mile ack lost). It is the explicit
+// server-confirmed counter the raw save paths never produced; the SRE sweep flagged
+// the absence of any such metric as a visibility gap.
+export interface SaveReconciledContext {
+  label: string;
+  attempts: number; // retries that ran before the transport gave up
+  elapsedMs: number; // wall-clock across all attempts
+  connectionType?: string;
+  cellularGeneration?: string | null;
+}
+
+// reportSaveReconciled records a recovered phantom save as a Sentry message (not an
+// exception — the user lost nothing). save_outcome:reconciled lets us chart phantom
+// saves that the read-back rescued vs. reportSaveFailure's genuine, unrecovered
+// failures, so we can tell whether the cellular last-mile loss is getting worse.
+export function reportSaveReconciled(ctx: SaveReconciledContext): void {
+  Sentry.captureMessage("scorecard save reconciled after transport failure", {
+    level: "info",
+    tags: {
+      error_source: "save",
+      save_outcome: "reconciled",
+      save_endpoint: ctx.label,
+      connection_type: ctx.connectionType ?? "unknown",
+    },
+    extra: {
+      attempts: ctx.attempts,
+      elapsedMs: ctx.elapsedMs,
+      cellularGeneration: ctx.cellularGeneration,
     },
   });
 }

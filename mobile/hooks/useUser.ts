@@ -12,11 +12,17 @@ export function useUser() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Load the current session immediately on mount.
-    supabase.auth.getUser().then(({ data }) => {
-      setUser(data.user);
+    // Read the locally-stored session on mount. getSession() is local (no network),
+    // unlike getUser() which makes a round-trip to Supabase's /auth/v1/user to
+    // revalidate the token on every mount — and useUser() is mounted by many screens
+    // (profile, friends, event, round, scorecard), so getUser() was a frequent ~1s
+    // call. The session's user is sufficient for UI attribution; the backend still
+    // validates every JWT via JWKS on each API call, so we don't need client-side
+    // server revalidation here. autoRefreshToken keeps the cached session fresh.
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
       // Attach the user to Sentry so events/replays are attributed to them.
-      syncSentryUser(data.user);
+      syncSentryUser(data.session?.user ?? null);
       setLoading(false);
     });
 

@@ -55,11 +55,18 @@ func Init(cfg *config.Config) (*slog.Logger, func(), error) {
 		return nil, nil, err
 	}
 
-	// EventLevel: Error and Fatal are sent as Sentry Issues with stack traces.
-	// LogLevel: Debug/Info/Warn flow to Sentry Logs (searchable, no Issues quota cost).
+	// The sentryslog handler routes a record to EventLevel and LogLevel independently
+	// (see SentryHandler.Handle), so a level in both lists is sent as an Issue *and* a
+	// searchable Log.
+	//   EventLevel: Error/Fatal → Sentry Issues with stack traces (alerting, grouping).
+	//   LogLevel:   every level (incl. Error/Fatal) → Sentry Logs (searchable timeline).
+	// Error/Fatal were previously omitted from LogLevel, which is why `level:error`
+	// queries in the Logs view returned nothing even when 5xx faults occurred — an
+	// error's only sink was an Issue. They now appear in both. (EventLevel is deprecated
+	// upstream in favour of LogLevel; kept here until Issues can be driven from logs.)
 	sentryHandler := sentryslog.Option{
 		EventLevel: []slog.Level{slog.LevelError, sentryslog.LevelFatal},
-		LogLevel:   []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn},
+		LogLevel:   []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError, sentryslog.LevelFatal},
 		AddSource:  true,
 	}.NewSentryHandler(context.Background())
 

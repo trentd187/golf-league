@@ -12,6 +12,7 @@ import {
   reportQueryError,
   reportMutationError,
   reportSaveFailure,
+  reportSaveReconciled,
   addSaveBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
@@ -69,6 +70,19 @@ describe("buildSentryOptions", () => {
     expect(prod.tracesSampleRate).toBe(0.1);
     expect(prod.replaysSessionSampleRate).toBe(0.1);
     expect(prod.replaysOnErrorSampleRate).toBe(1.0);
+  });
+
+  it("samples all traces in the preview channel (low-volume league testing) but keeps its replay rate at the non-dev fraction", () => {
+    const preview = buildSentryOptions({
+      dsn: undefined,
+      environment: "preview",
+      isDev: false,
+      platformOS: "android",
+    });
+    // Full traces so event-day Vegas/Best Ball rounds are fully captured…
+    expect(preview.tracesSampleRate).toBe(1.0);
+    // …but replay stays at the non-dev rate (only isDev forces 1.0).
+    expect(preview.replaysSessionSampleRate).toBe(0.1);
   });
 
   it("disables session replay on web (rrweb crashed the renderer on avatar-heavy pages)", () => {
@@ -276,6 +290,42 @@ describe("reportSaveFailure", () => {
   it("ignores non-Error values", () => {
     reportSaveFailure("nope", { label: "scores", attempts: 1, elapsedMs: 0 });
     expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe("reportSaveReconciled", () => {
+  it("records a recovered phantom save as an info message tagged save_outcome:reconciled", () => {
+    reportSaveReconciled({
+      label: "scores",
+      attempts: 5,
+      elapsedMs: 4200,
+      connectionType: "cellular",
+      cellularGeneration: "4g",
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("reconciled"),
+      expect.objectContaining({
+        level: "info",
+        tags: expect.objectContaining({
+          error_source: "save",
+          save_outcome: "reconciled",
+          save_endpoint: "scores",
+          connection_type: "cellular",
+        }),
+        extra: expect.objectContaining({
+          attempts: 5,
+          elapsedMs: 4200,
+          cellularGeneration: "4g",
+        }),
+      }),
+    );
+  });
+
+  it("defaults connection_type to unknown when omitted", () => {
+    reportSaveReconciled({ label: "scores", attempts: 3, elapsedMs: 10 });
+    const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
+    expect(ctx.tags.connection_type).toBe("unknown");
   });
 });
 

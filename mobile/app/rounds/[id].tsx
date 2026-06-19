@@ -64,6 +64,7 @@ import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/dat
 import type { Scorecard } from "@/types/scorecard";
 import { buildStats } from "@/utils/stats";
 import { buildRoundMatches } from "@/utils/vegas";
+import { deriveFormatMatches } from "@/utils/formatTelemetry";
 import { teamsForGroup, type VegasTeamSummary } from "@/utils/vegasTeams";
 import VegasTeamAssignmentModal from "@/components/VegasTeamAssignmentModal";
 import VegasMatchCard from "@/components/VegasMatchCard";
@@ -1273,7 +1274,13 @@ export default function RoundDetailScreen() {
                 Failed to load matches.
               </Text>
             ) : (() => {
-              const matches = buildRoundMatches(scorecard);
+              // Guard the on-device Vegas math: a derivation bug becomes a
+              // format-tagged Sentry Issue + an empty tab, never a round-wide crash.
+              const matches = deriveFormatMatches(
+                { format: "las_vegas", derivation: "round_matches", roundId: scorecard.round_id },
+                () => buildRoundMatches(scorecard),
+                [],
+              );
               if (matches.length === 0) {
                 return (
                   <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
@@ -1303,7 +1310,13 @@ export default function RoundDetailScreen() {
                 Failed to load team results.
               </Text>
             ) : (() => {
-              const matches = buildBestBallRoundMatches(scorecard);
+              // Same guard for the on-device Best Ball math (free-form N-team
+              // partition is the most failure-prone derivation).
+              const matches = deriveFormatMatches(
+                { format: "best_ball", derivation: "round_matches", roundId: scorecard.round_id },
+                () => buildBestBallRoundMatches(scorecard),
+                [],
+              );
               if (matches.length === 0) {
                 return (
                   <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>

@@ -44,9 +44,11 @@ import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { buildLiveBestBallMatch, type BestBallBasis } from "@/utils/bestBall";
+import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { extractServerScores, scoresReconciled } from "@/utils/saveReconcile";
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -358,6 +360,12 @@ export default function ScorecardScreen() {
   const currentHoleRef = useRef(currentHole);
   useEffect(() => { currentHoleRef.current = currentHole; }, [currentHole]);
 
+  // Tracks the last logged team-format completion signature so logFormatSummary
+  // fires once per state transition (e.g. the match becoming fully scored) rather
+  // than on every render. The ref is declared here at the top level (hook order is
+  // stable); the guarded call lives below where the live match is computed.
+  const lastFormatSigRef = useRef<string>("");
+
   const lastHoleRef = useRef<number>(18);
   useEffect(() => {
     if (!scorecard) return;
@@ -443,6 +451,19 @@ export default function ScorecardScreen() {
             body:  { scores: entries },
             label: "scores",
             retry: BACKGROUND_SAVE,
+            // Phantom-save recovery: if every retry failed on the transport (cellular
+            // ack lost), read the scorecard back and confirm the server already holds
+            // exactly these scores. The PUT is an idempotent upsert, so a successful
+            // commit with a dropped response is indistinguishable from this read.
+            reconcile: async () => {
+              const res = await fetch(
+                `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+                { headers: { Authorization: `Bearer ${token ?? ""}` } },
+              );
+              if (!res.ok) return false;
+              const fresh = (await res.json()) as Scorecard;
+              return scoresReconciled(entries, extractServerScores(fresh, roundPlayerId));
+            },
           });
           // Clear any prior failure flag now that the save has succeeded.
           setSaveError((prev) => ({ ...prev, [roundPlayerId]: false }));
@@ -747,8 +768,15 @@ export default function ScorecardScreen() {
   const vegasBasis: VegasBasis = scorecard.vegas_scoring_basis === "net" ? "net" : "gross";
   const vegasEffHandicaps: Record<string, number | null> = {};
   for (const p of group.players) vegasEffHandicaps[p.round_player_id] = p.effective_course_handicap;
+  // Guard the live derivation: a math bug becomes a format-tagged Issue + a null
+  // match (the Basic view falls back to its waiting state) instead of crashing the
+  // active scorecard mid-round.
   const vegasMatch = isVegas
-    ? buildLiveVegasMatch(group, holeRows, scores, vegasBasis, scorecard.vegas_birdie_flip, vegasEffHandicaps, myPlayer?.team_id ?? undefined)
+    ? deriveFormatMatches(
+        { format: "las_vegas", derivation: "live_match", roundId: scorecard.round_id },
+        () => buildLiveVegasMatch(group, holeRows, scores, vegasBasis, scorecard.vegas_birdie_flip, vegasEffHandicaps, myPlayer?.team_id ?? undefined),
+        null,
+      )
     : null;
 
   // ── Best Ball live match ──────────────────────────────────────────────────────
@@ -758,8 +786,28 @@ export default function ScorecardScreen() {
   const isBestBall = scorecard.scoring_format === "best_ball";
   const bestBallBasis: BestBallBasis = scorecard.best_ball_scoring_basis === "net" ? "net" : "gross";
   const bestBallMatch = isBestBall
-    ? buildLiveBestBallMatch(group, holeRows, scores, bestBallBasis, vegasEffHandicaps, myPlayer?.team_id ?? undefined)
+    ? deriveFormatMatches(
+        { format: "best_ball", derivation: "live_match", roundId: scorecard.round_id },
+        () => buildLiveBestBallMatch(group, holeRows, scores, bestBallBasis, vegasEffHandicaps, myPlayer?.team_id ?? undefined),
+        null,
+      )
     : null;
+
+  // Computed-result telemetry: emit one Sentry Logs line per completion-state change
+  // of the active team-format match (ref-guarded so it does not fire every render).
+  const activeFormatMatch = vegasMatch ?? bestBallMatch;
+  if (activeFormatMatch) {
+    const sig = `${scorecard.scoring_format}:${activeFormatMatch.complete}`;
+    if (sig !== lastFormatSigRef.current) {
+      lastFormatSigRef.current = sig;
+      logFormatSummary({
+        format: isVegas ? "las_vegas" : "best_ball",
+        roundId: scorecard.round_id,
+        groupCount: 1, // the scorecard renders a single playing group
+        completeCount: activeFormatMatch.complete ? 1 : 0,
+      });
+    }
+  }
 
   // Normalize stroke indexes to ranks 1–N within the played holes so that
   // 9-hole handicap previews distribute correctly (mirrors Go NormalizeStrokeIndexes).

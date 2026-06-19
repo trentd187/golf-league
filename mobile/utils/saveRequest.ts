@@ -27,10 +27,13 @@
 
 import NetInfo from "@react-native-community/netinfo";
 import { withRetry, type RetryOptions } from "@/utils/withRetry";
+import { newIdempotencyKey } from "@/utils/idempotency";
 import {
   reportSaveFailure,
+  reportSaveReconciled,
   addSaveBreadcrumb,
   type SaveFailureContext,
+  type SaveReconciledContext,
 } from "@/utils/sentry";
 
 // RetryProfile bundles the backoff knobs with the per-attempt timeout. Two presets
@@ -122,10 +125,19 @@ export interface SavePutOptions {
   body: unknown;
   label: string; // "scores" | "hole-stats" | "handicap"
   retry?: RetryProfile;
+  // reconcile, when provided, is invoked only after every retry has failed. It
+  // should read authoritative server state and resolve true when the write is
+  // already committed there (a cellular phantom save — ack lost, data safe), so
+  // savePut can suppress the false failure. Resolving false (or throwing) means the
+  // write genuinely did not land and the error surfaces as before. See
+  // utils/saveReconcile.ts and mobile/docs/network-saves.md.
+  reconcile?: () => Promise<boolean>;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
+  genKey?: () => string; // mints the Idempotency-Key; default is a v4 UUID
   netInfoFetch?: () => Promise<NetInfoStateLike>;
   report?: (error: unknown, ctx: SaveFailureContext) => void;
+  reportReconciled?: (ctx: SaveReconciledContext) => void;
   breadcrumb?: typeof addSaveBreadcrumb;
   sleep?: (ms: number) => Promise<void>;
   rng?: () => number;
@@ -141,8 +153,14 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const netInfoFetch = opts.netInfoFetch ?? defaultNetInfoFetch;
   const report = opts.report ?? reportSaveFailure;
+  const reportReconciled = opts.reportReconciled ?? reportSaveReconciled;
   const breadcrumb = opts.breadcrumb ?? addSaveBreadcrumb;
   const now = opts.now ?? Date.now;
+
+  // One Idempotency-Key per logical save, minted up front and reused on every retry
+  // below. A phantom save (commit + lost ack) makes the client resend with this same
+  // key, letting the backend recognise and count the replay (middleware/idempotency.go).
+  const idempotencyKey = (opts.genKey ?? newIdempotencyKey)();
 
   const startedAt = now();
   let attempts = 0;
@@ -182,6 +200,7 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
           headers: {
             Authorization: `Bearer ${opts.token}`,
             "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
           },
           body: JSON.stringify(opts.body),
         });
@@ -195,6 +214,33 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
     }, retryOpts);
   } catch (err) {
     const conn = await snapshotConnection(netInfoFetch);
+
+    // Phantom-save recovery: an idempotent PUT can commit server-side while the
+    // last-mile cellular hop drops the ack, exhausting every retry. Only a lost
+    // *response* is recoverable, so we only reconcile transport failures (no
+    // httpStatus) — a real HTTP non-2xx means the server rejected the write and
+    // must surface. If the read-back confirms the data is already on the server,
+    // the save truly succeeded: record the recovered phantom save and resolve
+    // normally so the caller never sets its error flag. A reconcile that throws or
+    // returns false falls through to the normal failure report + rethrow; its own
+    // failure must never mask the original error.
+    if (opts.reconcile && httpStatus === undefined) {
+      try {
+        if (await opts.reconcile()) {
+          reportReconciled({
+            label: opts.label,
+            attempts,
+            elapsedMs: now() - startedAt,
+            connectionType: conn.connectionType,
+            cellularGeneration: conn.cellularGeneration,
+          });
+          return;
+        }
+      } catch {
+        // Reconciliation is best-effort; fall through to the real failure path.
+      }
+    }
+
     report(err, {
       label: opts.label,
       attempts,

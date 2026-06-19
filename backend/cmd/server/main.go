@@ -101,6 +101,11 @@ func main() {
 		Timeout:         5 * time.Second,
 	}))
 
+	// ErrorLogger emits a slog.Error (→ Sentry Issue + searchable log) for every 5xx,
+	// reading the root cause each handler records in c.Locals("error_detail"). Must
+	// follow sentryfiber so the per-request hub is on c.UserContext().
+	app.Use(middleware.ErrorLogger())
+
 	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
 	app.Get("/health", handlers.HealthCheck)
 
@@ -151,11 +156,15 @@ func main() {
 	api.Put("/rounds/:roundId/teams/:teamId/members", handlers.AssignTeamMembers(roundService))
 	api.Delete("/rounds/:roundId/teams/:teamId", handlers.DeleteTeam(roundService))
 
-	// Score routes — permission enforced inside ScoreService.canModifyScores
+	// Score routes — permission enforced inside ScoreService.canModifyScores.
+	// idempotencyStore + IdempotencyReplayLog turn a client retry that lands on an
+	// already-committed (idempotent) save into a server-side phantom-save signal.
+	idempotencyStore := middleware.NewIdempotencyStore()
+	replayLog := middleware.IdempotencyReplayLog(idempotencyStore)
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", handlers.UpsertPlayerScores(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", handlers.UpsertHoleStats(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))

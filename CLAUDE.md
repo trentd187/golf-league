@@ -71,6 +71,10 @@ Every file must have a file-level comment explaining its purpose. Beyond that, c
 
 Every new handler, utility, screen, or component ships with tests in the **same commit**. Bug fixes also ship with a test that covers the fixed path. The coverage ratchet (`.go-coverage-baseline`, `.mobile-coverage-baseline`) blocks regressions at commit time. Do not use `LEFTHOOK=0` to defer tests. See [Pre-commit Hooks](#pre-commit-hooks-lefthook) below.
 
+### Observability required in the same change
+
+Like tests, **new code ships with observability** — never blind. Any new endpoint, background job, network/save path, or non-trivial on-device derivation (e.g. a new scoring format) must emit signal before it's "done": a 5xx/error path that reaches Sentry (Issues + searchable `level:error` logs), a `slog`/`Sentry.logger` line with a stable `event_type_label`/tag for the business event, and a graceful, *reported* degrade on failure (catch → tagged capture, not a silent swallow or white-screen). If you can't answer "how would I see this break in Sentry?" it isn't finished. Backend routing + patterns: [`backend/docs/observability.md`](backend/docs/observability.md); mobile: [`mobile/docs/observability.md`](mobile/docs/observability.md).
+
 ### Commit and push workflow
 
 Claude commits and pushes to `develop` as the final step of a session, **after `/ci` passes**. The workflow is:

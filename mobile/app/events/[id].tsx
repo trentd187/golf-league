@@ -62,6 +62,7 @@ import { formatLabel, formatToPar } from "@/utils/scoringFormats";
 import { buildStats } from "@/utils/stats";
 import { buildEventTally } from "@/utils/vegas";
 import { buildBestBallEventTally } from "@/utils/bestBall";
+import { deriveFormatMatches } from "@/utils/formatTelemetry";
 import VegasEventTally from "@/components/VegasEventTally";
 import BestBallEventTally from "@/components/BestBallEventTally";
 import { showAlert, showConfirm } from "@/utils/alerts";
@@ -1084,7 +1085,11 @@ export default function EventDetailScreen() {
                 Failed to load matches.
               </Text>
             ) : (() => {
-              const tallies = buildEventTally(scorecards);
+              const tallies = deriveFormatMatches(
+                { format: "las_vegas", derivation: "event_tally" },
+                () => buildEventTally(scorecards),
+                [],
+              );
               if (tallies.length === 0) {
                 return (
                   <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>
@@ -1114,7 +1119,11 @@ export default function EventDetailScreen() {
                 Failed to load team standings.
               </Text>
             ) : (() => {
-              const tallies = buildBestBallEventTally(scorecards);
+              const tallies = deriveFormatMatches(
+                { format: "best_ball", derivation: "event_tally" },
+                () => buildBestBallEventTally(scorecards),
+                [],
+              );
               if (tallies.length === 0) {
                 return (
                   <Text className={`text-center mt-8 text-sm ${t.textSecondary}`}>

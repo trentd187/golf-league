@@ -21,7 +21,7 @@
 // here parses HTTP input (URL params, JSON body, content-type), calls the
 // service, and translates (value, error) into HTTP status + JSON via
 // writeEventError, which also records error_detail on every 5xx so causes
-// flow into Loki.
+// flow into Sentry via middleware.ErrorLogger.
 package handlers
 
 import (
@@ -181,8 +181,8 @@ func parseEventID(c *fiber.Ctx) (uuid.UUID, bool) {
 }
 
 // writeEventError translates a service error into HTTP status + JSON body.
-// For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so the
-// HTTPMetrics middleware emits the cause in the Loki http.error log line.
+// For every 5xx it sets c.Locals("error_detail", "<tag>: <cause>") so
+// middleware.ErrorLogger emits the cause in the http.error log line (Sentry).
 //
 // Always returns nil — handlers do `return writeEventError(c, err, ...)`.
 func writeEventError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {

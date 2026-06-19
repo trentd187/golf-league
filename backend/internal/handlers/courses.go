@@ -174,14 +174,14 @@ func parseTeeID(c *fiber.Ctx) (uuid.UUID, bool) {
 }
 
 // writeCourseError translates a service-level error into the appropriate HTTP
-// response and (for any 5xx) records the underlying cause via c.Locals so the
-// HTTPMetrics middleware can emit it as the `error` field of the http.error
-// log line in Loki.
+// response and (for any 5xx) records the underlying cause via c.Locals("error_detail")
+// so middleware.ErrorLogger emits it as the `error` field of the http.error log
+// line (a Sentry Issue + searchable level:error log).
 //
 // Always returns nil — handlers do `return writeCourseError(c, err, ...)`.
 //
-//   - tag identifies the call site in logs (e.g. "course.refresh"). Search
-//     Loki by `error=~"course.refresh.*"` to find every occurrence.
+//   - tag identifies the call site in logs (e.g. "course.refresh"). Search Sentry
+//     by `error:course.refresh*` to find every occurrence.
 //   - fallbackMsg is the user-facing JSON error body for unknown errors that
 //     map to a 500. Known errors (validation, not-found, etc.) use their own
 //     specific messages and ignore this argument.
@@ -230,7 +230,7 @@ func writeCourseError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		})
 	}
 
-	// Unrecognised error → 500. Record the full cause for Loki; users get
+	// Unrecognised error → 500. Record the full cause for ErrorLogger; users get
 	// the generic fallback message.
 	c.Locals("error_detail", tag+": "+err.Error())
 	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: fallbackMsg})

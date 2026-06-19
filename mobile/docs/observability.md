@@ -48,6 +48,22 @@ To investigate cellular "phantom save" failures, filter Sentry Issues by `mutati
 
 Scorecard saves (scores, hole-stats, course handicap) do **not** go through TanStack mutations — they run through the [`savePut`](../utils/saveRequest.ts) chokepoint (see [network-saves.md](network-saves.md)). On retry exhaustion `savePut` calls `reportSaveFailure` (in [utils/sentry.ts](../utils/sentry.ts)), which captures an Issue tagged `error_source:save`, `save_kind:network|http`, `save_endpoint:<label>`, `connection_type:<type>`, with `extra` carrying `attempts`, `elapsedMs`, `httpStatus`, `cellularGeneration`, `isInternetReachable`. Each failed attempt also drops a `category:"save"` breadcrumb (warning while retries remain, error on the final attempt) via `addSaveBreadcrumb`. To triage a phantom-save recurrence, filter by `error_source:save` and read `connection_type` + `save_endpoint`.
 
+When a transport failure is *reconciled* (read-back confirms the write landed — the phantom-save deeper fix in [network-saves.md](network-saves.md)), `savePut` instead calls `reportSaveReconciled`: an **info** message tagged `error_source:save`, `save_outcome:reconciled`. That's the client-side phantom-save counter — chart it against `reportSaveFailure` (genuinely unrecovered) to see whether last-mile loss is worsening.
+
+## Live-score WebSocket
+
+The round live-update WebSocket reports its lifecycle through `reportWsLifecycle` /
+`reportWsError` ([utils/sentry.ts](../utils/sentry.ts)): `ws.connected` / `ws.reconnect_attempt`
+breadcrumbs, a `ws.disconnected` warning log, and a `ws.gave_up` Issue (`error_source:ws`) only
+when reconnects are exhausted and the screen falls back to the 60s poll. The hook
+([hooks/useRoundLiveUpdates.ts](../hooks/useRoundLiveUpdates.ts)) and pure helpers
+([utils/liveUpdates.ts](../utils/liveUpdates.ts)) plus the full cross-stack matrix are documented
+in [backend/docs/websockets.md](../../backend/docs/websockets.md).
+
+## Team-format derivations (Vegas / Best Ball)
+
+Las Vegas and Best Ball compute entirely on-device (`utils/vegas.ts`, `utils/bestBall.ts`) with no server trace, so they're instrumented at the screen/tab boundary via [`utils/formatTelemetry.ts`](../utils/formatTelemetry.ts). `deriveFormatMatches` wraps each derivation: a thrown math bug becomes a Sentry Issue tagged `error_source:format_derivation`, `scoring_format:las_vegas|best_ball`, `format_derivation:<which>` and the tab degrades to its empty state instead of white-screening the round; `logFormatSummary` emits one `format.match_summary` log per completion-state change (not per render — ref-guarded on the scorecard). Any **new scoring format** must add the same two hooks (the [observability-in-same-commit](../../CLAUDE.md) rule).
+
 ## User context
 
 `hooks/useUser.ts` calls `syncSentryUser(user)` on every auth state change: it sets `{ id, email }` on sign-in/refresh and `null` on sign-out. This powers release health, per-user error filtering, and replay identification. Don't call `Sentry.setUser` elsewhere — route it through `syncSentryUser` so the lifecycle stays in one place (and stays covered by tests).

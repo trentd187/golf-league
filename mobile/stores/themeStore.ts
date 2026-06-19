@@ -20,6 +20,7 @@
 
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import * as Sentry from "@sentry/react-native";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { platformStorage } from "@/utils/platformStorage";
@@ -37,7 +38,17 @@ function readStoredThemeName(): ThemeName {
       const name = parsed?.state?.themeName;
       if (name && THEMES[name as ThemeName]) return name as ThemeName;
     }
-  } catch {}
+  } catch (err) {
+    // Theme is non-critical, so a corrupt/unavailable store falls back to "light"
+    // rather than blocking boot — but record it so the failure isn't fully silent
+    // (observability-in-same-commit). A breadcrumb is safe before Sentry.init runs.
+    Sentry.addBreadcrumb({
+      category: "theme",
+      level: "debug",
+      message: "theme-storage boot read failed; using light",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+  }
   return "light";
 }
 

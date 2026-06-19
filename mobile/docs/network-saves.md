@@ -26,6 +26,9 @@ uniformly:
 4. **Telemetry on exhaustion** (`reportSaveFailure`) plus a breadcrumb per failed attempt. The
    raw saves bypassed `reportMutationError` and emitted no Sentry event — which is why the
    phantom-save failures left no Issue.
+5. **A stable `Idempotency-Key`** (a v4 UUID from [`utils/idempotency.ts`](../utils/idempotency.ts)),
+   minted once per logical save and reused on every internal retry. The backend uses it to count
+   replays — see *Phantom-save reconciliation* below.
 
 ```ts
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
@@ -83,11 +86,34 @@ degrades to `connection_type:"unknown"` and never masks the save error. Each fai
 also drops a `category:"save"` breadcrumb (warning while retries remain, error on the final
 attempt). To triage a recurrence, filter Sentry (golf-league-frontend) by `error_source:save`.
 
-## Deferred — POST creates and request correlation
+## Phantom-save reconciliation (the deeper fix)
+
+Retry/backoff alone cannot fix a *lost response*: if the write committed and only the ack was
+dropped, every retry re-commits the same idempotent upsert and still never sees a 2xx, so the
+client shows a false failure. (Confirmed live: the save-hardening build still surfaced
+`mutation_error_kind:network` failures during league play.)
+
+So `savePut` takes an optional **`reconcile`** callback, invoked only after every retry has
+failed **and only for a transport error** (no `httpStatus` — a real 5xx means the server
+rejected the write and must surface). The scorecard screen's `reconcile` reads the scorecard
+back and compares the server's scores to what we tried to write
+([`utils/saveReconcile.ts`](../utils/saveReconcile.ts), pure + tested). If they already match,
+the write truly landed: `savePut` resolves normally (no error flag) and records the recovered
+phantom save via `reportSaveReconciled` — a `save_outcome:reconciled` info message that is the
+client-side phantom-save **counter**. A `reconcile` that returns false or throws falls through
+to the normal `reportSaveFailure` + rethrow; its own failure never masks the original error.
+
+Server side, the `Idempotency-Key` lets the backend log `score.idempotent_replay` when a retry
+lands on an already-committed save (`backend/internal/middleware/idempotency.go`) — the
+server-side half of the same counter. To chart phantom saves: `save_outcome:reconciled` (client,
+recovered) vs `save_kind:network` `reportSaveFailure` (client, genuinely unrecovered) vs the
+backend replay log.
+
+## Deferred — POST creates
 
 `savePut` is for **idempotent** verbs only. A blind retry of a non-idempotent `POST` create
-could duplicate a row when the first response was merely lost. Before any create can be routed
-through a retrying save, the backend needs an **Idempotency-Key** dedupe store (client sends a
-stable key per logical create; server records it and returns the original result on replay).
-The client-side requestId/Idempotency-Key header and that backend change are **deferred** — not
-in scope here. The client Sentry save report is the diagnostic data source in the meantime.
+could duplicate a row when the first response was merely lost. The `Idempotency-Key` header now
+ships on saves, but the backend's replay handling is **detection/logging only** (the PUT targets
+are idempotent upserts). Routing a create through a retrying save still needs a **durable**
+server-side dedupe store that records the key and returns the original result on replay — the
+in-memory replay detector is not sufficient for that. Still **deferred**.

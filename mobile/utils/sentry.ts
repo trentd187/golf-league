@@ -54,6 +54,15 @@ export function buildSentryOptions(opts: {
   const { dsn, environment, isDev, platformOS } = opts;
   const isWeb = platformOS === "web";
 
+  // Preview is our pre-release league-testing channel: low volume, and event days
+  // (Vegas/Best Ball rounds) are exactly when we need every trace to debug the
+  // cellular save path. So preview gets full trace sampling like dev; only the
+  // high-volume production build is throttled to stay within quota.
+  // NOTE: we deliberately do NOT add a beforeSend/ignoreErrors filter for abort
+  // ("Aborted"/AbortError) noise — a rise in aborts is itself a signal (e.g. the
+  // per-attempt save timeout firing more often), so we keep that visible.
+  const fullTrace = isDev || environment === "preview";
+
   // Native replay sampling: full in dev for verification, 10% of sessions in prod.
   // Web is forced to 0 below so rrweb never records (see the integration note below).
   const nativeSessionReplayRate = isDev ? 1.0 : 0.1;
@@ -65,8 +74,8 @@ export function buildSentryOptions(opts: {
     sendDefaultPii: true,
     // Route Sentry.logger.* records to Sentry Logs (searchable, no Issues quota).
     enableLogs: true,
-    // Full trace sampling in dev for easy verification; 10% in prod to stay in quota.
-    tracesSampleRate: isDev ? 1.0 : 0.1,
+    // Full trace sampling in dev + preview for easy verification; 10% in production.
+    tracesSampleRate: fullTrace ? 1.0 : 0.1,
     // Relative to tracesSampleRate — profile every sampled transaction.
     profilesSampleRate: 1.0,
     // Replay sampling applies to native only; web records nothing (see below).
@@ -216,6 +225,111 @@ export function reportSaveFailure(error: unknown, ctx: SaveFailureContext): void
       cellularGeneration: ctx.cellularGeneration,
       isInternetReachable: ctx.isInternetReachable,
     },
+  });
+}
+
+// SaveReconciledContext describes a save that exhausted every retry with a transport
+// failure but whose data was found already committed on the server — a confirmed
+// cellular "phantom save" (write landed, last-mile ack lost). It is the explicit
+// server-confirmed counter the raw save paths never produced; the SRE sweep flagged
+// the absence of any such metric as a visibility gap.
+export interface SaveReconciledContext {
+  label: string;
+  attempts: number; // retries that ran before the transport gave up
+  elapsedMs: number; // wall-clock across all attempts
+  connectionType?: string;
+  cellularGeneration?: string | null;
+}
+
+// reportSaveReconciled records a recovered phantom save as a Sentry message (not an
+// exception — the user lost nothing). save_outcome:reconciled lets us chart phantom
+// saves that the read-back rescued vs. reportSaveFailure's genuine, unrecovered
+// failures, so we can tell whether the cellular last-mile loss is getting worse.
+export function reportSaveReconciled(ctx: SaveReconciledContext): void {
+  Sentry.captureMessage("scorecard save reconciled after transport failure", {
+    level: "info",
+    tags: {
+      error_source: "save",
+      save_outcome: "reconciled",
+      save_endpoint: ctx.label,
+      connection_type: ctx.connectionType ?? "unknown",
+    },
+    extra: {
+      attempts: ctx.attempts,
+      elapsedMs: ctx.elapsedMs,
+      cellularGeneration: ctx.cellularGeneration,
+    },
+  });
+}
+
+// ─── Live-update WebSocket reporting ────────────────────────────────────────────
+
+// WsLifecycleContext carries the per-event detail for the live-score WebSocket. The
+// socket is an enhancement over the 60s scorecard poll, so these signals exist to tell
+// whether the realtime layer is healthy — and the poll guarantees no regression if not.
+export interface WsLifecycleContext {
+  roundId: string;
+  attempt?: number; // reconnect attempt number (reconnect_attempt / gave_up)
+  delayMs?: number; // scheduled backoff before the next attempt
+  code?: number; // WebSocket close code (disconnected)
+  reason?: string; // close/disconnect reason string
+}
+
+// reportWsLifecycle routes a WebSocket lifecycle event to the right Sentry channel —
+// the mobile half of the WS observability matrix (backend/docs/websockets.md). Healthy
+// transitions are breadcrumbs/logs (no Issues noise); only "gave_up" (reconnects
+// exhausted → falling back to the poll) becomes a searchable Issue, because that's the
+// "realtime is unhealthy for this user" signal worth alerting on.
+export function reportWsLifecycle(
+  event: "connected" | "reconnect_attempt" | "disconnected" | "gave_up",
+  ctx: WsLifecycleContext,
+): void {
+  switch (event) {
+    case "connected":
+      Sentry.addBreadcrumb({
+        category: "ws",
+        level: "info",
+        message: `ws connected (round ${ctx.roundId})`,
+        data: { roundId: ctx.roundId },
+      });
+      break;
+    case "reconnect_attempt":
+      Sentry.addBreadcrumb({
+        category: "ws",
+        level: "warning",
+        message: `ws reconnect attempt ${ctx.attempt}`,
+        data: { roundId: ctx.roundId, attempt: ctx.attempt, delayMs: ctx.delayMs },
+      });
+      break;
+    case "disconnected":
+      Sentry.logger.warn("ws disconnected", {
+        event: "ws.disconnected",
+        roundId: ctx.roundId,
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+      break;
+    case "gave_up":
+      Sentry.captureMessage(
+        "WebSocket gave up reconnecting; falling back to the scorecard poll",
+        {
+          level: "warning",
+          tags: { error_source: "ws", ws_state: "gave_up" },
+          extra: { roundId: ctx.roundId, attempts: ctx.attempt },
+        },
+      );
+      break;
+  }
+}
+
+// reportWsError captures an unexpected WebSocket error (e.g. a message that couldn't be
+// handled) as a Sentry Issue tagged error_source:ws. Non-Error values are ignored so a
+// stray reject doesn't create a useless Issue.
+export function reportWsError(error: unknown, roundId: string): void {
+  if (!(error instanceof Error)) return;
+  Sentry.captureException(error, {
+    tags: { error_source: "ws" },
+    extra: { roundId },
   });
 }
 

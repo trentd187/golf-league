@@ -99,7 +99,11 @@ export default function UserProfileScreen() {
       if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
       return res.json();
     },
-    enabled: !!userId && !!profile,
+    // Gated only on userId — /users/:userId/rounds is independent of the profile
+    // payload, so this fires in parallel with the profile query instead of waiting
+    // for it. That removes a network round-trip from the critical path (the scorecard
+    // fan-out previously waited for profile *and* rounds serially). FRONTEND-2.
+    enabled: !!userId,
   });
 
   // Fetch scorecards for each of the user's rounds in parallel.

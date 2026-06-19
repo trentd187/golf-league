@@ -14,6 +14,7 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
 | Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Scorecard saves, retry/backoff, `savePut`, phantom-save observability | [`mobile/docs/network-saves.md`](mobile/docs/network-saves.md) |
+| Live score updates, WebSocket hub/route, heartbeat/reconnect, `ws.*` observability | [`backend/docs/websockets.md`](backend/docs/websockets.md) |
 | Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated
@@ -70,6 +71,10 @@ Every file must have a file-level comment explaining its purpose. Beyond that, c
 ### Tests required in the same change
 
 Every new handler, utility, screen, or component ships with tests in the **same commit**. Bug fixes also ship with a test that covers the fixed path. The coverage ratchet (`.go-coverage-baseline`, `.mobile-coverage-baseline`) blocks regressions at commit time. Do not use `LEFTHOOK=0` to defer tests. See [Pre-commit Hooks](#pre-commit-hooks-lefthook) below.
+
+### Observability required in the same change
+
+Like tests, **new code ships with observability** — never blind. Any new endpoint, background job, network/save path, or non-trivial on-device derivation (e.g. a new scoring format) must emit signal before it's "done": a 5xx/error path that reaches Sentry (Issues + searchable `level:error` logs), a `slog`/`Sentry.logger` line with a stable `event_type_label`/tag for the business event, and a graceful, *reported* degrade on failure (catch → tagged capture, not a silent swallow or white-screen). If you can't answer "how would I see this break in Sentry?" it isn't finished. Backend routing + patterns: [`backend/docs/observability.md`](backend/docs/observability.md); mobile: [`mobile/docs/observability.md`](mobile/docs/observability.md).
 
 ### Commit and push workflow
 

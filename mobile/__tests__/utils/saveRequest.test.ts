@@ -69,6 +69,35 @@ describe("savePut — happy path", () => {
   });
 });
 
+describe("savePut — idempotency key", () => {
+  it("sends a stable Idempotency-Key header reused across retries", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("Network request failed"))
+      .mockResolvedValue(okResponse);
+    const opts = baseOpts({
+      fetchImpl,
+      retry: BACKGROUND_SAVE,
+      genKey: () => "fixed-key-123",
+    });
+
+    await savePut(opts);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const firstKey = fetchImpl.mock.calls[0][1].headers["Idempotency-Key"];
+    const secondKey = fetchImpl.mock.calls[1][1].headers["Idempotency-Key"];
+    expect(firstKey).toBe("fixed-key-123");
+    expect(secondKey).toBe("fixed-key-123"); // same key on the retry → backend can dedupe
+  });
+
+  it("mints a real key when none is injected", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(okResponse);
+    await savePut(baseOpts({ fetchImpl, genKey: undefined }));
+    const key = fetchImpl.mock.calls[0][1].headers["Idempotency-Key"];
+    expect(key).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
 describe("savePut — transient failure then success", () => {
   it("retries a transport rejection and succeeds without reporting", async () => {
     const fetchImpl = jest
@@ -133,6 +162,70 @@ describe("savePut — network exhaustion", () => {
       3,
       expect.objectContaining({ attempt: 3, nextDelayMs: null }),
     );
+  });
+});
+
+describe("savePut — phantom-save reconciliation", () => {
+  it("suppresses a transport failure when reconcile confirms the write landed", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockRejectedValue(new Error("Network request failed"));
+    const reconcile = jest.fn().mockResolvedValue(true);
+    const reportReconciled = jest.fn();
+    const opts = baseOpts({
+      fetchImpl,
+      retry: FOREGROUND_SAVE,
+      reconcile,
+      reportReconciled,
+    });
+
+    await expect(savePut(opts)).resolves.toBeUndefined(); // no throw → caller stays clean
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(opts.report).not.toHaveBeenCalled(); // no false Issue
+    expect(reportReconciled).toHaveBeenCalledTimes(1);
+    expect(reportReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "scores",
+        attempts: FOREGROUND_SAVE.maxAttempts,
+        connectionType: "cellular",
+        cellularGeneration: "4g",
+      }),
+    );
+  });
+
+  it("reports + rethrows when reconcile says the write did not land", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockRejectedValue(new Error("Network request failed"));
+    const reconcile = jest.fn().mockResolvedValue(false);
+    const reportReconciled = jest.fn();
+    const opts = baseOpts({ fetchImpl, retry: FOREGROUND_SAVE, reconcile, reportReconciled });
+
+    await expect(savePut(opts)).rejects.toThrow("Network request failed");
+    expect(opts.report).toHaveBeenCalledTimes(1);
+    expect(reportReconciled).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the failure path when reconcile itself throws (never masks the error)", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockRejectedValue(new Error("Network request failed"));
+    const reconcile = jest.fn().mockRejectedValue(new Error("read-back boom"));
+    const opts = baseOpts({ fetchImpl, retry: FOREGROUND_SAVE, reconcile });
+
+    await expect(savePut(opts)).rejects.toThrow("Network request failed");
+    expect(opts.report).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT reconcile an HTTP non-2xx — a server rejection must surface", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 500 });
+    const reconcile = jest.fn().mockResolvedValue(true);
+    const opts = baseOpts({ fetchImpl, retry: FOREGROUND_SAVE, reconcile });
+
+    await expect(savePut(opts)).rejects.toThrow("HTTP 500");
+    expect(reconcile).not.toHaveBeenCalled(); // only transport failures are recoverable
+    expect(opts.report).toHaveBeenCalledTimes(1);
   });
 });
 

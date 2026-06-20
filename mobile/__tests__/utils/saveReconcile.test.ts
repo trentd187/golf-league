@@ -6,9 +6,29 @@
 import {
   extractServerScores,
   scoresReconciled,
+  extractServerHoleStat,
+  holeStatReconciled,
   type AttemptedScore,
 } from "@/utils/saveReconcile";
-import type { Scorecard, ScorecardPlayer } from "@/types/scorecard";
+import type { Scorecard, ScorecardHoleStat, ScorecardPlayer } from "@/types/scorecard";
+
+// fullStat builds a ScorecardHoleStat with every field populated, for stat reconcile tests.
+function fullStat(hole_number: number, over: Partial<ScorecardHoleStat> = {}): ScorecardHoleStat {
+  return {
+    hole_number,
+    gir: "hit",
+    gir_miss_direction: null,
+    fir: true,
+    fir_miss_direction: null,
+    putts: 2,
+    first_putt_distance: 18,
+    putt_distance_made: 4,
+    approach_yds: 150,
+    tee_shot_club: "DR",
+    tee_shot_distance: 270,
+    ...over,
+  };
+}
 
 // player builds a minimal ScorecardPlayer with just the fields these helpers read.
 function player(roundPlayerId: string, scores: [number, number][]): ScorecardPlayer {
@@ -98,5 +118,50 @@ describe("scoresReconciled", () => {
   it("ignores extra server scores not in the attempt (other holes/players)", () => {
     const server = new Map([[1, 4], [2, 5], [3, 6]]);
     expect(scoresReconciled(attempted, server)).toBe(true);
+  });
+});
+
+// playerWithStats builds a player carrying hole_stats so the stat helpers have data to read.
+function playerWithStats(roundPlayerId: string, stats: ScorecardHoleStat[]): ScorecardPlayer {
+  return { ...player(roundPlayerId, []), hole_stats: stats };
+}
+
+describe("extractServerHoleStat", () => {
+  it("returns the target player's stat for the hole across groups", () => {
+    const card = scorecard(
+      playerWithStats("rp1", [fullStat(1)]),
+      playerWithStats("rp2", [fullStat(1, { putts: 3 }), fullStat(2)]),
+    );
+    expect(extractServerHoleStat(card, "rp2", 1)?.putts).toBe(3);
+  });
+
+  it("returns null when the player is absent (fails safe)", () => {
+    const card = scorecard(playerWithStats("rp1", [fullStat(1)]));
+    expect(extractServerHoleStat(card, "missing", 1)).toBeNull();
+  });
+
+  it("returns null when the hole has no stat row yet", () => {
+    const card = scorecard(playerWithStats("rp1", [fullStat(1)]));
+    expect(extractServerHoleStat(card, "rp1", 2)).toBeNull();
+  });
+});
+
+describe("holeStatReconciled", () => {
+  it("is true when every attempted field matches the server row", () => {
+    expect(holeStatReconciled(fullStat(5), fullStat(5))).toBe(true);
+  });
+
+  it("is false when the server row is missing (write did not land)", () => {
+    expect(holeStatReconciled(fullStat(5), null)).toBe(false);
+  });
+
+  it("is false when any field differs (partial / stale write)", () => {
+    expect(holeStatReconciled(fullStat(5, { putts: 2 }), fullStat(5, { putts: 3 }))).toBe(false);
+  });
+
+  it("treats attempted undefined as server null (SQL NULL round-trips as null)", () => {
+    // The PUT payload may omit a field as undefined; the server stores and returns null.
+    const attempted = fullStat(5, { approach_yds: undefined as unknown as number });
+    expect(holeStatReconciled(attempted, fullStat(5, { approach_yds: null }))).toBe(true);
   });
 });

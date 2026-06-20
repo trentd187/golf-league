@@ -40,7 +40,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
-import type { Scorecard, ScorecardGroup, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
+import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
@@ -49,7 +49,12 @@ import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
-import { extractServerScores, scoresReconciled } from "@/utils/saveReconcile";
+import {
+  extractServerScores,
+  scoresReconciled,
+  extractServerHoleStat,
+  holeStatReconciled,
+} from "@/utils/saveReconcile";
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -534,6 +539,23 @@ export default function ScorecardScreen() {
             body:  { stats: [stat] },
             label: "hole-stats",
             retry: BACKGROUND_SAVE,
+            // Phantom-save recovery (same as scores above): if every retry failed on
+            // the transport, read the scorecard back and confirm the server already
+            // holds exactly this hole's stat. PUT /hole-stats is an idempotent upsert,
+            // so a committed write with a dropped ack is indistinguishable from this
+            // read — without it, a cellular ack loss shows a false "Stats failed to save".
+            reconcile: async () => {
+              const res = await fetch(
+                `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+                { headers: { Authorization: `Bearer ${token ?? ""}` } },
+              );
+              if (!res.ok) return false;
+              const fresh = (await res.json()) as Scorecard;
+              return holeStatReconciled(
+                stat as ScorecardHoleStat,
+                extractServerHoleStat(fresh, roundPlayerId, holeNumber),
+              );
+            },
           });
           setStatsSaveError(false);
         } catch {

@@ -44,7 +44,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 
 ## Backend (Hurl) — ordered safest → richest
 
-- [ ] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. (negative, no data)
+- [x] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. — `backend/qa/unauth_me.hurl` (added 2026-06-19)
 - [ ] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. (negative, no data)
 - [ ] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only)
 - [ ] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only)
@@ -58,7 +58,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 
 ## Frontend (Playwright) — ordered (public first, then authenticated)
 
-- [ ] **F1** — `/terms` renders: "Terms of Service" heading, brand, back affordance. (public)
+- [x] **F1** — `/terms` renders: "Terms of Service" heading, brand, back affordance. — `mobile/e2e/web/terms.spec.ts` (added 2026-06-19)
 - [ ] **F2** — `/privacy` renders: "Privacy Policy" heading, brand. (public)
 - [ ] **F3** — A bogus route renders the `+not-found` fallback. (public)
 - [ ] **F4** — Sign-in invalid/empty email shows an inline error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public)

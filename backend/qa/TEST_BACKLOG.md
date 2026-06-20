@@ -45,7 +45,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 ## Backend (Hurl) — ordered safest → richest
 
 - [x] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. — `backend/qa/unauth_me.hurl` (added 2026-06-19)
-- [ ] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. (negative, no data)
+- [x] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. — `backend/qa/non_admin_course_403.hurl` (added 2026-06-19)
 - [ ] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only)
 - [ ] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only)
 - [ ] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only)
@@ -55,11 +55,12 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [ ] **B9** — Score entry (self-cleaning): create round + group with self as player → `PUT …/handicap` → `PUT …/scores` → `GET …/scorecard` shows strokes → `DELETE /rounds/:id`.
 - [ ] **B10** — Vegas/Best Ball teams (self-cleaning): create round with `scoring_format` → `POST …/teams` → `PUT …/teams/:tid/members` → `GET …/teams` → `DELETE /rounds/:id`.
 - [ ] **B11** — Event membership (self-cleaning): create event → `GET …/members` (creator is organizer) → exercise `PATCH …/members/:uid/role` path → delete event.
+- [ ] **B12** — Idempotent create replay (self-cleaning): `POST /events` with a fixed `Idempotency-Key` header → 201 capture `id`; repeat the SAME request + key → 201 with the **same `id`** (durable replay, no duplicate) and an `Idempotent-Replay: true` header; `DELETE /events/:id`; trailing `GET → 404`. Covers migration 000024 / `middleware.Idempotency` end-to-end on live develop.
 
 ## Frontend (Playwright) — ordered (public first, then authenticated)
 
 - [x] **F1** — `/terms` renders: "Terms of Service" heading, brand, back affordance. — `mobile/e2e/web/terms.spec.ts` (added 2026-06-19)
-- [ ] **F2** — `/privacy` renders: "Privacy Policy" heading, brand. (public)
+- [x] **F2** — `/privacy` renders: "Privacy Policy" heading, brand. — `mobile/e2e/web/privacy.spec.ts` (added 2026-06-19)
 - [ ] **F3** — A bogus route renders the `+not-found` fallback. (public)
 - [ ] **F4** — Sign-in invalid/empty email shows an inline error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public)
 - [x] **F5** — `/(tabs)/events` after session injection shows the "Events" heading + "Create" button. — `mobile/e2e/web/events.auth.spec.ts` (added 2026-06-19, needs `auth.setup.ts`)

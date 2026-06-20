@@ -262,6 +262,103 @@ export function reportSaveReconciled(ctx: SaveReconciledContext): void {
   });
 }
 
+// ─── Create (non-idempotent POST) reporting ─────────────────────────────────────
+//
+// Creates (event, round, group, member, guest, team) are the non-idempotent half of
+// the cellular phantom-write bug: the row commits but the ack is lost, the client shows
+// "Could not create …", and a naive retry would double-create. savePost now retries
+// safely (the backend dedupes via Idempotency-Key) and routes its telemetry here. A
+// distinct error_source:"create" keeps these filterable apart from scorecard saves.
+
+// CreateFailureContext mirrors SaveFailureContext's shape (so savePost can build one
+// context for both), labelled by create endpoint instead of save endpoint.
+export interface CreateFailureContext {
+  label: string; // create endpoint: "event" | "round" | "group" | "guest" | "team" | …
+  attempts: number;
+  elapsedMs: number;
+  httpStatus?: number; // set only when the final failure was an HTTP non-2xx
+  connectionType?: string;
+  cellularGeneration?: string | null;
+  isInternetReachable?: boolean | null;
+}
+
+// reportCreateFailure routes an exhausted create to Sentry as an Issue. An HTTP non-2xx
+// that survived every retry is a real server rejection (create_kind "http"); a transport
+// reject / abort-timeout is the lost-response phantom path (create_kind "network").
+export function reportCreateFailure(error: unknown, ctx: CreateFailureContext): void {
+  if (!(error instanceof Error)) return;
+
+  const kind =
+    ctx.httpStatus !== undefined
+      ? "http"
+      : NETWORK_ERROR_RE.test(error.message)
+        ? "network"
+        : "unknown";
+
+  Sentry.captureException(error, {
+    tags: {
+      error_source: "create",
+      create_kind: kind,
+      create_endpoint: ctx.label,
+      connection_type: ctx.connectionType ?? "unknown",
+    },
+    extra: {
+      attempts: ctx.attempts,
+      elapsedMs: ctx.elapsedMs,
+      httpStatus: ctx.httpStatus,
+      cellularGeneration: ctx.cellularGeneration,
+      isInternetReachable: ctx.isInternetReachable,
+    },
+  });
+}
+
+// CreateReconciledContext describes a create that exhausted every retry with a transport
+// failure but whose row was confirmed already committed on the server — a recovered
+// phantom create. Used only when a savePost caller supplies a read-back reconcile.
+export interface CreateReconciledContext {
+  label: string;
+  attempts: number;
+  elapsedMs: number;
+  connectionType?: string;
+  cellularGeneration?: string | null;
+}
+
+// reportCreateReconciled records a recovered phantom create as an info message (the user
+// lost nothing). create_outcome:reconciled charts phantoms the retry/replay rescued vs.
+// reportCreateFailure's genuine, unrecovered failures.
+export function reportCreateReconciled(ctx: CreateReconciledContext): void {
+  Sentry.captureMessage("create reconciled after transport failure", {
+    level: "info",
+    tags: {
+      error_source: "create",
+      create_outcome: "reconciled",
+      create_endpoint: ctx.label,
+      connection_type: ctx.connectionType ?? "unknown",
+    },
+    extra: {
+      attempts: ctx.attempts,
+      elapsedMs: ctx.elapsedMs,
+      cellularGeneration: ctx.cellularGeneration,
+    },
+  });
+}
+
+// addCreateBreadcrumb records one failed create attempt so a later success (which emits
+// no Issue) still leaves the trail of transient failures on whatever event the session
+// produces. Wired from savePost's withRetry onAttemptError.
+export function addCreateBreadcrumb(ctx: SaveBreadcrumbContext): void {
+  Sentry.addBreadcrumb({
+    category: "create",
+    level: ctx.nextDelayMs === null ? "error" : "warning",
+    message: `create ${ctx.label} attempt ${ctx.attempt} failed: ${ctx.message}`,
+    data: {
+      label: ctx.label,
+      attempt: ctx.attempt,
+      nextDelayMs: ctx.nextDelayMs,
+    },
+  });
+}
+
 // ─── Live-update WebSocket reporting ────────────────────────────────────────────
 
 // WsLifecycleContext carries the per-event detail for the live-score WebSocket. The

@@ -109,11 +109,43 @@ server-side half of the same counter. To chart phantom saves: `save_outcome:reco
 recovered) vs `save_kind:network` `reportSaveFailure` (client, genuinely unrecovered) vs the
 backend replay log.
 
-## Deferred — POST creates
+## POST creates go through `savePost`
 
-`savePut` is for **idempotent** verbs only. A blind retry of a non-idempotent `POST` create
-could duplicate a row when the first response was merely lost. The `Idempotency-Key` header now
-ships on saves, but the backend's replay handling is **detection/logging only** (the PUT targets
-are idempotent upserts). Routing a create through a retrying save still needs a **durable**
-server-side dedupe store that records the key and returns the original result on replay — the
-in-memory replay detector is not sufficient for that. Still **deferred**.
+Non-idempotent `POST` creates (event, round, group, member, guest, team) have the same
+cellular phantom failure mode — the row commits but the ack is lost, the client shows
+"Could not create …", and a *blind* retry would create a duplicate. They now go through
+[`savePost`](../utils/savePost.ts), the POST counterpart to `savePut`. Both are thin
+adapters over the shared core [`saveWithRetry.ts`](../utils/saveWithRetry.ts), which owns
+the timeout + Full-Jitter backoff + stable `Idempotency-Key` + connection snapshot +
+telemetry once for both verbs.
+
+```ts
+import { savePost } from "@/utils/savePost";
+
+const round = await savePost<{ id: string }>({
+  url: `${API_URL}/api/v1/rounds`,
+  token: token ?? "",
+  body: payload,
+  label: "round",          // becomes create_endpoint in Sentry
+});
+router.replace(`/rounds/${round.id}`); // savePost returns the parsed body (the new id)
+```
+
+What makes a retry safe is the **durable** backend store: the client sends one stable
+`Idempotency-Key` per logical create, and `middleware.Idempotency`
+(`backend/internal/middleware/idempotency.go`, table `idempotency_keys`, migration
+000024) **replays the original response** on a repeat instead of creating a second row.
+So the first surviving ack returns the new row's id with no duplicate. This is why
+`savePost` resolves the parsed body (creates need the id to navigate) while `savePut`
+resolves void.
+
+Differences from `savePut`: `CREATE_SAVE` profile (3 attempts, 4 s cap, 12 s timeout —
+creates are foreground); a `parseErrorMessage` hook surfaces the API's `{ error }` text on
+a non-2xx instead of a bare status; telemetry is `error_source:create` (`create_endpoint`,
+`create_kind`, `create_outcome:reconciled`) so creates filter apart from saves. A
+`reconcile` callback exists for the rare case where *every* attempt's ack is lost, but the
+pilot ships without one and relies on the backend replay.
+
+**Rollout:** pilot scope is `POST /events`, `POST /rounds`, `POST /events/:id/rounds`. The
+remaining creates (groups, members, guests, teams) follow once the pilot is validated on a
+preview build over a real cellular round.

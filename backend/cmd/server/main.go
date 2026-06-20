@@ -114,11 +114,19 @@ func main() {
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.Auth(cfg, db))
 
+	// durableIdempotency makes the non-idempotent POST creates it wraps safe to retry on
+	// a flaky cellular link: a repeat bearing the same Idempotency-Key replays the
+	// original response (durable store, migration 000024) instead of inserting a second
+	// row. Applied to the create routes below; the idempotent PUT saves keep the lighter
+	// in-memory replayLog further down. Pilot scope = event + eventless round + scheduled
+	// round; the remaining creates (groups, members, guests, teams) are wired next.
+	durableIdempotency := middleware.Idempotency(middleware.NewDurableIdempotencyStore(db))
+
 	// Event routes — any authenticated user can create events (they become the organizer).
 	// /events/public must be registered before /events/:id so Fiber matches it literally.
 	api.Get("/events", handlers.GetEvents(eventService))
 	api.Get("/events/public", handlers.GetPublicEvents(eventService))
-	api.Post("/events", handlers.CreateEvent(eventService))
+	api.Post("/events", durableIdempotency, handlers.CreateEvent(eventService))
 
 	api.Get("/events/:id", handlers.GetEvent(eventService))
 	api.Patch("/events/:id", handlers.UpdateEvent(eventService))
@@ -130,7 +138,7 @@ func main() {
 	api.Patch("/events/:id/members/:userId/role", handlers.UpdateMemberRole(eventService))
 
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
-	api.Post("/events/:id/rounds", handlers.ScheduleEventRound(roundService))
+	api.Post("/events/:id/rounds", durableIdempotency, handlers.ScheduleEventRound(roundService))
 
 	api.Post("/events/:id/request-join", handlers.RequestJoinEvent(eventService))
 	api.Get("/events/:id/join-requests", handlers.GetJoinRequests(eventService))
@@ -139,7 +147,7 @@ func main() {
 	// Round routes — round IDs are globally unique, so these are top-level.
 	// GET and POST /rounds must be registered before /rounds/:roundId so Fiber's
 	// router doesn't treat "rounds" as a roundId parameter.
-	api.Post("/rounds", handlers.CreateEventlessRound(roundService))
+	api.Post("/rounds", durableIdempotency, handlers.CreateEventlessRound(roundService))
 	api.Get("/rounds", handlers.GetMyRounds(roundService))
 	api.Get("/rounds/:roundId", handlers.GetRound(roundService))
 	api.Patch("/rounds/:roundId", handlers.UpdateRound(roundService))

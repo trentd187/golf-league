@@ -33,6 +33,11 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Playwright authenticated storage state (contains a live QA session — never commit)
+e2e/.auth/
+test-results/
+playwright-report/
+
 # typescript
 *.tsbuildinfo
 

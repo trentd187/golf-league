@@ -19,9 +19,26 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
+    // Setup project: signs in the QA user once and writes the authenticated storage
+    // state to e2e/.auth/user.json (see e2e/web/auth.setup.ts).
+    { name: "setup", testMatch: /auth\.setup\.ts/ },
+    // Public specs (*.spec.ts) run unauthenticated — no storage state, no setup dep.
     {
       name: "chromium",
+      testMatch: /.*\.spec\.ts$/,
+      testIgnore: /.*\.auth\.spec\.ts$/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    // Authenticated specs (*.auth.spec.ts) reuse the QA user's injected Supabase
+    // session, so they depend on the setup project's storage state.
+    {
+      name: "chromium-auth",
+      testMatch: /.*\.auth\.spec\.ts$/,
+      dependencies: ["setup"],
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/user.json",
+      },
     },
   ],
 });

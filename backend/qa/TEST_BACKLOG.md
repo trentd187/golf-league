@@ -46,7 +46,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 
 - [x] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. — `backend/qa/unauth_me.hurl` (added 2026-06-19)
 - [x] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. — `backend/qa/non_admin_course_403.hurl` (added 2026-06-19)
-- [ ] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only)
+- [x] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only) — `backend/qa/scorecard_settings.hurl` (added 2026-06-21)
 - [ ] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only)
 - [ ] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only)
 - [x] **B6** — Event lifecycle (self-cleaning): `POST /events` → 201 capture `id`; `GET /events/:id` → 200 assert name; `PATCH /events/:id {status:"cancelled"}` → 200; `DELETE /events/:id` → 204; `GET /events/:id` → 404. — `backend/qa/events_crud.hurl` (added 2026-06-19)
@@ -61,7 +61,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 
 - [x] **F1** — `/terms` renders: "Terms of Service" heading, brand, back affordance. — `mobile/e2e/web/terms.spec.ts` (added 2026-06-19)
 - [x] **F2** — `/privacy` renders: "Privacy Policy" heading, brand. — `mobile/e2e/web/privacy.spec.ts` (added 2026-06-19)
-- [ ] **F3** — A bogus route renders the `+not-found` fallback. (public)
+- [x] **F3** — A bogus route renders the `+not-found` fallback. (public) — `mobile/e2e/web/not-found.spec.ts` (added 2026-06-21)
 - [ ] **F4** — Sign-in invalid/empty email shows an inline error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public)
 - [x] **F5** — `/(tabs)/events` after session injection shows the "Events" heading + "Create" button. — `mobile/e2e/web/events.auth.spec.ts` (added 2026-06-19, needs `auth.setup.ts`)
 - [ ] **F6** — `/(tabs)/rounds` shows "My Rounds" + a section header or empty state. (auth)

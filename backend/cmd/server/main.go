@@ -117,10 +117,14 @@ func main() {
 	// durableIdempotency makes the non-idempotent POST creates it wraps safe to retry on
 	// a flaky cellular link: a repeat bearing the same Idempotency-Key replays the
 	// original response (durable store, migration 000024) instead of inserting a second
-	// row. Applied to the create routes below; the idempotent PUT saves keep the lighter
-	// in-memory replayLog further down. Pilot scope = event + eventless round + scheduled
-	// round; the remaining creates (groups, members, guests, teams) are wired next.
+	// row. Applied to every create route below (event, eventless/scheduled round, groups,
+	// members, guests, teams). The idempotent PATCH/PUT mutations keep the lighter
+	// in-memory replayLog, which only turns a retry-on-an-already-committed save into a
+	// phantom-save signal (no second row is possible). Both are constructed here so they're
+	// in scope for the round routes that follow.
 	durableIdempotency := middleware.Idempotency(middleware.NewDurableIdempotencyStore(db))
+	idempotencyStore := middleware.NewIdempotencyStore()
+	replayLog := middleware.IdempotencyReplayLog(idempotencyStore)
 
 	// Event routes — any authenticated user can create events (they become the organizer).
 	// /events/public must be registered before /events/:id so Fiber matches it literally.
@@ -133,7 +137,7 @@ func main() {
 	api.Delete("/events/:id", handlers.DeleteEvent(eventService))
 
 	api.Get("/events/:id/members", handlers.GetEventMembers(eventService))
-	api.Post("/events/:id/members", handlers.AddEventMember(eventService))
+	api.Post("/events/:id/members", durableIdempotency, handlers.AddEventMember(eventService))
 	api.Delete("/events/:id/members/:userId", handlers.RemoveEventMember(eventService))
 	api.Patch("/events/:id/members/:userId/role", handlers.UpdateMemberRole(eventService))
 
@@ -150,26 +154,24 @@ func main() {
 	api.Post("/rounds", durableIdempotency, handlers.CreateEventlessRound(roundService))
 	api.Get("/rounds", handlers.GetMyRounds(roundService))
 	api.Get("/rounds/:roundId", handlers.GetRound(roundService))
-	api.Patch("/rounds/:roundId", handlers.UpdateRound(roundService))
+	api.Patch("/rounds/:roundId", replayLog, handlers.UpdateRound(roundService))
 	api.Delete("/rounds/:roundId", handlers.DeleteRound(roundService))
-	api.Post("/rounds/:roundId/groups", handlers.CreateGroup(roundService))
+	api.Post("/rounds/:roundId/groups", durableIdempotency, handlers.CreateGroup(roundService))
 	api.Patch("/rounds/:roundId/groups/:groupId", handlers.UpdateGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId", handlers.DeleteGroup(roundService))
-	api.Post("/rounds/:roundId/groups/:groupId/members", handlers.AddGroupMember(roundService))
-	api.Post("/rounds/:roundId/groups/:groupId/guests", handlers.AddGuestToGroup(roundService))
+	api.Post("/rounds/:roundId/groups/:groupId/members", durableIdempotency, handlers.AddGroupMember(roundService))
+	api.Post("/rounds/:roundId/groups/:groupId/guests", durableIdempotency, handlers.AddGuestToGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
 	// Las Vegas team routes — organizer-only partner assignment for las_vegas rounds.
 	api.Get("/rounds/:roundId/teams", handlers.ListTeams(roundService))
-	api.Post("/rounds/:roundId/teams", handlers.CreateTeam(roundService))
-	api.Put("/rounds/:roundId/teams/:teamId/members", handlers.AssignTeamMembers(roundService))
+	api.Post("/rounds/:roundId/teams", durableIdempotency, handlers.CreateTeam(roundService))
+	api.Put("/rounds/:roundId/teams/:teamId/members", replayLog, handlers.AssignTeamMembers(roundService))
 	api.Delete("/rounds/:roundId/teams/:teamId", handlers.DeleteTeam(roundService))
 
 	// Score routes — permission enforced inside ScoreService.canModifyScores.
-	// idempotencyStore + IdempotencyReplayLog turn a client retry that lands on an
-	// already-committed (idempotent) save into a server-side phantom-save signal.
-	idempotencyStore := middleware.NewIdempotencyStore()
-	replayLog := middleware.IdempotencyReplayLog(idempotencyStore)
+	// replayLog (constructed above) turns a client retry that lands on an already-committed
+	// (idempotent) save into a server-side phantom-save signal.
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService, hub))
@@ -207,6 +209,10 @@ func main() {
 	api.Get("/users/:userId", handlers.GetUserProfile(userService))
 	api.Get("/users/:userId/stats", handlers.GetUserStats(userService))
 	api.Get("/users/:userId/rounds", handlers.GetUserRounds(userService))
+	// Batched scorecards for a user's last-N completed rounds in one response — the stats
+	// screen feeds these to the client-side stat math instead of fanning out one
+	// /rounds/:id/scorecard per round (removes the FRONTEND-2 N+1).
+	api.Get("/users/:userId/scorecards", handlers.GetUserScorecards(scoreService))
 	api.Post("/users/:userId/follow", handlers.FollowUser(userService))
 	api.Delete("/users/:userId/follow", handlers.UnfollowUser(userService))
 	api.Get("/users", handlers.SearchUsers(userService))

@@ -13,6 +13,7 @@
 //	GET    /api/v1/users/:userId                     — public profile for any user
 //	GET    /api/v1/users/:userId/stats               — computed career stats for any user
 //	GET    /api/v1/users/:userId/rounds              — last 20 completed rounds for a user
+//	GET    /api/v1/users/:userId/scorecards          — batched scorecards for those rounds (stats screen)
 //	POST   /api/v1/users/:userId/follow              — follow a user
 //	DELETE /api/v1/users/:userId/follow              — unfollow a user
 package handlers
@@ -208,6 +209,40 @@ func GetUserRounds(svc *services.UserService) fiber.Handler {
 			return writeUserError(c, err, "user.get_rounds", "failed to load user rounds")
 		}
 		return c.JSON(results)
+	}
+}
+
+// GetUserScorecards returns a handler for GET /api/v1/users/:userId/scorecards?last=N.
+// It batches the target user's last-N completed-round scorecards into one response so the
+// stats screen no longer fans out one /rounds/:id/scorecard request per round (the
+// FRONTEND-2 N+1). The client keeps the per-round stat math; this only collapses the reads.
+// Orchestration (round selection + scorecard assembly) lives in ScoreService.
+func GetUserScorecards(scoreSvc *services.ScoreService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerIDStr, _ := c.Locals("userID").(string)
+		callerID, err := uuid.Parse(callerIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: msgUnauthorized})
+		}
+		callerRole, _ := c.Locals("userRole").(string)
+
+		targetID, err := uuid.Parse(c.Params("userId"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
+		}
+
+		// last bounds the batch to the same 20-round window GetUserRounds returns; clamp so a
+		// garbage value can't request an unbounded set.
+		last := c.QueryInt("last", 20)
+		if last < 1 || last > 20 {
+			last = 20
+		}
+
+		cards, err := scoreSvc.GetUserScorecards(c.UserContext(), targetID, callerID, callerRole, last)
+		if err != nil {
+			return writeScoreError(c, err, "score.get_user_scorecards", "failed to load user scorecards")
+		}
+		return c.JSON(cards)
 	}
 }
 

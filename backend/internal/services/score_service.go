@@ -241,6 +241,52 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 
 // ─── GetScorecard ─────────────────────────────────────────────────────────────
 
+// GetScorecardsForRounds assembles the scorecards for a set of rounds in one call,
+// preserving input order. A round that no longer exists is skipped rather than failing
+// the whole batch — the stats screen tolerates a short list. Backs the batched
+// GET /users/:userId/scorecards endpoint, which replaces the client's per-round scorecard
+// fan-out (the FRONTEND-2 N+1).
+func (s *ScoreService) GetScorecardsForRounds(ctx context.Context, roundIDs []uuid.UUID, callerID uuid.UUID, callerRole string) ([]*ScorecardData, error) {
+	cards := make([]*ScorecardData, 0, len(roundIDs))
+	for _, id := range roundIDs {
+		card, err := s.GetScorecard(ctx, id, callerID, callerRole)
+		if err != nil {
+			// Skip a round that vanished between the round-list query and here; any other
+			// error is a real failure worth surfacing to the caller (and Sentry).
+			if errors.Is(err, ErrRoundNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+// GetUserScorecards returns the scorecards for a user's last-`last` completed rounds in one
+// call — the batched reader behind GET /users/:userId/scorecards that lets the stats screen
+// avoid fanning out one /rounds/:id/scorecard request per round (the FRONTEND-2 N+1). It
+// selects the same event-linked completed rounds as UserService.GetUserRounds (newest first),
+// then assembles each scorecard via GetScorecardsForRounds. last is clamped to ≥1; the caller
+// bounds the upper end.
+func (s *ScoreService) GetUserScorecards(ctx context.Context, targetID, callerID uuid.UUID, callerRole string, last int) ([]*ScorecardData, error) {
+	if last < 1 {
+		last = 1
+	}
+	var roundIDs []uuid.UUID
+	if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+		Select("rounds.id").
+		Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
+		Joins("JOIN rounds ON rounds.id = round_players.round_id").
+		Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
+		Order("rounds.scheduled_date DESC").
+		Limit(last).
+		Scan(&roundIDs).Error; err != nil {
+		return nil, fmt.Errorf("list user rounds: %w", err)
+	}
+	return s.GetScorecardsForRounds(ctx, roundIDs, callerID, callerRole)
+}
+
 // GetScorecard assembles the full scorecard for a round. Any authenticated
 // user may call this — no write permission required.
 // callerID may be uuid.Nil (unauthenticated fallback) — IsOrganizer returns false in that case.

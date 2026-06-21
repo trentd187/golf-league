@@ -20,7 +20,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
 import { validateGuestName, parseGuestHandicap } from "@/utils/guest";
@@ -56,19 +56,18 @@ export default function AddGuestModal({ visible, onClose, roundId, groupId }: Ad
       if (!groupId) throw new Error("No group selected");
 
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/groups/${groupId}/guests`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // savePost: stable Idempotency-Key + retry; the backend durable idempotency store
+      // replays the original response so a cellular phantom (commit + lost ack) retry
+      // can't create a duplicate guest (and its round_player/group_player rows).
+      return savePost({
+        url: `${API_URL}/api/v1/rounds/${roundId}/groups/${groupId}/guests`,
+        token: token ?? "",
+        body: {
           name: validated.value,
           course_handicap: parseGuestHandicap(handicap),
-        }),
+        },
+        label: "guest",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       // Refresh the group card and scorecard so the guest appears immediately.

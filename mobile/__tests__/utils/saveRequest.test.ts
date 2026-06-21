@@ -67,6 +67,20 @@ describe("savePut — happy path", () => {
     expect(noSleep).not.toHaveBeenCalled();
     expect(opts.netInfoFetch).not.toHaveBeenCalled(); // lazy: failure-only
   });
+
+  it("defaults to PUT but issues a PATCH when method:'PATCH' is given (start round)", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(okResponse);
+    const opts = baseOpts({
+      fetchImpl,
+      method: "PATCH",
+      url: "http://localhost:8080/api/v1/rounds/r1",
+      body: { status: "active" },
+      label: "round-status",
+    });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls[0][1].method).toBe("PATCH");
+  });
 });
 
 describe("savePut — idempotency key", () => {

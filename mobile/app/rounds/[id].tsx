@@ -48,6 +48,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
+import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { roundStatusReconciled } from "@/utils/roundReconcile";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
@@ -308,22 +311,15 @@ export default function RoundDetailScreen() {
   const addPlayerMutation = useMutation({
     mutationFn: async ({ groupId, userId }: { groupId: string; userId: string }) => {
       const token = await getToken();
-      const res = await fetch(
-        `${API_URL}/api/v1/rounds/${id}/groups/${groupId}/members`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ user_id: userId }),
-        }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
+      // savePost: stable Idempotency-Key + retry; the backend durable idempotency store
+      // replays the original response so a cellular phantom (commit + lost ack) retry
+      // can't add the same player to the group twice.
+      return savePost({
+        url: `${API_URL}/api/v1/rounds/${id}/groups/${groupId}/members`,
+        token: token ?? "",
+        body: { user_id: userId },
+        label: "group-member",
+      });
     },
     onSuccess: () => {
       // Invalidate so the player list and group card both update immediately.
@@ -400,15 +396,14 @@ export default function RoundDetailScreen() {
   const addGroupMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+      // savePost: stable Idempotency-Key + retry; the backend replays the original response
+      // so a cellular phantom (commit + lost ack) retry can't create a duplicate group.
+      return savePost({
+        url: `${API_URL}/api/v1/rounds/${id}/groups`,
+        token: token ?? "",
+        body: {},
+        label: "group",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -564,16 +559,26 @@ export default function RoundDetailScreen() {
   const startRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+      // savePut(PATCH): starting a round is idempotent (status→active twice converges), so a
+      // cellular phantom (PATCH commits, ack lost) is safe to retry with a stable
+      // Idempotency-Key. If every retry fails on transport, reconcile reads the round back —
+      // an already-"active" status suppresses the false "couldn't start round" error.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "active" }),
+        body: { status: "active" },
+        label: "round-status",
+        retry: FOREGROUND_SAVE,
+        reconcile: async () => {
+          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return false;
+          const fresh = await res.json();
+          return roundStatusReconciled(fresh, "active");
+        },
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });

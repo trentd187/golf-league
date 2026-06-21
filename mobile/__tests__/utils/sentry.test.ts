@@ -299,7 +299,7 @@ describe("reportSaveFailure", () => {
 });
 
 describe("reportSaveReconciled", () => {
-  it("records a recovered phantom save as an info message tagged save_outcome:reconciled", () => {
+  it("records a recovered phantom save as a structured LOG (not an Issue) tagged save_outcome:reconciled", () => {
     reportSaveReconciled({
       label: "scores",
       attempts: 5,
@@ -307,30 +307,28 @@ describe("reportSaveReconciled", () => {
       connectionType: "cellular",
       cellularGeneration: "4g",
     });
-    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+    // A recovered phantom must NOT open an Issue — it goes to searchable Logs.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.logger.info).toHaveBeenCalledTimes(1);
+    expect(Sentry.logger.info).toHaveBeenCalledWith(
       expect.stringContaining("reconciled"),
       expect.objectContaining({
-        level: "info",
-        tags: expect.objectContaining({
-          error_source: "save",
-          save_outcome: "reconciled",
-          save_endpoint: "scores",
-          connection_type: "cellular",
-        }),
-        extra: expect.objectContaining({
-          attempts: 5,
-          elapsedMs: 4200,
-          cellularGeneration: "4g",
-        }),
+        event: "save.reconciled",
+        error_source: "save",
+        save_outcome: "reconciled",
+        save_endpoint: "scores",
+        connection_type: "cellular",
+        attempts: 5,
+        elapsedMs: 4200,
+        cellularGeneration: "4g",
       }),
     );
   });
 
   it("defaults connection_type to unknown when omitted", () => {
     reportSaveReconciled({ label: "scores", attempts: 3, elapsedMs: 10 });
-    const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
-    expect(ctx.tags.connection_type).toBe("unknown");
+    const [, attrs] = (Sentry.logger.info as jest.Mock).mock.calls[0];
+    expect(attrs.connection_type).toBe("unknown");
   });
 });
 
@@ -393,7 +391,7 @@ describe("reportCreateFailure", () => {
 });
 
 describe("reportCreateReconciled", () => {
-  it("records a recovered phantom create as an info message tagged create_outcome:reconciled", () => {
+  it("records a recovered phantom create as a structured LOG (not an Issue) tagged create_outcome:reconciled", () => {
     reportCreateReconciled({
       label: "round",
       attempts: 3,
@@ -401,25 +399,26 @@ describe("reportCreateReconciled", () => {
       connectionType: "cellular",
       cellularGeneration: "4g",
     });
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.logger.info).toHaveBeenCalledWith(
       expect.stringContaining("reconciled"),
       expect.objectContaining({
-        level: "info",
-        tags: expect.objectContaining({
-          error_source: "create",
-          create_outcome: "reconciled",
-          create_endpoint: "round",
-          connection_type: "cellular",
-        }),
-        extra: expect.objectContaining({ attempts: 3, elapsedMs: 2100, cellularGeneration: "4g" }),
+        event: "create.reconciled",
+        error_source: "create",
+        create_outcome: "reconciled",
+        create_endpoint: "round",
+        connection_type: "cellular",
+        attempts: 3,
+        elapsedMs: 2100,
+        cellularGeneration: "4g",
       }),
     );
   });
 
   it("defaults connection_type to unknown when omitted", () => {
     reportCreateReconciled({ label: "round", attempts: 3, elapsedMs: 10 });
-    const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
-    expect(ctx.tags.connection_type).toBe("unknown");
+    const [, attrs] = (Sentry.logger.info as jest.Mock).mock.calls[0];
+    expect(attrs.connection_type).toBe("unknown");
   });
 });
 

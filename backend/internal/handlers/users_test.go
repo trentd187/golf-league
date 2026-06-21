@@ -202,6 +202,28 @@ func TestGetUserRounds_InvalidUserID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── GetUserScorecards ────────────────────────────────────────────────────────
+// nilScoreSvc() (defined in scores_test.go) is safe here — these Tier 1 tests return on
+// auth/UUID validation before any service/DB call.
+
+func TestGetUserScorecards_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet, "/users/:userId/scorecards",
+		handlers.GetUserScorecards(nilScoreSvc()))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/"+validUUID+"/scorecards", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestGetUserScorecards_InvalidUserID(t *testing.T) {
+	app := newUserAppWithAuth(http.MethodGet, "/users/:userId/scorecards",
+		handlers.GetUserScorecards(nilScoreSvc()))
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/not-a-uuid/scorecards", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── ScorecardSettings ────────────────────────────────────────────────────────
 
 func TestGetScorecardSettings_NoAuth(t *testing.T) {

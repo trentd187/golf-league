@@ -99,9 +99,10 @@ rejected the write and must surface). The scorecard screen's `reconcile` reads t
 back and compares the server's scores to what we tried to write
 ([`utils/saveReconcile.ts`](../utils/saveReconcile.ts), pure + tested). If they already match,
 the write truly landed: `savePut` resolves normally (no error flag) and records the recovered
-phantom save via `reportSaveReconciled` — a `save_outcome:reconciled` info message that is the
-client-side phantom-save **counter**. A `reconcile` that returns false or throws falls through
-to the normal `reportSaveFailure` + rethrow; its own failure never masks the original error.
+phantom save via `reportSaveReconciled` — a `save_outcome:reconciled` **structured Sentry log**
+(not a `captureMessage`, so it never opens an Issue) that is the client-side phantom-save
+**counter**. A `reconcile` that returns false or throws falls through to the normal
+`reportSaveFailure` + rethrow; its own failure never masks the original error.
 
 Server side, the `Idempotency-Key` lets the backend log `score.idempotent_replay` when a retry
 lands on an already-committed save (`backend/internal/middleware/idempotency.go`) — the
@@ -146,6 +147,23 @@ a non-2xx instead of a bare status; telemetry is `error_source:create` (`create_
 `reconcile` callback exists for the rare case where *every* attempt's ack is lost, but the
 pilot ships without one and relies on the backend replay.
 
-**Rollout:** pilot scope is `POST /events`, `POST /rounds`, `POST /events/:id/rounds`. The
-remaining creates (groups, members, guests, teams) follow once the pilot is validated on a
-preview build over a real cellular round.
+**Coverage:** every non-idempotent create is wired — `POST /events`, `POST /rounds`,
+`POST /events/:id/rounds`, `POST /events/:id/members`, `POST /rounds/:id/groups`,
+`POST .../groups/:gid/members`, `POST .../groups/:gid/guests`, `POST /rounds/:id/teams` —
+each behind `middleware.Idempotency` on the backend and `savePost` on the client.
+
+## Idempotent PATCH/PUT mutations also use `savePut`
+
+Mutations that converge to the same state on repeat — **not** just PUT — route through
+`savePut` too, since they're safe to retry with a stable key. `savePut` takes an optional
+`method` (default `PUT`, accepts `PATCH`) so these reuse the one chokepoint:
+
+- **Start round** — `PATCH /rounds/:id {status:"active"}` (`app/rounds/[id].tsx`). Setting
+  the same status twice converges, so it retries like a save. Its `reconcile` reads the
+  round back and calls `roundStatusReconciled` ([`utils/roundReconcile.ts`](../utils/roundReconcile.ts),
+  pure + tested) — an already-`active` status suppresses the false "couldn't start round."
+- **Assign team members** — `PUT /rounds/:id/teams/:teamId/members` (team modals). The
+  backend replaces the team's membership atomically (delete-all + insert-set), so a repeat
+  is a no-op. The team flow is compound: `savePost` the team create, then `savePut` the
+  membership. Backend-side these idempotent routes carry the lightweight in-memory
+  `replayLog` (detection only — no second row is possible), like the scores/hole-stats PUTs.

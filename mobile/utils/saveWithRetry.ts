@@ -64,7 +64,7 @@ export interface SaveReconciledReport {
 // behaviour; report/reportReconciled/breadcrumb are the concrete (injected) telemetry;
 // the rest are injectable collaborators whose production defaults are applied below.
 export interface RunSaveOptions<T> {
-  method: "PUT" | "POST";
+  method: "PUT" | "POST" | "PATCH"; // PATCH reuses the idempotent (savePut) path
   url: string;
   token: string;
   body: unknown;

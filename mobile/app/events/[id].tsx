@@ -341,19 +341,15 @@ export default function EventDetailScreen() {
   const addMemberMutation = useMutation({
     mutationFn: async (userId: string) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/members`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ user_id: userId }),
+      // savePost: stable Idempotency-Key + retry; the backend durable idempotency store
+      // replays the original response so a cellular phantom (commit + lost ack) retry
+      // can't add the same member twice.
+      return savePost({
+        url: `${API_URL}/api/v1/events/${id}/members`,
+        token: token ?? "",
+        body: { user_id: userId },
+        label: "event-member",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id] });

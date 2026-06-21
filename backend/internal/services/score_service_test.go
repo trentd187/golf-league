@@ -682,6 +682,89 @@ func TestScoreService_GetScorecard_Success(t *testing.T) {
 	assert.Equal(t, 4, data.Groups[0].Players[0].Scores[0].GrossScore)
 }
 
+// TestScoreService_GetScorecardsForRounds_BatchesAndSkipsMissing verifies the batched
+// reader (backing GET /users/:userId/scorecards) returns one card per existing round in
+// input order and silently skips a round id that no longer exists, rather than failing the
+// whole batch. This is what lets the stats screen make one request instead of N.
+func TestScoreService_GetScorecardsForRounds_BatchesAndSkipsMissing(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "batchOrg")
+	course, tee := seedCourseWithTee(t, db, "Batch Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	missing := uuid.New()
+	cards, err := svc.GetScorecardsForRounds(
+		context.Background(),
+		[]uuid.UUID{result.Round.ID, missing},
+		organizer.ID, "user",
+	)
+	require.NoError(t, err)
+	require.Len(t, cards, 1, "the missing round is skipped; the real one is returned")
+	assert.Equal(t, result.Round.ID.String(), cards[0].RoundID)
+}
+
+// TestScoreService_GetScorecardsForRounds_EmptyInput returns an empty (non-nil) slice so
+// the handler always serializes a JSON array, never null.
+func TestScoreService_GetScorecardsForRounds_EmptyInput(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	cards, err := svc.GetScorecardsForRounds(context.Background(), nil, uuid.New(), "user")
+	require.NoError(t, err)
+	assert.Empty(t, cards)
+}
+
+// TestScoreService_GetUserScorecards_ReturnsCompletedRounds verifies the batched endpoint's
+// service: it selects the user's completed event-linked rounds and assembles their
+// scorecards in one call (the FRONTEND-2 N+1 fix).
+func TestScoreService_GetUserScorecards_ReturnsCompletedRounds(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	player := seedUser(t, db, "statsUser")
+	course, tee := seedCourseWithTee(t, db, "Stats Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, player.ID)
+	result := scheduleRound(t, roundSvc, event.ID, player.ID, course.ID.String(), tee.ID.String())
+
+	var playerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, player.ID).First(&playerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, playerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+	// GetUserScorecards only counts completed rounds, like GetUserRounds.
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", result.Round.ID).
+		Update("status", models.RoundStatusCompleted).Error)
+
+	cards, err := svc.GetUserScorecards(context.Background(), player.ID, player.ID, "user", 20)
+	require.NoError(t, err)
+	require.Len(t, cards, 1)
+	assert.Equal(t, result.Round.ID.String(), cards[0].RoundID)
+}
+
+// TestScoreService_GetUserScorecards_EmptyForUserWithNoRounds returns an empty slice (and
+// clamps last<1 to 1) for a user who has played no completed rounds.
+func TestScoreService_GetUserScorecards_EmptyForUserWithNoRounds(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	stranger := seedUser(t, db, "noRoundsUser")
+
+	cards, err := svc.GetUserScorecards(context.Background(), stranger.ID, stranger.ID, "user", 0)
+	require.NoError(t, err)
+	assert.Empty(t, cards)
+}
+
 // TestScoreService_GetScorecard_VegasTeamsAndToggles verifies the Las Vegas
 // additions to the scorecard payload: the per-round toggles ride along, and each
 // player carries their team_id/team_name (nil when unassigned) from the LEFT JOIN.

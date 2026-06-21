@@ -94,7 +94,6 @@ jobs:
   web:
     name: Web
     runs-on: ubuntu-latest
-    needs: mobile
     defaults:
       run:
         working-directory: mobile

@@ -15,7 +15,7 @@
 // Pure + injectable so it is unit-tested while the calling screen
 // (app/scorecard/[roundId].tsx) stays coverage-excluded — the extract-first rule.
 
-import type { Scorecard } from "@/types/scorecard";
+import type { Scorecard, ScorecardHoleStat } from "@/types/scorecard";
 
 // AttemptedScore mirrors the per-hole payload the scorecard screen sends to
 // PUT .../scores (hole_number + gross_score). Kept local so this module does not
@@ -56,4 +56,53 @@ export function scoresReconciled(
   serverScores: ReadonlyMap<number, number>,
 ): boolean {
   return attempted.every((s) => serverScores.get(s.hole_number) === s.gross_score);
+}
+
+// HOLE_STAT_FIELDS are the per-hole stat fields compared during reconciliation —
+// the full PUT /hole-stats payload minus hole_number, which is the lookup key
+// (already matched by extractServerHoleStat). Kept as a typed list so adding a stat
+// column to ScorecardHoleStat is a compile error here until it's reconciled too.
+const HOLE_STAT_FIELDS: readonly (keyof ScorecardHoleStat)[] = [
+  "gir",
+  "gir_miss_direction",
+  "fir",
+  "fir_miss_direction",
+  "putts",
+  "first_putt_distance",
+  "putt_distance_made",
+  "approach_yds",
+  "tee_shot_club",
+  "tee_shot_distance",
+];
+
+// extractServerHoleStat pulls the target player's stat row for one hole out of a
+// scorecard response, or null when the player or hole is absent (a stale/partial
+// response). Null makes holeStatReconciled fail safe — a missing row can never
+// satisfy the equality check, so a real failure is never masked.
+export function extractServerHoleStat(
+  scorecard: Scorecard,
+  roundPlayerId: string,
+  holeNumber: number,
+): ScorecardHoleStat | null {
+  for (const group of scorecard.groups) {
+    const player = group.players.find((p) => p.round_player_id === roundPlayerId);
+    if (!player) continue;
+    return player.hole_stats.find((s) => s.hole_number === holeNumber) ?? null;
+    // a round_player belongs to exactly one group, so the first match is authoritative
+  }
+  return null;
+}
+
+// holeStatReconciled returns true when the server's stat row for the hole matches
+// every field we attempted to write — i.e. the PUT committed and only the response
+// was lost. A missing row, or any differing field, means the write did not land and
+// the failure must still surface. undefined and null are treated as equal because the
+// attempted payload may carry undefined where the server stores SQL NULL (rendered null).
+export function holeStatReconciled(
+  attempted: ScorecardHoleStat,
+  serverStat: ScorecardHoleStat | null,
+): boolean {
+  if (!serverStat) return false;
+  const norm = (v: unknown): unknown => (v === undefined ? null : v);
+  return HOLE_STAT_FIELDS.every((f) => norm(attempted[f]) === norm(serverStat[f]));
 }

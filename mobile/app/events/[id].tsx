@@ -38,6 +38,7 @@ import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 
 // DateInput: auto-formats typed input to MM-DD-YY and shows a native calendar picker.
 // apiToDisplay/displayToApi handle YYYY-MM-DD ↔ MM-DD-YY conversion.
@@ -376,19 +377,15 @@ export default function EventDetailScreen() {
       nine_hole_selection?: string;
     }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+      // savePost: stable Idempotency-Key + retry; the backend durable idempotency store
+      // replays the original response so a cellular phantom (commit + lost ack) retry
+      // can't schedule a duplicate round under the event.
+      return savePost({
+        url: `${API_URL}/api/v1/events/${id}/rounds`,
+        token: token ?? "",
+        body: data,
+        label: "event-round",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id, "rounds"] });

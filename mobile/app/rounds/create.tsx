@@ -25,7 +25,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { useRoundForm } from "@/hooks/useRoundForm";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 import { showAlert } from "@/utils/alerts";
 import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import DateInput, { displayToApi } from "@/components/DateInput";
@@ -68,20 +68,15 @@ export default function CreateRoundScreen() {
       };
       if (roundName.trim()) payload.name = roundName.trim();
 
-      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+      // savePost: stable Idempotency-Key + timeout + jittered-backoff retry. Safe to
+      // retry because the backend durable idempotency store replays the original response
+      // instead of creating a second round on a cellular phantom (commit + lost ack).
+      return savePost<{ id: string }>({
+        url: `${API_URL}/api/v1/rounds`,
+        token: token ?? "",
+        body: payload,
+        label: "round",
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? "Failed to create round");
-      }
-      return res.json() as Promise<{ id: string }>;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["my-rounds"] });

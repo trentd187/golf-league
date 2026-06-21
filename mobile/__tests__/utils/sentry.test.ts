@@ -13,6 +13,9 @@ import {
   reportMutationError,
   reportSaveFailure,
   reportSaveReconciled,
+  reportCreateFailure,
+  reportCreateReconciled,
+  addCreateBreadcrumb,
   reportWsLifecycle,
   reportWsError,
   addSaveBreadcrumb,
@@ -328,6 +331,119 @@ describe("reportSaveReconciled", () => {
     reportSaveReconciled({ label: "scores", attempts: 3, elapsedMs: 10 });
     const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
     expect(ctx.tags.connection_type).toBe("unknown");
+  });
+});
+
+describe("reportCreateFailure", () => {
+  const conn = {
+    connectionType: "cellular",
+    cellularGeneration: "4g",
+    isInternetReachable: true,
+  };
+
+  it("captures a transport failure as create_kind network tagged error_source:create", () => {
+    reportCreateFailure(new Error("Network request failed"), {
+      label: "round",
+      attempts: 3,
+      elapsedMs: 900,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Network request failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "create",
+          create_kind: "network",
+          create_endpoint: "round",
+          connection_type: "cellular",
+        }),
+        extra: expect.objectContaining({ attempts: 3, elapsedMs: 900, cellularGeneration: "4g" }),
+      }),
+    );
+  });
+
+  it("captures an HTTP non-2xx as create_kind http carrying the status", () => {
+    reportCreateFailure(new Error("Create failed: HTTP 500"), {
+      label: "event",
+      attempts: 3,
+      elapsedMs: 700,
+      httpStatus: 500,
+      ...conn,
+    });
+    const [, ctx] = (Sentry.captureException as jest.Mock).mock.calls[0];
+    expect(ctx.tags.create_kind).toBe("http");
+    expect(ctx.tags.create_endpoint).toBe("event");
+    expect(ctx.extra.httpStatus).toBe(500);
+  });
+
+  it("defaults connection_type to unknown when not provided", () => {
+    reportCreateFailure(new Error("Network request failed"), {
+      label: "event",
+      attempts: 3,
+      elapsedMs: 10,
+    });
+    const [, ctx] = (Sentry.captureException as jest.Mock).mock.calls[0];
+    expect(ctx.tags.connection_type).toBe("unknown");
+  });
+
+  it("ignores non-Error values", () => {
+    reportCreateFailure("nope", { label: "event", attempts: 1, elapsedMs: 0 });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe("reportCreateReconciled", () => {
+  it("records a recovered phantom create as an info message tagged create_outcome:reconciled", () => {
+    reportCreateReconciled({
+      label: "round",
+      attempts: 3,
+      elapsedMs: 2100,
+      connectionType: "cellular",
+      cellularGeneration: "4g",
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("reconciled"),
+      expect.objectContaining({
+        level: "info",
+        tags: expect.objectContaining({
+          error_source: "create",
+          create_outcome: "reconciled",
+          create_endpoint: "round",
+          connection_type: "cellular",
+        }),
+        extra: expect.objectContaining({ attempts: 3, elapsedMs: 2100, cellularGeneration: "4g" }),
+      }),
+    );
+  });
+
+  it("defaults connection_type to unknown when omitted", () => {
+    reportCreateReconciled({ label: "round", attempts: 3, elapsedMs: 10 });
+    const [, ctx] = (Sentry.captureMessage as jest.Mock).mock.calls[0];
+    expect(ctx.tags.connection_type).toBe("unknown");
+  });
+});
+
+describe("addCreateBreadcrumb", () => {
+  it("adds a create breadcrumb at warning level when a retry follows", () => {
+    addCreateBreadcrumb({
+      label: "event",
+      attempt: 1,
+      nextDelayMs: 500,
+      message: "Network request failed",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "create",
+        level: "warning",
+        data: expect.objectContaining({ label: "event", attempt: 1, nextDelayMs: 500 }),
+      }),
+    );
+  });
+
+  it("uses error level on the final attempt (nextDelayMs null)", () => {
+    addCreateBreadcrumb({ label: "round", attempt: 3, nextDelayMs: null, message: "boom" });
+    const arg = (Sentry.addBreadcrumb as jest.Mock).mock.calls[0][0];
+    expect(arg.level).toBe("error");
   });
 });
 

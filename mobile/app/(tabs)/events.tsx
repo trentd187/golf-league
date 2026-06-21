@@ -33,6 +33,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 import { showAlert } from "@/utils/alerts";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
@@ -289,19 +290,15 @@ export default function EventsScreen() {
       handicap_allowance?: number;
     }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+      // savePost: stable Idempotency-Key + retry; the backend durable idempotency store
+      // replays the original response so a cellular phantom (commit + lost ack) retry
+      // can't create a second event.
+      return savePost({
+        url: `${API_URL}/api/v1/events`,
+        token: token ?? "",
+        body: data,
+        label: "event",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["events"] });

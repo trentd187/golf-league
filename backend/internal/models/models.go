@@ -440,3 +440,25 @@ type Hole struct {
 	StrokeIndex int       `gorm:"not null"` // Handicap allocation: hole 1 = hardest, 18 = easiest
 	Yardage     *int      // Pointer = nullable (some courses don't publish yardages)
 }
+
+// IdempotencyKey makes a non-idempotent POST create (event, round, member, guest,
+// team) safe to retry on a flaky cellular link. The client sends a stable
+// Idempotency-Key per logical create; the first request claims this row, and a retry
+// bearing the same key replays the stored response instead of creating a second row.
+//
+// This is the DURABLE counterpart to middleware.IdempotencyStore (which is in-memory,
+// detection-only, and survives neither a Railway restart nor a second replica) — and
+// the prerequisite the non-idempotent retry path required. ResponseStatus is nil until
+// the original request completes, so it doubles as an in-flight marker. See
+// internal/middleware/idempotency.go.
+type IdempotencyKey struct {
+	Key            string    `gorm:"primaryKey"`         // client Idempotency-Key (v4 UUID)
+	UserID         uuid.UUID `gorm:"type:uuid;not null"` // caller; scopes the key to its owner
+	Method         string    `gorm:"not null"`
+	Path           string    `gorm:"not null"`
+	RequestHash    string    `gorm:"not null"` // sha256(method+path+body): reject key reuse with a different body
+	ResponseStatus *int      // nil until the original request finishes (in-flight marker)
+	ResponseBody   *string   `gorm:"type:text"` // captured response, stored verbatim for byte-identical replay
+	CreatedAt      time.Time
+	ExpiresAt      time.Time `gorm:"not null"` // created_at + TTL; bounds the table, swept opportunistically
+}

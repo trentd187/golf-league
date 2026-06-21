@@ -14,6 +14,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
+import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
 import {
@@ -101,19 +103,23 @@ export default function BestBallTeamAssignmentModal({
       for (const rpIds of partitions) {
         if (rpIds.length === 0) continue;
         n += 1;
-        const createRes = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/teams`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ name: firstNames(rpIds, nameByRp) || `Team ${n}` }),
+        // savePost: retry-safe team create — the backend replays the original response on a
+        // cellular phantom (commit + lost ack) so a retry can't create a duplicate team.
+        const team = await savePost<{ id: string }>({
+          url: `${API_URL}/api/v1/rounds/${roundId}/teams`,
+          token: token ?? "",
+          body: { name: firstNames(rpIds, nameByRp) || `Team ${n}` },
+          label: "team",
         });
-        if (!createRes.ok) throw new Error("Failed to create team");
-        const team = (await createRes.json()) as { id: string };
-        const assignRes = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/teams/${team.id}/members`, {
-          method: "PUT",
-          headers,
-          body: JSON.stringify({ round_player_ids: rpIds }),
+        // savePut: membership replace is idempotent (delete-all + insert-set), so it's safe
+        // to retry with a stable Idempotency-Key.
+        await savePut({
+          url: `${API_URL}/api/v1/rounds/${roundId}/teams/${team.id}/members`,
+          token: token ?? "",
+          body: { round_player_ids: rpIds },
+          label: "team-members",
+          retry: FOREGROUND_SAVE,
         });
-        if (!assignRes.ok) throw new Error("Failed to assign team members");
       }
     },
     onSuccess: () => {

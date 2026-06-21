@@ -241,24 +241,21 @@ export interface SaveReconciledContext {
   cellularGeneration?: string | null;
 }
 
-// reportSaveReconciled records a recovered phantom save as a Sentry message (not an
-// exception — the user lost nothing). save_outcome:reconciled lets us chart phantom
-// saves that the read-back rescued vs. reportSaveFailure's genuine, unrecovered
-// failures, so we can tell whether the cellular last-mile loss is getting worse.
+// reportSaveReconciled records a recovered phantom save as a structured Sentry LOG (not a
+// captureMessage — the user lost nothing, so it shouldn't open an Issue). It lands in
+// searchable Logs where save_outcome:reconciled charts phantom saves the read-back rescued
+// vs. reportSaveFailure's genuine, unrecovered failures, so we can tell whether the cellular
+// last-mile loss is getting worse — without polluting the Issues stream.
 export function reportSaveReconciled(ctx: SaveReconciledContext): void {
-  Sentry.captureMessage("scorecard save reconciled after transport failure", {
-    level: "info",
-    tags: {
-      error_source: "save",
-      save_outcome: "reconciled",
-      save_endpoint: ctx.label,
-      connection_type: ctx.connectionType ?? "unknown",
-    },
-    extra: {
-      attempts: ctx.attempts,
-      elapsedMs: ctx.elapsedMs,
-      cellularGeneration: ctx.cellularGeneration,
-    },
+  Sentry.logger.info("scorecard save reconciled after transport failure", {
+    event: "save.reconciled",
+    error_source: "save",
+    save_outcome: "reconciled",
+    save_endpoint: ctx.label,
+    connection_type: ctx.connectionType ?? "unknown",
+    attempts: ctx.attempts,
+    elapsedMs: ctx.elapsedMs,
+    cellularGeneration: ctx.cellularGeneration,
   });
 }
 
@@ -323,23 +320,20 @@ export interface CreateReconciledContext {
   cellularGeneration?: string | null;
 }
 
-// reportCreateReconciled records a recovered phantom create as an info message (the user
-// lost nothing). create_outcome:reconciled charts phantoms the retry/replay rescued vs.
-// reportCreateFailure's genuine, unrecovered failures.
+// reportCreateReconciled records a recovered phantom create as a structured Sentry LOG (the
+// user lost nothing, so no Issue). create_outcome:reconciled charts phantoms the retry/replay
+// rescued vs. reportCreateFailure's genuine, unrecovered failures — in searchable Logs, not
+// the Issues stream.
 export function reportCreateReconciled(ctx: CreateReconciledContext): void {
-  Sentry.captureMessage("create reconciled after transport failure", {
-    level: "info",
-    tags: {
-      error_source: "create",
-      create_outcome: "reconciled",
-      create_endpoint: ctx.label,
-      connection_type: ctx.connectionType ?? "unknown",
-    },
-    extra: {
-      attempts: ctx.attempts,
-      elapsedMs: ctx.elapsedMs,
-      cellularGeneration: ctx.cellularGeneration,
-    },
+  Sentry.logger.info("create reconciled after transport failure", {
+    event: "create.reconciled",
+    error_source: "create",
+    create_outcome: "reconciled",
+    create_endpoint: ctx.label,
+    connection_type: ctx.connectionType ?? "unknown",
+    attempts: ctx.attempts,
+    elapsedMs: ctx.elapsedMs,
+    cellularGeneration: ctx.cellularGeneration,
   });
 }
 

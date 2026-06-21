@@ -6,9 +6,10 @@
 // No filter picker — always "last 20" for public profiles.
 //
 // Data flow:
-//   1. GET /users/:userId        — profile card (name, avatar, rounds/events counts)
-//   2. GET /users/:userId/rounds — IDs + dates of last 20 completed rounds
-//   3. GET /rounds/:id/scorecard — fetched in parallel for each round
+//   1. GET /users/:userId            — profile card (name, avatar, rounds/events counts)
+//   2. GET /users/:userId/rounds     — IDs + dates of last 20 completed rounds
+//   3. GET /users/:userId/scorecards — those rounds' scorecards in ONE batched response
+//      (replaced the per-round /rounds/:id/scorecard fan-out — the FRONTEND-2 N+1)
 //   4. buildMyStats(scorecards, rounds, userId) — client-side stat computation
 //      identical to the personal stats screen (userId param finds the target player)
 //
@@ -20,7 +21,7 @@
 
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useMutation, useQueryClient, useQueries } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
@@ -106,26 +107,25 @@ export default function UserProfileScreen() {
     enabled: !!userId,
   });
 
-  // Fetch scorecards for each of the user's rounds in parallel.
-  const scorecardQueries = useQueries({
-    queries: (roundRefs ?? []).map((round) => ({
-      queryKey: ["scorecard", round.id],
-      queryFn: async () => {
-        const token = await getToken();
-        const res = await apiFetch(`${API_URL}/api/v1/rounds/${round.id}/scorecard`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-        return res.json() as Promise<Scorecard>;
-      },
-      enabled: (roundRefs ?? []).length > 0,
-    })),
+  // Fetch the user's last-20 scorecards in ONE batched request instead of fanning out
+  // a /rounds/:id/scorecard call per round (the FRONTEND-2 N+1). The backend returns the
+  // same per-round scorecard payloads; the client-side stat math (buildMyStats) is
+  // unchanged. Gated only on userId — independent of the roundRefs query, so both fire in
+  // parallel.
+  const { data: scorecardsData, isLoading: scorecardsLoading } = useQuery<Scorecard[]>({
+    queryKey: ["userScorecards", userId],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/scorecards`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch scorecards: ${res.status}`);
+      return res.json() as Promise<Scorecard[]>;
+    },
+    enabled: !!userId,
   });
 
-  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
-  const scorecards = scorecardQueries
-    .map((q) => q.data)
-    .filter((sc): sc is Scorecard => sc !== undefined);
+  const scorecards = scorecardsData ?? [];
 
   // Compute stats using the same function as the personal stats screen, passing
   // userId so buildMyStats finds this player instead of the caller.

@@ -19,7 +19,6 @@ import { render, fireEvent, act } from "@testing-library/react-native";
 
 const mockUseQuery  = jest.fn();
 const mockUseMutation = jest.fn();
-const mockUseQueries  = jest.fn();
 const mockUseQueryClient = jest.fn(() => ({
   setQueryData: jest.fn(),
   getQueryData: jest.fn(),
@@ -29,7 +28,6 @@ const mockUseQueryClient = jest.fn(() => ({
 jest.mock("@tanstack/react-query", () => ({
   useQuery:       (...args: unknown[]) => mockUseQuery(...args),
   useMutation:    (...args: unknown[]) => mockUseMutation(...args),
-  useQueries:     (...args: unknown[]) => mockUseQueries(...args),
   useQueryClient: () => mockUseQueryClient(),
 }));
 
@@ -137,7 +135,6 @@ beforeEach(() => {
   // Default: profile query loading, all others idle.
   mockUseQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
   mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: false });
-  mockUseQueries.mockReturnValue([]);
   mockBuildMyStats.mockReturnValue(emptyStats);
   // Reset the query client mock so each test gets a fresh stable object.
   mockUseQueryClient.mockImplementation(() => ({
@@ -233,12 +230,12 @@ it("hides the follow button for own profile (is_me true)", () => {
 });
 
 it("shows a stats loading spinner while scorecards are still fetching", () => {
+  // Call order: profile → hcStats → roundRefs → scorecards (batched query).
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
     .mockReturnValueOnce(mockHcStats)
-    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false });
-  // One scorecard still loading.
-  mockUseQueries.mockReturnValue([{ isLoading: true, data: undefined }]);
+    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: undefined, isLoading: true, isError: false }); // scorecards still loading
 
   const { UNSAFE_getAllByType } = render(<UserProfileScreen />);
   const { ActivityIndicator } = require("react-native");
@@ -249,7 +246,8 @@ it("shows no-rounds empty state when round refs list is empty", () => {
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
     .mockReturnValueOnce(mockHcStats)
-    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false }); // scorecards: none
   mockBuildMyStats.mockReturnValue(emptyStats);
 
   const { getByText } = render(<UserProfileScreen />);
@@ -260,8 +258,8 @@ it("renders stat cards when scorecards are loaded", () => {
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
     .mockReturnValueOnce(mockHcStats)
-    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false });
-  mockUseQueries.mockReturnValue([{ isLoading: false, data: { round_id: "r1", groups: [], holes: [] } }]);
+    .mockReturnValueOnce({ data: [{ id: "r1", scheduled_date: "2026-04-01" }], isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: [{ round_id: "r1", groups: [], holes: [] }], isLoading: false, isError: false });
   mockBuildMyStats.mockReturnValue(filledStats);
 
   const { getByText, getAllByText } = render(<UserProfileScreen />);
@@ -269,6 +267,42 @@ it("renders stat cards when scorecards are loaded", () => {
   // Two DirectionalMissCards: one for Driving, one for Approach.
   expect(getAllByText("DirectionalMissCard").length).toBe(2);
   expect(getByText("PuttingCard")).toBeTruthy();
+});
+
+// The batched scorecards query (call #4) replaced the per-round fan-out (FRONTEND-2 N+1).
+// These exercise its queryFn directly — the 4 useQuery configs are captured by the mock.
+it("scorecards queryFn fetches the batched endpoint and returns the array", async () => {
+  const apiFetch = require("@/utils/api").apiFetch as jest.Mock;
+  apiFetch.mockResolvedValue({ ok: true, json: async () => [{ round_id: "r1" }] });
+  mockUseQuery
+    .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
+    .mockReturnValueOnce(mockHcStats)
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+
+  render(<UserProfileScreen />);
+  const scorecardsCfg = mockUseQuery.mock.calls[3][0] as { queryFn: () => Promise<unknown> };
+  const result = await scorecardsCfg.queryFn();
+
+  expect(apiFetch).toHaveBeenCalledWith(
+    "http://localhost:8080/api/v1/users/test-user-id-123/scorecards",
+    expect.objectContaining({ headers: { Authorization: "Bearer test-token" } }),
+  );
+  expect(result).toEqual([{ round_id: "r1" }]);
+});
+
+it("scorecards queryFn throws on a non-ok response", async () => {
+  const apiFetch = require("@/utils/api").apiFetch as jest.Mock;
+  apiFetch.mockResolvedValue({ ok: false, status: 500 });
+  mockUseQuery
+    .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
+    .mockReturnValueOnce(mockHcStats)
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false })
+    .mockReturnValueOnce({ data: [], isLoading: false, isError: false });
+
+  render(<UserProfileScreen />);
+  const scorecardsCfg = mockUseQuery.mock.calls[3][0] as { queryFn: () => Promise<unknown> };
+  await expect(scorecardsCfg.queryFn()).rejects.toThrow("Failed to fetch scorecards: 500");
 });
 
 it("calls the follow mutation when the Follow button is pressed", async () => {

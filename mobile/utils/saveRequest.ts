@@ -64,7 +64,11 @@ export interface SavePutOptions {
   url: string;
   token: string;
   body: unknown;
-  label: string; // "scores" | "hole-stats" | "handicap"
+  label: string; // "scores" | "hole-stats" | "handicap" | "round-status" | "team-members"
+  // method defaults to PUT. PATCH routes the same idempotent path (e.g. starting a round
+  // is PATCH /rounds/:id {status:"active"} — setting the same status twice converges, so
+  // it's safe to retry exactly like a PUT). Not for POST creates — those use savePost.
+  method?: "PUT" | "PATCH";
   retry?: RetryProfile;
   // reconcile, when provided, is invoked only after every retry has failed. It
   // should read authoritative server state and resolve true when the write is
@@ -93,7 +97,7 @@ export interface SavePutOptions {
 // already landed), which is adapted to the core's { value } | null contract here.
 export async function savePut(opts: SavePutOptions): Promise<void> {
   await runSaveWithRetry<void>({
-    method: "PUT",
+    method: opts.method ?? "PUT",
     url: opts.url,
     token: opts.token,
     body: opts.body,

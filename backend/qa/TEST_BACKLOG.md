@@ -48,7 +48,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. — `backend/qa/non_admin_course_403.hurl` (added 2026-06-19)
 - [x] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only) — `backend/qa/scorecard_settings.hurl` (added 2026-06-21)
 - [x] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only) — `backend/qa/following.hurl` (added 2026-06-21)
-- [ ] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only)
+- [x] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only) — `backend/qa/users_search.hurl` (added 2026-06-22)
 - [x] **B6** — Event lifecycle (self-cleaning): `POST /events` → 201 capture `id`; `GET /events/:id` → 200 assert name; `PATCH /events/:id {status:"cancelled"}` → 200; `DELETE /events/:id` → 204; `GET /events/:id` → 404. — `backend/qa/events_crud.hurl` (added 2026-06-19)
 - [ ] **B7** — Eventless round (self-cleaning): capture `course_id`/`tee_id` from `GET /courses`; `POST /rounds` → 201 capture `id`; `GET /rounds/:id` → 200; `DELETE /rounds/:id` → 204.
 - [ ] **B8** — Round + group + guest (self-cleaning): create round → `POST …/groups` → `POST …/groups/:gid/guests {name}` → `GET …/scorecard` shows the guest → `DELETE /rounds/:id`.
@@ -62,7 +62,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **F1** — `/terms` renders: "Terms of Service" heading, brand, back affordance. — `mobile/e2e/web/terms.spec.ts` (added 2026-06-19)
 - [x] **F2** — `/privacy` renders: "Privacy Policy" heading, brand. — `mobile/e2e/web/privacy.spec.ts` (added 2026-06-19)
 - [x] **F3** — A bogus route renders the `+not-found` fallback. (public) — `mobile/e2e/web/not-found.spec.ts` (added 2026-06-21)
-- [ ] **F4** — Sign-in invalid/empty email shows an inline error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public)
+- [x] **F4** — Sign-in invalid/empty email shows an error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public) — `mobile/e2e/web/sign-in-invalid-email.spec.ts` (added 2026-06-22; the screen has no client-side check — it surfaces Supabase's rejection via `window.alert` "Something went wrong", not an inline message)
 - [x] **F5** — `/(tabs)/events` after session injection shows the "Events" heading + "Create" button. — `mobile/e2e/web/events.auth.spec.ts` (added 2026-06-19, needs `auth.setup.ts`)
 - [x] **F6** — `/(tabs)/rounds` shows "My Rounds" + a section header or empty state. (auth) — `mobile/e2e/web/rounds.auth.spec.ts` (added 2026-06-21, also asserts the new Filter control)
 - [ ] **F7** — `/(tabs)/profile` shows "Profile", "Sign Out", and a theme/score-position control (`testID`s exist). (auth)

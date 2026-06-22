@@ -38,6 +38,17 @@ import { showAlert } from "@/utils/alerts";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge, StatusChip } from "@/components/badges";
+import FilterSortBar from "@/components/FilterSortBar";
+import FilterSheet from "@/components/FilterSheet";
+import SortSheet from "@/components/SortSheet";
+import { useListPrefsStore } from "@/stores/listPrefsStore";
+import {
+  filterEvents,
+  sortEvents,
+  type EventTypeFilter as TypeFilter,
+  type EventStatusFilter as StatusFilter,
+  type EventSortKey as SortKey,
+} from "@/utils/eventFilters";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,18 +66,6 @@ type EventResponse = {
   member_count: number;
   created_at: string;
 };
-
-type TypeFilter = "all" | EventResponse["event_type"];
-
-// Only "active" and "completed" are valid event statuses — cancel was removed.
-type StatusFilter = "all" | "active" | "completed";
-
-type SortKey =
-  | "start_date_asc"
-  | "start_date_desc"
-  | "name_asc"
-  | "members_desc"
-  | "created_desc";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -159,11 +158,11 @@ export default function EventsScreen() {
   const t = useTheme();
   const queryClient = useQueryClient();
 
-  // Filter / sort state
-  const [typeFilter,   setTypeFilter]   = useState<TypeFilter>("all");
-  // Default to "active" so the list opens showing only in-progress events.
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
-  const [sortKey,      setSortKey]      = useState<SortKey>("start_date_asc");
+  // Filter / sort selection is persisted across sessions in the shared list-prefs
+  // store (defaults: type "all", status "active", sort by start date ascending).
+  const { typeFilter, statusFilter, sortKey } = useListPrefsStore((s) => s.events);
+  const setEventPrefs = useListPrefsStore((s) => s.setEventPrefs);
+  const resetEventFilters = useListPrefsStore((s) => s.resetEventFilters);
   const [sortModalVisible,   setSortModalVisible]   = useState(false);
   const [filterModalVisible, setFilterModalVisible] = useState(false);
 
@@ -221,57 +220,12 @@ export default function EventsScreen() {
     }, [queryClient, refetch])
   );
 
-  // Filter and sort client-side — no extra API calls needed.
-  const displayedEvents = useMemo(() => {
-    if (!events) return [];
-
-    let result = typeFilter === "all"
-      ? events
-      : events.filter((e) => e.event_type === typeFilter);
-
-    if (statusFilter !== "all") {
-      result = result.filter((e) => e.status === statusFilter);
-    }
-
-    // Spread into a new array before sorting — Array.sort() mutates in place and we
-    // don't want to mutate the React Query cache.
-    const sorted = [...result];
-
-    switch (sortKey) {
-      case "start_date_asc":
-        sorted.sort((a, b) => {
-          if (!a.start_date && !b.start_date) return 0;
-          if (!a.start_date) return 1;  // nulls last
-          if (!b.start_date) return -1;
-          return a.start_date.localeCompare(b.start_date);
-        });
-        break;
-
-      case "start_date_desc":
-        sorted.sort((a, b) => {
-          if (!a.start_date && !b.start_date) return 0;
-          if (!a.start_date) return 1;  // nulls last even when descending
-          if (!b.start_date) return -1;
-          return b.start_date.localeCompare(a.start_date);
-        });
-        break;
-
-      case "name_asc":
-        sorted.sort((a, b) => a.name.localeCompare(b.name));
-        break;
-
-      case "members_desc":
-        sorted.sort((a, b) => b.member_count - a.member_count);
-        break;
-
-      case "created_desc":
-        // ISO strings compare correctly as strings.
-        sorted.sort((a, b) => b.created_at.localeCompare(a.created_at));
-        break;
-    }
-
-    return sorted;
-  }, [events, typeFilter, statusFilter, sortKey]);
+  // Filter and sort client-side — no extra API calls needed. The logic lives in
+  // utils/eventFilters.ts (pure + unit-tested) so it counts toward coverage.
+  const displayedEvents = useMemo(
+    () => (events ? sortEvents(filterEvents(events, typeFilter, statusFilter), sortKey) : []),
+    [events, typeFilter, statusFilter, sortKey],
+  );
 
   // statusFilter defaults to "active", so it counts as active only if changed away from that.
   const hasActiveFilters = typeFilter !== "all" || statusFilter !== "active";
@@ -354,10 +308,9 @@ export default function EventsScreen() {
     setNewIsPublic(false);
   };
 
-  const clearFilters = () => {
-    setTypeFilter("all");
-    setStatusFilter("active");
-  };
+  // Resets the filter axes to their defaults (type "all", status "active") while
+  // keeping the chosen sort — handled by the shared store.
+  const clearFilters = resetEventFilters;
 
   // --- Render ---
   return (
@@ -387,39 +340,13 @@ export default function EventsScreen() {
           </View>
         </View>
 
-        {/* Filter + Sort bar */}
-        <View className="px-5 flex-row items-center gap-2 mb-4">
-
-          {/* Filter button — highlighted when any filter is active */}
-          <TouchableOpacity
-            className={`flex-row items-center gap-1.5 border rounded-xl px-3 py-2 ${
-              hasActiveFilters
-                ? "bg-green-50 border-green-300"
-                : "bg-white border-gray-200"
-            }`}
-            onPress={() => setFilterModalVisible(true)}
-          >
-            <Ionicons
-              name="options-outline"
-              size={14}
-              color={hasActiveFilters ? "#15803d" : "#6b7280"}
-            />
-            <Text className={`text-xs font-semibold ${hasActiveFilters ? "text-green-700" : "text-gray-600"}`}>
-              {/* Bullet after "Filter" when active so the user sees something is on */}
-              Filter{hasActiveFilters ? "  •" : ""}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Sort button — shows the current sort's short label */}
-          <TouchableOpacity
-            className="flex-row items-center gap-1.5 border border-gray-200 rounded-xl px-3 py-2 bg-white"
-            onPress={() => setSortModalVisible(true)}
-          >
-            <Ionicons name="swap-vertical-outline" size={14} color="#6b7280" />
-            <Text className="text-gray-600 text-xs font-semibold">{currentSortShortLabel}</Text>
-          </TouchableOpacity>
-
-        </View>
+        {/* Filter + Sort bar — shared with the Rounds screen */}
+        <FilterSortBar
+          hasActiveFilters={hasActiveFilters}
+          sortLabel={currentSortShortLabel}
+          onOpenFilter={() => setFilterModalVisible(true)}
+          onOpenSort={() => setSortModalVisible(true)}
+        />
 
         {/* Content: loading / error / list */}
         {isLoading ? (
@@ -485,155 +412,40 @@ export default function EventsScreen() {
         )}
       </View>
 
-      {/* ── Filter Modal ─────────────────────────────────────────────────────── */}
-      <Modal
+      {/* ── Filter + Sort sheets (shared with the Rounds screen) ─────────────── */}
+      <FilterSheet
         visible={filterModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setFilterModalVisible(false)}
-      >
-        <View className="flex-1">
-          {/* Tap the backdrop to close */}
-          <TouchableOpacity
-            className="absolute inset-0 bg-black/40"
-            activeOpacity={1}
-            onPress={() => setFilterModalVisible(false)}
-          />
+        onClose={() => setFilterModalVisible(false)}
+        showClearIcon={hasActiveFilters}
+        onClearAll={clearFilters}
+        sections={[
+          {
+            key: "type",
+            title: "Event Type",
+            options: TYPE_FILTER_OPTIONS,
+            selected: typeFilter,
+            onSelect: (value) => setEventPrefs({ typeFilter: value as TypeFilter }),
+          },
+          {
+            key: "status",
+            title: "Status",
+            options: STATUS_FILTER_OPTIONS,
+            selected: statusFilter,
+            onSelect: (value) => setEventPrefs({ statusFilter: value as StatusFilter }),
+          },
+        ]}
+      />
 
-          <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-10`}>
-
-            <View className={`flex-row items-center justify-between px-5 pt-5 pb-3 border-b ${t.divider}`}>
-              <Text className={`text-base font-bold ${t.textPrimary}`}>Filter</Text>
-              <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
-                <Ionicons name="close" size={22} color={t.colors.tabBarInactive} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Clear All — resets type to "all" and status back to the default "active" */}
-            <TouchableOpacity
-              className="flex-row items-center justify-between px-5 py-3 border-b border-gray-100"
-              onPress={() => {
-                setTypeFilter("all");
-                setStatusFilter("active");
-              }}
-            >
-              <Text className="text-sm font-semibold text-red-500">Clear All</Text>
-              {hasActiveFilters && (
-                <Ionicons name="trash-outline" size={16} color="#ef4444" />
-              )}
-            </TouchableOpacity>
-
-            <View className="px-5 pt-4 pb-2">
-              <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
-                Event Type
-              </Text>
-            </View>
-
-            {/* "checkmark-circle" = selected; "ellipse-outline" = unselected */}
-            {TYPE_FILTER_OPTIONS.map((opt) => {
-              const selected = typeFilter === opt.value;
-              return (
-                <TouchableOpacity
-                  key={opt.value}
-                  className={`flex-row items-center justify-between px-5 py-3.5 border-b ${t.divider}`}
-                  onPress={() => setTypeFilter(opt.value)}
-                >
-                  <Text
-                    className={`text-sm ${selected ? "font-semibold" : ""} ${selected ? t.textPrimary : t.textSecondary}`}
-                  >
-                    {opt.label}
-                  </Text>
-                  <Ionicons
-                    name={selected ? "checkmark-circle" : "ellipse-outline"}
-                    size={20}
-                    color={selected ? t.colors.tabBarActive : t.colors.tabBarInactive}
-                  />
-                </TouchableOpacity>
-              );
-            })}
-
-            <View className="px-5 pt-4 pb-2">
-              <Text className={`text-xs font-semibold uppercase tracking-widest ${t.textTertiary}`}>
-                Status
-              </Text>
-            </View>
-
-            {STATUS_FILTER_OPTIONS.map((opt) => {
-              const selected = statusFilter === opt.value;
-              return (
-                <TouchableOpacity
-                  key={opt.value}
-                  className={`flex-row items-center justify-between px-5 py-3.5 border-b ${t.divider}`}
-                  onPress={() => setStatusFilter(opt.value)}
-                >
-                  <Text
-                    className={`text-sm ${selected ? "font-semibold" : ""} ${selected ? t.textPrimary : t.textSecondary}`}
-                  >
-                    {opt.label}
-                  </Text>
-                  <Ionicons
-                    name={selected ? "checkmark-circle" : "ellipse-outline"}
-                    size={20}
-                    color={selected ? t.colors.tabBarActive : t.colors.tabBarInactive}
-                  />
-                </TouchableOpacity>
-              );
-            })}
-
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Sort Modal ───────────────────────────────────────────────────────── */}
-      <Modal
+      <SortSheet
         visible={sortModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setSortModalVisible(false)}
-      >
-        <View className="flex-1">
-          <TouchableOpacity
-            className="absolute inset-0 bg-black/40"
-            activeOpacity={1}
-            onPress={() => setSortModalVisible(false)}
-          />
-
-          <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
-
-            <View className={`flex-row items-center justify-between px-5 pt-5 pb-3 border-b ${t.divider}`}>
-              <Text className={`text-base font-bold ${t.textPrimary}`}>Sort By</Text>
-              <TouchableOpacity onPress={() => setSortModalVisible(false)}>
-                <Ionicons name="close" size={22} color={t.colors.tabBarInactive} />
-              </TouchableOpacity>
-            </View>
-
-            {SORT_OPTIONS.map((opt) => {
-              const selected = sortKey === opt.value;
-              return (
-                <TouchableOpacity
-                  key={opt.value}
-                  className={`flex-row items-center justify-between px-5 py-4 border-b ${t.divider}`}
-                  onPress={() => {
-                    setSortKey(opt.value);
-                    setSortModalVisible(false);
-                  }}
-                >
-                  <Text
-                    className={`text-base ${
-                      selected ? `font-semibold ${t.textPrimary}` : t.textSecondary
-                    }`}
-                  >
-                    {opt.label}
-                  </Text>
-                  {selected && (
-                    <Ionicons name="checkmark" size={18} color={t.colors.tabBarActive} />
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setSortModalVisible(false)}
+        options={SORT_OPTIONS}
+        selected={sortKey}
+        onSelect={(value) => {
+          setEventPrefs({ sortKey: value as SortKey });
+          setSortModalVisible(false);
+        }}
+      />
 
       {/* ── Create Event Modal ───────────────────────────────────────────────── */}
       <Modal

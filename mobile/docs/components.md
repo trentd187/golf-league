@@ -11,6 +11,7 @@ Shared UI components live in `mobile/components/`. Import with the `@/` alias.
 | User search + add list | `UserSearchList` from `@/components/UserSearchList` |
 | Status/type/role pills | Named exports from `@/components/badges` |
 | Date input with picker | `DateInput` from `@/components/DateInput` |
+| Filter + Sort bar / sheets on a list screen | `FilterSortBar` + `FilterSheet` + `SortSheet` |
 
 ## Component catalog
 
@@ -50,6 +51,12 @@ Shared UI components live in `mobile/components/`. Import with the `@/` alias.
 **`TeeForm`** — modal sheet for creating/editing a tee set.
 - Props: `courseId`, `existing?` (null = create), `onSaved`
 - Fields: name, course rating, slope rating, par (gender omitted; backend defaults to "unisex")
+
+**Filter + Sort controls** — shared by the Events and Rounds list tabs so both behave identically:
+- `FilterSortBar` — the Filter + Sort trigger row. Props: `hasActiveFilters`, `sortLabel` (short label), `onOpenFilter`, `onOpenSort`. Filter button turns green when any filter is active.
+- `FilterSheet` — generic bottom-sheet filter. Props: `visible`, `onClose`, `sections` (`FilterSheetSection[]` — each `{ key, title, options, selected, onSelect }`, single-select), `onClearAll`, `showClearIcon`.
+- `SortSheet` — generic bottom-sheet sort. Props: `visible`, `onClose`, `options` (`{ value, label }[]`; extra fields like `shortLabel` are ignored), `selected`, `onSelect` (caller closes + persists).
+- The screen owns state; pure filter/sort logic lives in `utils/eventFilters.ts` / `utils/roundFilters.ts` (unit-tested, so it counts toward coverage). The selection is **persisted across sessions** in `stores/listPrefsStore.ts` (SecureStore/localStorage via `persist`, with a sync boot read like `themeStore`) — read the slice with `useListPrefsStore((s) => s.events)` / `s.rounds` and update via `setEventPrefs` / `setRoundPrefs` / `resetEventFilters` / `resetRoundFilters`.
 
 ## Shared TypeScript types
 

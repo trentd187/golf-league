@@ -47,7 +47,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. — `backend/qa/unauth_me.hurl` (added 2026-06-19)
 - [x] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. — `backend/qa/non_admin_course_403.hurl` (added 2026-06-19)
 - [x] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only) — `backend/qa/scorecard_settings.hurl` (added 2026-06-21)
-- [ ] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only)
+- [x] **B4** — `GET /api/v1/users/following` → 200, JSON collection. (read-only) — `backend/qa/following.hurl` (added 2026-06-21)
 - [ ] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only)
 - [x] **B6** — Event lifecycle (self-cleaning): `POST /events` → 201 capture `id`; `GET /events/:id` → 200 assert name; `PATCH /events/:id {status:"cancelled"}` → 200; `DELETE /events/:id` → 204; `GET /events/:id` → 404. — `backend/qa/events_crud.hurl` (added 2026-06-19)
 - [ ] **B7** — Eventless round (self-cleaning): capture `course_id`/`tee_id` from `GET /courses`; `POST /rounds` → 201 capture `id`; `GET /rounds/:id` → 200; `DELETE /rounds/:id` → 204.
@@ -64,7 +64,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **F3** — A bogus route renders the `+not-found` fallback. (public) — `mobile/e2e/web/not-found.spec.ts` (added 2026-06-21)
 - [ ] **F4** — Sign-in invalid/empty email shows an inline error and does **not** navigate. Do **not** submit a valid email (that sends a real OTP). (public)
 - [x] **F5** — `/(tabs)/events` after session injection shows the "Events" heading + "Create" button. — `mobile/e2e/web/events.auth.spec.ts` (added 2026-06-19, needs `auth.setup.ts`)
-- [ ] **F6** — `/(tabs)/rounds` shows "My Rounds" + a section header or empty state. (auth)
+- [x] **F6** — `/(tabs)/rounds` shows "My Rounds" + a section header or empty state. (auth) — `mobile/e2e/web/rounds.auth.spec.ts` (added 2026-06-21, also asserts the new Filter control)
 - [ ] **F7** — `/(tabs)/profile` shows "Profile", "Sign Out", and a theme/score-position control (`testID`s exist). (auth)
 - [ ] **F8** — `/(tabs)/courses` shows "Courses" + a search input that filters the list. (auth)
 - [ ] **F9** — `/(tabs)/friends` shows "Friends" + "Find Players". (auth)

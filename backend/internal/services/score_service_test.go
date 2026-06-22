@@ -644,6 +644,55 @@ func TestScoreService_UpsertHoleStats_AfterScores(t *testing.T) {
 	assert.Equal(t, 2, *dbStats[0].Putts)
 }
 
+// TestScoreService_UpsertHoleStats_OBRoundTrip verifies that the additive OB flags
+// (fir_ob, gir_ob) persist alongside a directional miss and surface in the scorecard
+// response — a tee shot can be both a directional miss AND out of bounds.
+func TestScoreService_UpsertHoleStats_OBRoundTrip(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "OB Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	// Hole 1: drive missed left AND went OB; approach also OB.
+	fir, firDir, firOB, girOB := false, "left", true, true
+	saved, err := svc.UpsertHoleStats(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user",
+		[]services.HoleStatInput{{HoleNumber: 1, FIR: &fir, FIRMissDirection: &firDir, FIROB: &firOB, GIROB: &girOB}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, saved)
+
+	var dbStats []models.HoleStat
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).Find(&dbStats).Error)
+	require.Len(t, dbStats, 1)
+	require.NotNil(t, dbStats[0].FIROB)
+	assert.True(t, *dbStats[0].FIROB)
+	require.NotNil(t, dbStats[0].GIROB)
+	assert.True(t, *dbStats[0].GIROB)
+
+	// The OB flags must round-trip through the scorecard response DTO.
+	data, err := svc.GetScorecard(context.Background(), result.Round.ID, organizer.ID, "user")
+	require.NoError(t, err)
+	require.Len(t, data.Groups, 1)
+	require.Len(t, data.Groups[0].Players, 1)
+	require.Len(t, data.Groups[0].Players[0].HoleStats, 1)
+	hs := data.Groups[0].Players[0].HoleStats[0]
+	require.NotNil(t, hs.FIROB)
+	assert.True(t, *hs.FIROB)
+	require.NotNil(t, hs.GIROB)
+	assert.True(t, *hs.GIROB)
+}
+
 // ─── GetScorecard ─────────────────────────────────────────────────────────────
 
 // TestScoreService_GetScorecard_Success verifies that the scorecard is assembled

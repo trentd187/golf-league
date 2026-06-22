@@ -311,11 +311,15 @@ type HoleStat struct {
 	// FIR (Fairway in Regulation): true = hit the fairway, false = missed
 	FIR *bool `gorm:"column:fir;type:boolean"`
 	// FIRMissDirection: which side the drive missed
-	FIRMissDirection  *string `gorm:"column:fir_miss_direction;type:text"`
-	Putts             *int    `gorm:"column:putts;type:int"`
-	FirstPuttDistance *int    `gorm:"column:first_putt_distance;type:int"` // feet
-	PuttDistanceMade  *int    `gorm:"column:putt_distance_made;type:int"`  // feet
-	ApproachYds       *int    `gorm:"column:approach_yds;type:int"`        // yards; optional
+	FIRMissDirection *string `gorm:"column:fir_miss_direction;type:text"`
+	// FIROB / GIROB: out-of-bounds flags for the tee shot and approach. Additive —
+	// independent of fir/gir, since a shot can go both a direction and OB.
+	FIROB             *bool `gorm:"column:fir_ob;type:boolean"`
+	GIROB             *bool `gorm:"column:gir_ob;type:boolean"`
+	Putts             *int  `gorm:"column:putts;type:int"`
+	FirstPuttDistance *int  `gorm:"column:first_putt_distance;type:int"` // feet
+	PuttDistanceMade  *int  `gorm:"column:putt_distance_made;type:int"`  // feet
+	ApproachYds       *int  `gorm:"column:approach_yds;type:int"`        // yards; optional
 	// TeeShotClub: club used off the tee — constrained enum: DR, 3W, 5W, 7W, DI, 3H
 	TeeShotClub     *string   `gorm:"column:tee_shot_club;type:text"`
 	TeeShotDistance *int      `gorm:"column:tee_shot_distance;type:int"` // yards
@@ -336,6 +340,7 @@ type ScorecardSettings struct {
 	ApproachYdsEnabled       bool      `gorm:"not null;default:true"`
 	TeeShotClubEnabled       bool      `gorm:"not null;default:false"`
 	TeeShotDistanceEnabled   bool      `gorm:"not null;default:false"`
+	OBEnabled                bool      `gorm:"not null;default:true"`
 	StatOrder                string    `gorm:"not null;default:'fir,gir,putts,first_putt_distance,putt_distance_made,approach_yds,tee_shot_club,tee_shot_distance'"`
 	ScorePosition            string    `gorm:"not null;default:'last'"`
 	ShowGroupOnScorecard     bool      `gorm:"not null;default:true"`

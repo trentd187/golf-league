@@ -636,6 +636,36 @@ export default function ProfileScreen() {
             })}
           </View>
 
+          {/* ── Out of Bounds toggle ──────────────────────────────────────────── */}
+          {/* OB is a sub-pill inside the FIR/GIR sections, not a reorderable stat row,
+              so it lives outside the stat_order list with its own toggle. */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
+            Out of Bounds
+          </Text>
+
+          <View className={`${t.surface} rounded-2xl mb-6 border ${t.border} overflow-hidden`}>
+            <View className="flex-row items-center justify-between px-4 py-3">
+              <View className="flex-1 mr-4">
+                <Text className={`text-sm ${t.textPrimary}`}>Track out of bounds (OB)</Text>
+                <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
+                  {settings.ob_enabled
+                    ? "An OB pill appears in the FIR and GIR sections"
+                    : "OB tracking is hidden from the scorecard"}
+                </Text>
+              </View>
+              <Switch
+                testID="ob-toggle"
+                value={settings.ob_enabled}
+                onValueChange={(val) =>
+                  settingsMutation.mutate({ ...settings, ob_enabled: val })
+                }
+                trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
+                thumbColor="#ffffff"
+                disabled={settingsMutation.isPending}
+              />
+            </View>
+          </View>
+
           {/* ── Sign out button — always red, destructive action ──────────────── */}
           <TouchableOpacity
             className="bg-red-50 border border-red-200 rounded-2xl py-4 items-center mt-2"

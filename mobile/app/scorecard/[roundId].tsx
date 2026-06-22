@@ -73,6 +73,10 @@ type HoleStatEntry = {
   gir_miss_direction: string | null; // "short" | "left" | "right" | "long" | null
   fir: boolean | null;
   fir_miss_direction: string | null;
+  // fir_ob/gir_ob: additive out-of-bounds flags for the tee shot and approach.
+  // Set independently of the directional pills (a shot can be both a direction and OB).
+  fir_ob: boolean | null;
+  gir_ob: boolean | null;
   putts: string;
   first_putt_distance: string; // feet
   putt_distance_made: string;  // feet
@@ -165,6 +169,8 @@ function initStats(players: ScorecardPlayer[]): LocalStats {
         gir_miss_direction:  s.gir_miss_direction,
         fir:                 s.fir,
         fir_miss_direction:  s.fir_miss_direction,
+        fir_ob:              s.fir_ob ?? null,
+        gir_ob:              s.gir_ob ?? null,
         putts:               s.putts != null ? String(s.putts) : "",
         first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
         putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
@@ -200,6 +206,7 @@ function firKey(entry: HoleStatEntry | undefined): string | null {
 const emptyHoleStat: HoleStatEntry = {
   gir: null, gir_miss_direction: null,
   fir: null, fir_miss_direction: null,
+  fir_ob: null, gir_ob: null,
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
   tee_shot_club: null, tee_shot_distance: "",
 };
@@ -520,6 +527,8 @@ export default function ScorecardScreen() {
           gir_miss_direction:   entry.gir_miss_direction,
           fir:                  entry.fir,
           fir_miss_direction:   entry.fir_miss_direction,
+          fir_ob:               entry.fir_ob,
+          gir_ob:               entry.gir_ob,
           putts:                toInt(entry.putts),
           first_putt_distance:  toInt(entry.first_putt_distance),
           putt_distance_made:   toInt(entry.putt_distance_made),
@@ -1444,6 +1453,24 @@ export default function ScorecardScreen() {
                 autoSaveStats(rpId, currentHole, 0);
               };
 
+              // handleOBTap toggles the additive OB flag for the tee shot (fir_ob) or
+              // approach (gir_ob). Unlike the directional pills it does NOT clear the
+              // sibling selection — a shot can be both a direction and OB. Tapping again
+              // clears just the OB flag (true ⇄ null).
+              const handleOBTap = (field: "fir_ob" | "gir_ob") => {
+                setStats((prev) => {
+                  const entry = prev[rpId]?.[currentHole] ?? emptyHoleStat;
+                  return {
+                    ...prev,
+                    [rpId]: {
+                      ...(prev[rpId] ?? {}),
+                      [currentHole]: { ...entry, [field]: entry[field] === true ? null : true },
+                    },
+                  };
+                });
+                autoSaveStats(rpId, currentHole, 0);
+              };
+
               // handleTeeShotClubTap toggles the selected tee shot club.
               // Tapping the already-selected club deselects it (sets to null).
               const handleTeeShotClubTap = (club: TeeShotClub) => {
@@ -1627,6 +1654,21 @@ export default function ScorecardScreen() {
                                   </TouchableOpacity>
                                 );
                               })}
+                              {/* OB is additive — selectable alongside a directional pill (left AND OB). */}
+                              {settings.ob_enabled && (
+                                <>
+                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
+                                  <TouchableOpacity
+                                    onPress={() => { if (holeData.par !== 3 && canEditSelected) handleOBTap("fir_ob"); }}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      holeStat.fir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={holeData.par === 3 || !canEditSelected ? 1 : 0.7}
+                                  >
+                                    <Text className={`text-xs font-semibold ${holeStat.fir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
+                                  </TouchableOpacity>
+                                </>
+                              )}
                             </View>
                           </View>
                         ) : null;
@@ -1656,6 +1698,21 @@ export default function ScorecardScreen() {
                                   </TouchableOpacity>
                                 );
                               })}
+                              {/* OB is additive — selectable alongside a directional/N-A pill. */}
+                              {settings.ob_enabled && (
+                                <>
+                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
+                                  <TouchableOpacity
+                                    onPress={() => { if (canEditSelected) handleOBTap("gir_ob"); }}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      holeStat.gir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={!canEditSelected ? 1 : 0.7}
+                                  >
+                                    <Text className={`text-xs font-semibold ${holeStat.gir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
+                                  </TouchableOpacity>
+                                </>
+                              )}
                             </View>
                           </View>
                         ) : null;

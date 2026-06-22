@@ -32,4 +32,5 @@ header "Content-Type" contains "application/json"
 jsonpath "$.score_position" isString
 jsonpath "$.stat_order" isCollection
 jsonpath "$.fir_enabled" isBoolean
+jsonpath "$.ob_enabled" isBoolean
 jsonpath "$.show_group_on_scorecard" isBoolean

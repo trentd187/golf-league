@@ -27,6 +27,10 @@ export interface ScorecardHoleStat {
   gir_miss_direction: "short" | "left" | "right" | "long" | null;
   fir: boolean | null;
   fir_miss_direction: "short" | "left" | "right" | "long" | null;
+  // fir_ob / gir_ob: out-of-bounds flags for the tee shot and approach. Additive —
+  // set independently of fir/gir, since a shot can go both a direction and OB.
+  fir_ob: boolean | null;
+  gir_ob: boolean | null;
   putts: number | null;
   first_putt_distance: number | null; // feet
   putt_distance_made: number | null;  // feet
@@ -48,6 +52,9 @@ export interface ScorecardSettings {
   approach_yds_enabled:        boolean;
   tee_shot_club_enabled:       boolean;
   tee_shot_distance_enabled:   boolean;
+  // ob_enabled toggles the additive OB pill in the FIR/GIR sections. Not part of
+  // stat_order — OB lives inside those sections rather than as its own stat row.
+  ob_enabled:                  boolean;
   // stat_order controls the sequence stats appear on the scorecard.
   stat_order:                  string[];
   // score_position controls whether gross score entry appears before or after stats.
@@ -68,6 +75,7 @@ export const DEFAULT_SCORECARD_SETTINGS: ScorecardSettings = {
   approach_yds_enabled:        true,
   tee_shot_club_enabled:       false,
   tee_shot_distance_enabled:   false,
+  ob_enabled:                  true,
   stat_order:                  ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
   score_position:              "last",
   show_group_on_scorecard:     false,

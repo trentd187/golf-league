@@ -20,6 +20,8 @@ function fullStat(hole_number: number, over: Partial<ScorecardHoleStat> = {}): S
     gir_miss_direction: null,
     fir: true,
     fir_miss_direction: null,
+    fir_ob: null,
+    gir_ob: null,
     putts: 2,
     first_putt_distance: 18,
     putt_distance_made: 4,

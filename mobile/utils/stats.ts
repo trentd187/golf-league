@@ -172,6 +172,13 @@ export function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[])
   const girTrackedTotal = player.hole_stats.filter((hs) => hs.gir !== null).length;
   const fairwaysHit     = player.hole_stats.filter((hs) => hs.fir === true).length;
   const fairwaysTotal   = player.hole_stats.filter((hs) => hs.fir !== null).length;
+  // OB is additive (independent of fir/gir), so its denominator counts any hole where
+  // the shot was tracked at all — fir/gir recorded OR the OB flag set. This lets a hole
+  // marked both a direction AND OB push the distribution total over 100%.
+  const firObCount = player.hole_stats.filter((hs) => hs.fir_ob === true).length;
+  const firObTotal = player.hole_stats.filter((hs) => hs.fir !== null || hs.fir_ob === true).length;
+  const girObCount = player.hole_stats.filter((hs) => hs.gir_ob === true).length;
+  const girObTotal = player.hole_stats.filter((hs) => (hs.gir !== null && hs.gir !== "na") || hs.gir_ob === true).length;
 
   let firMissLeft = 0, firMissRight = 0, firMissShort = 0, firMissLong = 0;
   let girMissLeft = 0, girMissRight = 0, girMissShort = 0, girMissLong = 0;
@@ -223,10 +230,12 @@ export function buildRoundStats(player: ScorecardPlayer, holes: ScorecardHole[])
     firPercent:    fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
     firMiss: { left: firMissLeft, right: firMissRight, short: firMissShort, long: firMissLong },
     firTotal: fairwaysTotal,
+    firObPercent:  firObTotal > 0 ? (firObCount / firObTotal) * 100 : null,
     girPercent:    greensTotal > 0   ? (greensHit / greensTotal) * 100     : null,
     girMiss: { left: girMissLeft, right: girMissRight, short: girMissShort, long: girMissLong },
     girTotal: greensTotal,
     girNaPercent:  girTrackedTotal > 0 ? (girNaCount / girTrackedTotal) * 100 : null,
+    girObPercent:  girObTotal > 0 ? (girObCount / girObTotal) * 100 : null,
     proximityRows: Array.from(proximityBuckets.entries())
       .sort(([a], [b]) => a - b)
       .map(([band, { total, count }]) => ({
@@ -300,6 +309,10 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
   let girTrackedTotal = 0; // hit + miss + na
   let fairwaysHit = 0;
   let fairwaysTotal = 0;
+  // OB accumulators — additive, so the denominator counts any tracked tee shot/approach
+  // (fir/gir recorded OR the OB flag set). See buildRoundStats for the rationale.
+  let firObCount = 0, firObTotal = 0;
+  let girObCount = 0, girObTotal = 0;
   let firMissLeft = 0, firMissRight = 0, firMissShort = 0, firMissLong = 0;
   let girMissLeft = 0, girMissRight = 0, girMissShort = 0, girMissLong = 0;
 
@@ -340,6 +353,11 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
 
     fairwaysHit   += player.hole_stats.filter((hs) => hs.fir === true).length;
     fairwaysTotal += player.hole_stats.filter((hs) => hs.fir !== null).length;
+
+    firObCount += player.hole_stats.filter((hs) => hs.fir_ob === true).length;
+    firObTotal += player.hole_stats.filter((hs) => hs.fir !== null || hs.fir_ob === true).length;
+    girObCount += player.hole_stats.filter((hs) => hs.gir_ob === true).length;
+    girObTotal += player.hole_stats.filter((hs) => (hs.gir !== null && hs.gir !== "na") || hs.gir_ob === true).length;
     for (const hs of player.hole_stats) {
       if (hs.fir === false) {
         if (hs.fir_miss_direction === "left")  firMissLeft++;
@@ -412,9 +430,11 @@ export function buildMyStats(scorecards: Scorecard[], roundsList: RoundRef[], us
     firPercent:       fairwaysTotal > 0 ? (fairwaysHit / fairwaysTotal) * 100 : null,
     firMiss: { left: firMissLeft, right: firMissRight, short: firMissShort, long: firMissLong },
     firTotal: fairwaysTotal,
+    firObPercent: firObTotal > 0 ? (firObCount / firObTotal) * 100 : null,
     girMiss: { left: girMissLeft, right: girMissRight, short: girMissShort, long: girMissLong },
     girTotal: greensTotal,
     girNaPercent: girTrackedTotal > 0 ? (girNaCount / girTrackedTotal) * 100 : null,
+    girObPercent: girObTotal > 0 ? (girObCount / girObTotal) * 100 : null,
     proximityRows: Array.from(proximityBuckets.entries())
       .sort(([a], [b]) => a - b)
       .map(([band, { total, count }]) => ({
@@ -472,6 +492,9 @@ export type GirBandData = {
   girPercent: number | null; // null when total === 0
   total: number;             // hit + miss (excludes "na")
   miss: { left: number; right: number; short: number; long: number };
+  // obPercent: share of this band's holes where the approach went OB. Additive, so it
+  // can push the band total over 100%. null when total === 0.
+  obPercent: number | null;
 };
 
 // buildGirByBand groups approach holes into 20-yd bands (matching the proximity
@@ -482,13 +505,14 @@ export type GirBandData = {
 export function buildGirByBand(scorecards: Scorecard[], userId?: string): GirBandData[] {
   const findPlayer = userId ? (sc: Scorecard) => findPlayerById(sc, userId) : findMyPlayer;
 
-  type BandAcc = { hit: number; miss: { left: number; right: number; short: number; long: number }; total: number };
-  const emptyAcc = (): BandAcc => ({ hit: 0, miss: { left: 0, right: 0, short: 0, long: 0 }, total: 0 });
+  type BandAcc = { hit: number; miss: { left: number; right: number; short: number; long: number }; total: number; ob: number };
+  const emptyAcc = (): BandAcc => ({ hit: 0, miss: { left: 0, right: 0, short: 0, long: 0 }, total: 0, ob: 0 });
   const bandAccs = new Map<number, BandAcc>();
   const allAcc   = emptyAcc();
 
-  const addTo = (acc: BandAcc, isHit: boolean, dir: string | null) => {
+  const addTo = (acc: BandAcc, isHit: boolean, dir: string | null, isOB: boolean) => {
     acc.total++;
+    if (isOB) acc.ob++; // additive: an OB hole is still counted in total via its hit/miss state
     if (isHit) {
       acc.hit++;
     } else {
@@ -506,11 +530,12 @@ export function buildGirByBand(scorecards: Scorecard[], userId?: string): GirBan
       if (hs.approach_yds === null || hs.gir === null || hs.gir === "na") continue;
       const isHit = hs.gir === "hit";
       const dir   = hs.gir_miss_direction;
+      const isOB  = hs.gir_ob === true;
       const band  = Math.floor(hs.approach_yds / 20) * 20;
 
-      addTo(allAcc, isHit, dir);
+      addTo(allAcc, isHit, dir, isOB);
       const acc = bandAccs.get(band) ?? emptyAcc();
-      addTo(acc, isHit, dir);
+      addTo(acc, isHit, dir, isOB);
       bandAccs.set(band, acc);
     }
   }
@@ -520,6 +545,7 @@ export function buildGirByBand(scorecards: Scorecard[], userId?: string): GirBan
     girPercent: acc.total > 0 ? (acc.hit / acc.total) * 100 : null,
     total: acc.total,
     miss: { ...acc.miss },
+    obPercent: acc.total > 0 ? (acc.ob / acc.total) * 100 : null,
   });
 
   const result: GirBandData[] = [toData("All", allAcc)];

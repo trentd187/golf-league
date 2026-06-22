@@ -308,6 +308,7 @@ it("calls settings mutation when a stat toggle is switched", async () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -400,6 +401,7 @@ it("calls settings mutation when score position pill is pressed", async () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -430,6 +432,7 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -459,7 +462,7 @@ it("renders Player Visibility section heading and description", () => {
     if (opts?.queryKey?.[0] === "scorecardSettings") {
       return { data: { fir_enabled: true, gir_enabled: true, putts_enabled: true,
         first_putt_distance_enabled: true, putt_distance_made_enabled: true,
-        approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false,
+        approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false, ob_enabled: true,
         stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
         score_position: "last" as const, show_group_on_scorecard: true }, isLoading: false };
     }
@@ -481,6 +484,7 @@ it("shows solo description when show_group_on_scorecard is false", () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: false,
@@ -506,6 +510,7 @@ it("calls settings mutation when group visibility toggle is switched off", async
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -522,6 +527,35 @@ it("calls settings mutation when group visibility toggle is switched off", async
     fireEvent(getByTestId("show-group-toggle"), "valueChange", false);
   });
   expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, show_group_on_scorecard: false });
+});
+
+it("toggling the OB switch patches ob_enabled", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    ob_enabled: true,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+    show_group_on_scorecard: true,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByTestId } = render(<ProfileScreen />);
+  await act(async () => {
+    fireEvent(getByTestId("ob-toggle"), "valueChange", false);
+  });
+  expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, ob_enabled: false });
 });
 
 // ─── Sign-out section ─────────────────────────────────────────────────────────

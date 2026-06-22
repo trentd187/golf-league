@@ -311,6 +311,7 @@ export default function UserProfileScreen() {
               centerValue={stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`}
               miss={stats.firMiss}
               denominator={stats.firTotal}
+              obValue={stats.firObPercent === null ? "—" : `${stats.firObPercent.toFixed(0)}%`}
             />
             <DirectionalMissCard
               sectionLabel="Approach"
@@ -319,6 +320,7 @@ export default function UserProfileScreen() {
               miss={stats.girMiss}
               denominator={stats.girTotal}
               naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
+              obValue={stats.girObPercent === null ? "—" : `${stats.girObPercent.toFixed(0)}%`}
               extraRows={stats.proximityRows}
               bands={girBands}
             />

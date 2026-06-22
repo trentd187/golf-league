@@ -1,5 +1,6 @@
 // components/HoleDataGrid.tsx
-// Displays and (optionally) edits the 18-hole scorecard data for a single tee set.
+// Displays and (optionally) edits the scorecard data for a single tee set.
+// The grid scales to the course's hole count (9 or 18) via the holeCount prop.
 //
 // Display mode (all users): read-only table of hole #, par, stroke index (SI), yardage.
 // Edit mode (admin/manager): each cell becomes a TextInput; "Save Holes" triggers a
@@ -7,6 +8,8 @@
 //
 // The component is always given the current holes array (may be empty) and an
 // editable flag. Calling the onSaved callback tells the parent to refetch.
+// Grid logic (row building, validation, payload) lives in @/utils/holeGrid so it
+// stays testable — this file is a thin consumer.
 
 import { useState, useCallback } from "react";
 import {
@@ -22,12 +25,21 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import type { HoleRow } from "@/types/courses";
+import {
+  buildInitialEditRows,
+  validateEditRows,
+  editRowsAllFilled,
+  editRowsToHolePayload,
+  type EditRow,
+} from "@/utils/holeGrid";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface HoleDataGridProps {
   courseId: string;
   teeId: string;
+  // holeCount is the course's hole count (9 or 18) — drives the number of rows.
+  holeCount: number;
   // holes may be an empty array when no data has been entered yet.
   holes: HoleRow[];
   // editable: true for admin/manager users; false for players (read-only).
@@ -36,62 +48,12 @@ interface HoleDataGridProps {
   onSaved?: () => void;
 }
 
-// EditRow mirrors HoleRow but uses strings for TextInput compatibility.
-// Blank strings represent missing / not-yet-entered values.
-interface EditRow {
-  par: string;
-  strokeIndex: string;
-  yardage: string;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// buildInitialEditRows creates 18 blank rows, pre-filling from existing hole data.
-function buildInitialEditRows(holes: HoleRow[]): EditRow[] {
-  return Array.from({ length: 18 }, (_, i) => {
-    const existing = holes.find((h) => h.hole_number === i + 1);
-    return {
-      par:         existing ? String(existing.par)          : "",
-      strokeIndex: existing ? String(existing.stroke_index) : "",
-      yardage:     existing?.yardage != null ? String(existing.yardage) : "",
-    };
-  });
-}
-
-// isEditRowsValid checks that all 18 rows have par + stroke index filled in,
-// stroke indexes are 1–18 with no duplicates, and pars are 3–6.
-function isEditRowsValid(rows: EditRow[]): string | null {
-  const siSet = new Set<number>();
-  for (let i = 0; i < rows.length; i++) {
-    const hole = i + 1;
-    const par = parseInt(rows[i].par, 10);
-    const si  = parseInt(rows[i].strokeIndex, 10);
-
-    if (!rows[i].par.trim() || isNaN(par)) {
-      return `Hole ${hole}: par is required`;
-    }
-    if (par < 3 || par > 6) {
-      return `Hole ${hole}: par must be between 3 and 6`;
-    }
-    if (!rows[i].strokeIndex.trim() || isNaN(si)) {
-      return `Hole ${hole}: stroke index is required`;
-    }
-    if (si < 1 || si > 18) {
-      return `Hole ${hole}: stroke index must be 1–18`;
-    }
-    if (siSet.has(si)) {
-      return `Stroke index ${si} is used more than once`;
-    }
-    siSet.add(si);
-  }
-  return null;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HoleDataGrid({
   courseId,
   teeId,
+  holeCount,
   holes,
   editable,
   onSaved,
@@ -105,9 +67,9 @@ export default function HoleDataGrid({
 
   // enterEdit initialises the edit rows from the current holes prop.
   const enterEdit = useCallback(() => {
-    setEditRows(buildInitialEditRows(holes));
+    setEditRows(buildInitialEditRows(holes, holeCount));
     setEditing(true);
-  }, [holes]);
+  }, [holes, holeCount]);
 
   // updateCell updates one field in one row without mutating state directly.
   const updateCell = useCallback(
@@ -121,9 +83,9 @@ export default function HoleDataGrid({
     [],
   );
 
-  // saveHoles validates and PUTs all 18 holes to the backend.
+  // saveHoles validates and PUTs all holeCount holes to the backend.
   const saveHoles = async () => {
-    const validationError = isEditRowsValid(editRows);
+    const validationError = validateEditRows(editRows, holeCount);
     if (validationError) {
       Alert.alert("Invalid data", validationError);
       return;
@@ -132,12 +94,7 @@ export default function HoleDataGrid({
     setSaving(true);
     try {
       const token = await getToken();
-      const payload = editRows.map((row, i) => ({
-        hole_number:  i + 1,
-        par:          parseInt(row.par, 10),
-        stroke_index: parseInt(row.strokeIndex, 10),
-        yardage:      row.yardage.trim() ? parseInt(row.yardage, 10) : null,
-      }));
+      const payload = editRowsToHolePayload(editRows);
 
       const res = await fetch(
         `${API_URL}/api/v1/courses/${courseId}/tees/${teeId}/holes`,
@@ -193,7 +150,7 @@ export default function HoleDataGrid({
     return (
       <View>
         {header}
-        {Array.from({ length: 18 }, (_, i) => {
+        {Array.from({ length: holeCount }, (_, i) => {
           const hole = holes.find((h) => h.hole_number === i + 1);
           return (
             <View
@@ -248,7 +205,7 @@ export default function HoleDataGrid({
 
   // ── Edit mode ─────────────────────────────────────────────────────────────
   // allFilled is true when every row has par + SI entered — enables the Save button.
-  const allFilled = editRows.every((r) => r.par.trim() && r.strokeIndex.trim());
+  const allFilled = editRowsAllFilled(editRows);
 
   return (
     <View>

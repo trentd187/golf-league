@@ -344,6 +344,7 @@ export default function CourseDetailScreen() {
                     <HoleDataGrid
                       courseId={id!}
                       teeId={tee.id}
+                      holeCount={course.hole_count || 18}
                       holes={tee.holes}
                       editable={canEdit}
                       onSaved={invalidateCourse}

@@ -450,14 +450,24 @@ func (s *CourseService) UpsertHoles(ctx context.Context, courseID, teeID uuid.UU
 	if err != nil {
 		return models.Tee{}, nil, err
 	}
+	// Bound hole numbers to the course's hole count so a 9-hole course can't be
+	// given holes 10–18 (and vice versa). HoleCount 0 is legacy data → treat as 18.
+	course, err := s.findCourse(ctx, courseID)
+	if err != nil {
+		return models.Tee{}, nil, err
+	}
+	holeCount := course.HoleCount
+	if holeCount == 0 {
+		holeCount = 18
+	}
 
 	if len(holes) == 0 {
 		return models.Tee{}, nil, &ValidationError{Field: "holes", Message: "holes array is required"}
 	}
 	seen := make(map[int]bool, len(holes))
 	for _, h := range holes {
-		if h.HoleNumber < 1 || h.HoleNumber > 18 {
-			return models.Tee{}, nil, &ValidationError{Field: "hole_number", Message: "hole_number must be between 1 and 18"}
+		if h.HoleNumber < 1 || h.HoleNumber > holeCount {
+			return models.Tee{}, nil, &ValidationError{Field: "hole_number", Message: fmt.Sprintf("hole_number must be between 1 and %d", holeCount)}
 		}
 		if seen[h.HoleNumber] {
 			return models.Tee{}, nil, &ValidationError{Field: "hole_number", Message: "duplicate hole_number in request"}

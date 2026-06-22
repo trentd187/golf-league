@@ -499,6 +499,41 @@ func TestCourseService_UpsertHoles_ReplacesAtomically(t *testing.T) {
 	assert.Equal(t, 410, *holes[0].Yardage)
 }
 
+// TestCourseService_UpsertHoles_NineHole verifies a 9-hole course accepts exactly
+// 9 holes (the bug: the client used to force 18).
+func TestCourseService_UpsertHoles_NineHole(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewCourseService(db, nil)
+	c := models.Course{Name: "Front Nine", HoleCount: 9}
+	require.NoError(t, db.Create(&c).Error)
+	tee := seedTee(t, db, c.ID)
+
+	holes := make([]services.HoleInput, 9)
+	for i := range holes {
+		holes[i] = services.HoleInput{HoleNumber: i + 1, Par: 4, StrokeIndex: i + 1}
+	}
+
+	_, saved, err := svc.UpsertHoles(context.Background(), c.ID, tee.ID, holes)
+	require.NoError(t, err)
+	require.Len(t, saved, 9)
+}
+
+// TestCourseService_UpsertHoles_NineHole_RejectsOutOfRange verifies the server
+// guard: a 9-hole course rejects a hole number above its hole count.
+func TestCourseService_UpsertHoles_NineHole_RejectsOutOfRange(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewCourseService(db, nil)
+	c := models.Course{Name: "Front Nine", HoleCount: 9}
+	require.NoError(t, db.Create(&c).Error)
+	tee := seedTee(t, db, c.ID)
+
+	_, _, err := svc.UpsertHoles(context.Background(), c.ID, tee.ID, []services.HoleInput{
+		{HoleNumber: 10, Par: 4, StrokeIndex: 1},
+	})
+	var ve *services.ValidationError
+	assert.ErrorAs(t, err, &ve, "expected ValidationError for out-of-range hole, got %v", err)
+}
+
 func TestCourseService_UpdateHole_NotFound(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	svc := services.NewCourseService(db, nil)

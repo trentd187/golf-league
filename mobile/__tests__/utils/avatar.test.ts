@@ -1,11 +1,37 @@
 // __tests__/utils/avatar.test.ts
-// Tests for the avatar image helpers: fitWithin (pure dimension math) and
-// resizeImageToJpegBuffer (the web canvas downscale used before upload).
+// Tests for the avatar image helpers: fitWithin (pure dimension math),
+// resizeImageToJpegBuffer (the web canvas downscale) and resizeNativeImageToJpegUri
+// (the native expo-image-manipulator downscale) used before upload.
+
+// expo-image-manipulator is a native module; mock its contextual API so the native
+// downscale orchestration can be asserted in the node test env. The chained context
+// (manipulate -> resize -> renderAsync -> saveAsync) is captured via the _-prefixed
+// handles below. jest.mock factories may only close over `mock`-prefixed vars, so we
+// build the handles inside the factory and re-export them for the assertions.
+jest.mock("expo-image-manipulator", () => {
+  const resize = jest.fn();
+  const saveAsync = jest.fn(async () => ({ uri: "file:///resized.jpg" }));
+  const renderAsync = jest.fn(async () => ({ saveAsync }));
+  const context = { resize, renderAsync };
+  resize.mockReturnValue(context); // resize() is chainable — returns the context
+  const manipulate = jest.fn(() => context);
+  return {
+    __esModule: true,
+    SaveFormat: { JPEG: "jpeg", PNG: "png", WEBP: "webp" },
+    ImageManipulator: { manipulate },
+    // Test-only handles for asserting the chained calls.
+    _manipulate: manipulate,
+    _resize: resize,
+    _saveAsync: saveAsync,
+  };
+});
 
 import {
   fitWithin,
   resizeImageToJpegBuffer,
+  resizeNativeImageToJpegUri,
   AVATAR_MAX_DIM,
+  AVATAR_JPEG_QUALITY,
 } from "@/utils/avatar";
 
 describe("fitWithin", () => {
@@ -134,5 +160,56 @@ describe("resizeImageToJpegBuffer", () => {
     await expect(resizeImageToJpegBuffer({} as Blob)).rejects.toThrow(
       "2d canvas context unavailable",
     );
+  });
+});
+
+describe("resizeNativeImageToJpegUri", () => {
+  // The _-prefixed handles are the inner jest.fns of the expo-image-manipulator mock.
+  const manip = require("expo-image-manipulator");
+
+  beforeEach(() => {
+    manip._manipulate.mockClear();
+    manip._resize.mockClear();
+    manip._saveAsync.mockClear();
+  });
+
+  it("downscales an oversized image and re-encodes it as JPEG, returning the new uri", async () => {
+    const out = await resizeNativeImageToJpegUri("file:///photo.jpg", 2000, 1000, 512, 0.8);
+
+    // Loads the source, schedules a proportional resize (fitWithin: 2000x1000 -> 512x256),
+    // and saves as JPEG at the requested quality.
+    expect(manip._manipulate).toHaveBeenCalledWith("file:///photo.jpg");
+    expect(manip._resize).toHaveBeenCalledWith({ width: 512, height: 256 });
+    expect(manip._saveAsync).toHaveBeenCalledWith({ format: "jpeg", compress: 0.8 });
+    expect(out).toBe("file:///resized.jpg");
+  });
+
+  it("skips the resize action when the source already fits, but still saves JPEG", async () => {
+    const out = await resizeNativeImageToJpegUri("file:///small.jpg", 300, 200, 512, 0.8);
+
+    expect(manip._resize).not.toHaveBeenCalled();
+    expect(manip._saveAsync).toHaveBeenCalledWith({ format: "jpeg", compress: 0.8 });
+    expect(out).toBe("file:///resized.jpg");
+  });
+
+  it("skips the resize action for non-positive dimensions (guards bad picker metadata)", async () => {
+    await resizeNativeImageToJpegUri("file:///bad.jpg", 0, 100);
+    expect(manip._resize).not.toHaveBeenCalled();
+    expect(manip._saveAsync).toHaveBeenCalled();
+  });
+
+  it("defaults maxDim and quality to the avatar constants", async () => {
+    await resizeNativeImageToJpegUri("file:///big.jpg", AVATAR_MAX_DIM * 2, AVATAR_MAX_DIM * 2);
+
+    // Default maxDim shrinks a 2x square to exactly the cap...
+    expect(manip._resize).toHaveBeenCalledWith({
+      width: AVATAR_MAX_DIM,
+      height: AVATAR_MAX_DIM,
+    });
+    // ...and the default JPEG quality is applied.
+    expect(manip._saveAsync).toHaveBeenCalledWith({
+      format: "jpeg",
+      compress: AVATAR_JPEG_QUALITY,
+    });
   });
 });

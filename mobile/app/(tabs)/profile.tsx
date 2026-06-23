@@ -49,7 +49,7 @@ import {
   DEFAULT_SCORECARD_SETTINGS,
 } from "@/types/scorecard";
 import { moveStatUp, moveStatDown } from "@/utils/scorecard";
-import { resizeImageToJpegBuffer } from "@/utils/avatar";
+import { resizeImageToJpegBuffer, resizeNativeImageToJpegUri } from "@/utils/avatar";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -253,16 +253,24 @@ export default function ProfileScreen() {
     setUploadingPhoto(true);
 
     try {
-      const mimeType = asset.mimeType ?? "image/jpeg";
+      // Cap the longest edge at 512px and normalize to JPEG before upload — a full-res
+      // native photo (multi-megapixel) decoded across an avatar-heavy web page crashed the
+      // renderer (see utils/avatar.ts). This mirrors the web branch's downscale.
+      const uploadUri = await resizeNativeImageToJpegUri(
+        asset.uri,
+        asset.width,
+        asset.height,
+      );
 
       // Read the file as an ArrayBuffer rather than a Blob. On Android, React Native's
       // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
       // ("Network request failed"). ArrayBuffer bypasses the Blob bridge entirely and
       // is handled natively by both platforms.
-      const fileResponse = await fetch(asset.uri);
+      const fileResponse = await fetch(uploadUri);
       const arrayBuffer = await fileResponse.arrayBuffer();
 
-      await uploadAvatarBuffer(arrayBuffer, mimeType);
+      // Fixed "image/jpeg" because resizeNativeImageToJpegUri always re-encodes to JPEG.
+      await uploadAvatarBuffer(arrayBuffer, "image/jpeg");
       Sentry.logger.info("Profile image uploaded successfully", {
         event: "profile.avatar.uploaded",
       });

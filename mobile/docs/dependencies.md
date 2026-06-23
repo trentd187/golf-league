@@ -14,6 +14,7 @@ pnpm's strict resolution requires the following packages to be **direct dependen
 | `@supabase/supabase-js` | `2.x` | Supabase Auth + Storage client; includes storage functionality (no separate `@supabase/storage-js` needed) |
 | `expo-crypto` | `~15.0.8` | SDK 54 compatible version; 55.x is SDK 55 only |
 | `expo-image-picker` | `~17.0.10` | Profile photo upload; installed via `npx expo install expo-image-picker` |
+| `expo-image-manipulator` | `~14.0.8` | Native (iOS/Android) avatar downscale-to-≤512px JPEG before upload (`utils/avatar.ts` → `resizeNativeImageToJpegUri`), mirroring the web canvas path; installed via `npx expo install`. Native module → needs an EAS rebuild to ship (bundled in Expo Go SDK 54). No config plugin |
 | `@react-native-community/datetimepicker` | `8.4.4` | Native date picker used by `components/DateInput.tsx`; installed via `npx expo install @react-native-community/datetimepicker` |
 | `@expo/vector-icons` | `~15.1.1` | Transitive dep of expo; pnpm strict mode means TypeScript can't find its types unless it's a direct dep — causes `Cannot find module '@expo/vector-icons/Ionicons'` in CI |
 | `expo-font` | `~14.0.11` | Required peer dep of `@expo/vector-icons`; missing causes expo-doctor check failure and potential runtime crash outside Expo Go |

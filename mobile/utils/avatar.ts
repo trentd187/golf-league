@@ -9,8 +9,13 @@
 // into a memory-pressure renderer crash (STATUS_ILLEGAL_INSTRUCTION). Supabase image
 // transformations (server-side thumbnails) are disabled on our plan — the render
 // endpoint returns FeatureNotEnabled — so we cap the image client-side instead:
-//   - resizeImageToJpegBuffer() shrinks the photo before upload (this module), and
+//   - resizeImageToJpegBuffer() shrinks WEB uploads before upload (this module),
+//   - resizeNativeImageToJpegUri() shrinks iOS/Android uploads (this module), and
 //   - UserAvatar.web.tsx lazy-loads so off-screen avatars never decode.
+// Capping at the source on BOTH platforms means no client can store a multi-megapixel
+// original, so a phone-uploaded avatar can no longer feed the web crash either.
+
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 
 // Longest-edge cap for a stored avatar. 512px stays crisp at 2x for our largest (40px)
 // avatar while bounding the decoded bitmap to ~1 MB (512*512*4) instead of ~16 MB.
@@ -75,4 +80,30 @@ export async function resizeImageToJpegBuffer(
     // Release the decoded bitmap promptly — these are large and GC is non-deterministic.
     bitmap.close?.();
   }
+}
+
+// resizeNativeImageToJpegUri downscales a picked image so the longest edge is <= maxDim and
+// re-encodes it as JPEG, returning a new local file URI ready for the existing
+// fetch()->arrayBuffer()->supabase.storage.upload path. NATIVE only (iOS/Android): it uses
+// expo-image-manipulator's native context API (createImageBitmap + <canvas> don't exist
+// there). Mirrors resizeImageToJpegBuffer so neither platform stores a multi-megapixel
+// original. srcWidth/srcHeight come from the expo-image-picker asset.
+export async function resizeNativeImageToJpegUri(
+  uri: string,
+  srcWidth: number,
+  srcHeight: number,
+  maxDim: number = AVATAR_MAX_DIM,
+  quality: number = AVATAR_JPEG_QUALITY,
+): Promise<string> {
+  const context = ImageManipulator.manipulate(uri);
+  // Only schedule a resize when we actually need to shrink (this also guards bad/zero
+  // dimensions, which would otherwise pass 0×0 to resize). We still always render+save as
+  // JPEG below so the stored content type matches the web path.
+  if (srcWidth > 0 && srcHeight > 0 && Math.max(srcWidth, srcHeight) > maxDim) {
+    const { width, height } = fitWithin(srcWidth, srcHeight, maxDim);
+    context.resize({ width, height });
+  }
+  const rendered = await context.renderAsync();
+  const result = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: quality });
+  return result.uri;
 }

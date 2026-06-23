@@ -65,4 +65,21 @@ const { data: { publicUrl } } = supabase.storage.from("avatars").getPublicUrl(`$
 await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
 ```
 
-Used in `app/(tabs)/profile.tsx`. No backend proxy needed.
+Used in `app/(tabs)/profile.tsx`. No backend proxy needed. (The real upload uploads an
+`ArrayBuffer`, not a `Blob` — on Android RN's fetch bridge fails to serialize Blob binary
+for outbound HTTPS; `arrayBuffer()` bypasses it.)
+
+**Always downscale avatars to ≤512px JPEG before upload — both platforms.** A full-res
+phone photo (a real one is 1.8 MB / ~2000px) stored verbatim is decoded full-size by every
+viewer; on web, many such decodes at once crashed the renderer
+(`STATUS_ILLEGAL_INSTRUCTION`). Supabase server-side image transforms are disabled on our
+plan, so the cap is client-side in [`utils/avatar.ts`](../utils/avatar.ts):
+
+- **Web** branch → `resizeImageToJpegBuffer(file)` (canvas `createImageBitmap` + `toBlob`).
+- **Native** branch → `resizeNativeImageToJpegUri(asset.uri, asset.width, asset.height)`
+  (expo-image-manipulator `manipulate().resize().renderAsync().saveAsync()`), then
+  `fetch(resizedUri).arrayBuffer()`.
+
+Both re-encode to JPEG, so the upload `contentType` is a fixed `"image/jpeg"`. Shared
+dimension math + the 512px / 0.8-quality constants live in the same module. See
+[components.md](components.md) `UserAvatar` for the web lazy-load half of the fix.

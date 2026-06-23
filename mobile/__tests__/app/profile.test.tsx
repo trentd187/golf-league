@@ -104,6 +104,14 @@ jest.mock("expo-image-picker", () => ({
   launchImageLibraryAsync: jest.fn(),
 }));
 
+// Mock the avatar resize helpers so the upload test doesn't pull in expo-image-manipulator
+// (native) or canvas (web). resizeNativeImageToJpegUri is what the native upload branch
+// now calls before fetch()->arrayBuffer(); it returns a resized local uri.
+jest.mock("@/utils/avatar", () => ({
+  resizeImageToJpegBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+  resizeNativeImageToJpegUri: jest.fn().mockResolvedValue("file:///tmp/resized.jpg"),
+}));
+
 jest.mock("@/hooks/useTheme", () => ({
   useTheme: () => ({
     screen: "",
@@ -220,7 +228,8 @@ it("avatar upload saves to custom_avatar_url, not avatar_url", async () => {
   ImagePicker.requestMediaLibraryPermissionsAsync.mockResolvedValue({ status: "granted" });
   ImagePicker.launchImageLibraryAsync.mockResolvedValue({
     canceled: false,
-    assets: [{ uri: "file:///tmp/photo.jpg", mimeType: "image/jpeg" }],
+    // width/height feed resizeNativeImageToJpegUri's downscale decision.
+    assets: [{ uri: "file:///tmp/photo.jpg", mimeType: "image/jpeg", width: 2000, height: 2000 }],
   });
 
   // Mock fetch so arrayBuffer() resolves — handlePickImage reads the file URI as ArrayBuffer.

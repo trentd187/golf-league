@@ -51,7 +51,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **B5** — `GET /api/v1/users?q=<self>` → 200, JSON collection. (read-only) — `backend/qa/users_search.hurl` (added 2026-06-22)
 - [x] **B6** — Event lifecycle (self-cleaning): `POST /events` → 201 capture `id`; `GET /events/:id` → 200 assert name; `PATCH /events/:id {status:"cancelled"}` → 200; `DELETE /events/:id` → 204; `GET /events/:id` → 404. — `backend/qa/events_crud.hurl` (added 2026-06-19)
 - [x] **B7** — Eventless round (self-cleaning): capture `course_id`/`tee_id` from `GET /courses`; `POST /rounds` → 201 capture `id`; `GET /rounds/:id` → 200; `DELETE /rounds/:id` → 204; trailing `GET → 404`. — `backend/qa/eventless_round_crud.hurl` (added 2026-06-22)
-- [ ] **B8** — Round + group + guest (self-cleaning): create round → `POST …/groups` → `POST …/groups/:gid/guests {name}` → `GET …/scorecard` shows the guest → `DELETE /rounds/:id`.
+- [x] **B8** — Round + group + guest (self-cleaning): create round → `POST …/groups` → `POST …/groups/:gid/guests {name}` → `GET …/scorecard` shows the guest → `DELETE /rounds/:id`. — `backend/qa/round_group_guest_crud.hurl` (added 2026-06-22)
 - [ ] **B9** — Score entry (self-cleaning): create round + group with self as player → `PUT …/handicap` → `PUT …/scores` → `GET …/scorecard` shows strokes → `DELETE /rounds/:id`.
 - [ ] **B10** — Vegas/Best Ball teams (self-cleaning): create round with `scoring_format` → `POST …/teams` → `PUT …/teams/:tid/members` → `GET …/teams` → `DELETE /rounds/:id`.
 - [ ] **B11** — Event membership (self-cleaning): create event → `GET …/members` (creator is organizer) → exercise `PATCH …/members/:uid/role` path → delete event.
@@ -66,6 +66,6 @@ live, checks it off (with date), and commits the new test to `develop`.
 - [x] **F5** — `/(tabs)/events` after session injection shows the "Events" heading + "Create" button. — `mobile/e2e/web/events.auth.spec.ts` (added 2026-06-19, needs `auth.setup.ts`)
 - [x] **F6** — `/(tabs)/rounds` shows "My Rounds" + a section header or empty state. (auth) — `mobile/e2e/web/rounds.auth.spec.ts` (added 2026-06-21, also asserts the new Filter control)
 - [x] **F7** — `/(tabs)/profile` shows "Profile", "Sign Out", and a theme/score-position control (`testID`s exist). (auth) — `mobile/e2e/web/profile.auth.spec.ts` (added 2026-06-22; scopes "Profile" to `.first()` since it's both heading + tab label, asserts `score-position-first` testID)
-- [ ] **F8** — `/(tabs)/courses` shows "Courses" + a search input that filters the list. (auth)
+- [x] **F8** — `/(tabs)/courses` shows "Courses" + a search input that filters the list. (auth) — `mobile/e2e/web/courses.auth.spec.ts` (added 2026-06-22; types a no-match query and asserts the "No courses match your search." empty state)
 - [ ] **F9** — `/(tabs)/friends` shows "Friends" + "Find Players". (auth)
 - [ ] **F10** — `/(tabs)/stats` renders the stats screen. (auth)

@@ -49,6 +49,7 @@ import {
   DEFAULT_SCORECARD_SETTINGS,
 } from "@/types/scorecard";
 import { moveStatUp, moveStatDown } from "@/utils/scorecard";
+import { resizeImageToJpegBuffer } from "@/utils/avatar";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -206,8 +207,11 @@ export default function ProfileScreen() {
         if (!file) return;
         setUploadingPhoto(true);
         try {
-          const arrayBuffer = await file.arrayBuffer();
-          await uploadAvatarBuffer(arrayBuffer, file.type || "image/jpeg");
+          // Downscale before upload so we never store a multi-megapixel original —
+          // full-res avatars decoded across an avatar-heavy page crashed the web
+          // renderer (see utils/avatar.ts). Re-encodes to JPEG, hence the fixed type.
+          const arrayBuffer = await resizeImageToJpegBuffer(file);
+          await uploadAvatarBuffer(arrayBuffer, "image/jpeg");
           Sentry.logger.info("Profile image uploaded successfully", {
             event: "profile.avatar.uploaded",
           });

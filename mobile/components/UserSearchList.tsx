@@ -24,10 +24,10 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
-  Image,
 } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
+import UserAvatar from "@/components/UserAvatar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -125,23 +125,12 @@ export default function UserSearchList({
               onPress={() => onSelect(item.id)}
               disabled={isPending} // prevent double-tap while mutation is in flight
             >
-              {/* Avatar: real photo when available, initials fallback otherwise */}
-              {item.avatar_url ? (
-                <View
-                  style={{ width: 40, height: 40, borderRadius: 20, overflow: "hidden", flexShrink: 0 }}
-                >
-                  <Image
-                    source={{ uri: item.avatar_url }}
-                    style={{ width: 40, height: 40 }}
-                  />
-                </View>
-              ) : (
-                <View className="w-10 h-10 rounded-full bg-green-100 items-center justify-center flex-shrink-0">
-                  <Text className="text-green-700 font-bold">
-                    {item.display_name.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-              )}
+              {/* Avatar: shared component so web gets the lazy-<img> decode fix. */}
+              <UserAvatar
+                avatarUrl={item.avatar_url}
+                displayName={item.display_name}
+                size={40}
+              />
 
               {/* min-w-0 prevents text from overflowing the flex container */}
               <View className="flex-1 min-w-0">

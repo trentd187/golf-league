@@ -9,6 +9,7 @@ Shared UI components live in `mobile/components/`. Import with the `@/` alias.
 | Modal title + close button | `ModalHeader` from `@/components/ModalHeader` |
 | Section heading + "+ Action" button | `SectionHeader` from `@/components/SectionHeader` |
 | User search + add list | `UserSearchList` from `@/components/UserSearchList` |
+| User profile photo / avatar | `UserAvatar` from `@/components/UserAvatar` (never an inline `<Image>`) |
 | Status/type/role pills | Named exports from `@/components/badges` |
 | Date input with picker | `DateInput` from `@/components/DateInput` |
 | Time / tee-time input with picker | `TimeInput` from `@/components/TimeInput` |
@@ -38,6 +39,13 @@ Shared UI components live in `mobile/components/`. Import with the `@/` alias.
 - Props: `users` (pre-filtered, `undefined` = loading), `search`, `onSearchChange`, `onSelect`, `isPending`, `emptyMessage?`
 - Parent fetches users and filters out already-added IDs; parent owns `search` state to reset on close
 - Exports `UserSummary` type
+- Renders each row's avatar via `UserAvatar` — do not inline an `<Image>`
+
+**`UserAvatar`** (`components/UserAvatar.tsx`, web variant `UserAvatar.web.tsx`) — circular user photo with an initials fallback. **Always use this for user photos; never an inline `<Image>`.**
+- Props: `avatarUrl?`, `displayName` (initial shown when no photo), `size?` (default 36)
+- **Web variant uses a native `<img loading="lazy" decoding="async">`** instead of RN-web's eager `<Image>`. Avatars are served full-resolution and the events/rounds detail screens render many via `.map()` in a plain `ScrollView`; decoding them all at once crashed the Chromium renderer (`STATUS_ILLEGAL_INSTRUCTION`). Lazy loading decodes only what's near the viewport.
+- **Uploads are downscaled to ≤512px JPEG** on web before storage via `resizeImageToJpegBuffer` in [`utils/avatar.ts`](../utils/avatar.ts) (pure `fitWithin` + a canvas re-encode). Supabase image transformations (server-side thumbnails) are **disabled on our plan** — the render endpoint returns `FeatureNotEnabled` — so we cap the bitmap client-side instead. Native uploads keep `expo-image-picker`'s own compression (no dimension cap yet — a follow-up if needed).
+- Existing oversized avatars can be shrunk in place with the one-off [`scripts/reprocess-avatars.mjs`](../../scripts/reprocess-avatars.mjs) (optional; lazy-loading already prevents the crash).
 
 **`badges.tsx`** — categorical badge and chip components (hardcoded colors):
 - `EventTypeBadge` — league (blue), tournament (amber), casual (gray)

@@ -44,9 +44,9 @@ import { savePost } from "@/utils/savePost";
 // apiToDisplay/displayToApi handle YYYY-MM-DD ↔ MM-DD-YY conversion.
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 
-// DateTimePicker is the native time picker from @react-native-community/datetimepicker.
-// Used in "time" mode for tee time entry in the Schedule Round form.
-import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
+// TimeInput is the shared tee-time field (native picker on iOS/Android, browser-native
+// <input type="time"> on web). Used for per-group tee times in the Schedule Round form.
+import TimeInput from "@/components/TimeInput";
 
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge, StatusChip, RoleBadge, RoundStatusChip } from "@/components/badges";
@@ -110,34 +110,6 @@ type RoundSummary = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// ─── Tee time helpers ─────────────────────────────────────────────────────────
-// Tee times are stored as "HH:MM" (24-hour) strings internally. The native picker
-// works with Date objects, so we convert back and forth as needed.
-
-// teeTimeToDate: "HH:MM" → JS Date (today's date, only time matters).
-function teeTimeToDate(hhmm: string): Date {
-  const d = new Date();
-  if (!hhmm) return d;
-  const [h, m] = hhmm.split(":").map(Number);
-  if (!isNaN(h) && !isNaN(m)) d.setHours(h, m, 0, 0);
-  return d;
-}
-
-// dateToTeeTime: Date → "HH:MM". padStart ensures single digits are zero-padded (7 → "07").
-function dateToTeeTime(date: Date): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-// formatTeeTime: "HH:MM" → "h:mm AM/PM" for display. e.g. "07:30" → "7:30 AM".
-function formatTeeTime(hhmm: string): string {
-  if (!hhmm) return "";
-  const [h, m] = hhmm.split(":").map(Number);
-  if (isNaN(h) || isNaN(m)) return hhmm;
-  const ampm = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 || 12; // 0 → 12 (midnight), 12 → 12 (noon)
-  return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
-}
-
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function EventDetailScreen() {
@@ -175,9 +147,8 @@ export default function EventDetailScreen() {
   const roundForm = useRoundForm();
   const [groupCount, setGroupCount] = useState(1);
   // groupTeeTimes: one "HH:MM" string per group ("" = no tee time set).
+  // Each TimeInput manages its own picker open/close state.
   const [groupTeeTimes, setGroupTeeTimes]   = useState<string[]>([""]);
-  // openTeeTimePicker: index of the group whose picker is open, or null when closed.
-  const [openTeeTimePicker, setOpenTeeTimePicker] = useState<number | null>(null);
 
   // updateGroupCount resizes groupTeeTimes to match, padding with "" or truncating.
   const updateGroupCount = (n: number) => {
@@ -1389,7 +1360,6 @@ export default function EventDetailScreen() {
           setRoundDate("");
           setGroupCount(1);
           setGroupTeeTimes([""]);
-          setOpenTeeTimePicker(null);
         }}
       >
         <KeyboardAvoidingView
@@ -1495,7 +1465,8 @@ export default function EventDetailScreen() {
                   </Text>
                 </View>
 
-                {/* One tee time row per group */}
+                {/* One tee time row per group — TimeInput handles the native picker
+                    (iOS/Android) and the browser-native <input type="time"> on web. */}
                 <View className="gap-2">
                   {Array.from({ length: groupCount }, (_, i) => (
                     <View key={i} className="flex-row items-center gap-3">
@@ -1503,98 +1474,21 @@ export default function EventDetailScreen() {
                         Group {i + 1}
                       </Text>
 
-                      <TouchableOpacity
-                        className={`flex-1 border rounded-xl px-3 py-2 flex-row items-center justify-between ${t.borderInput} ${t.surfaceSunken}`}
-                        onPress={() => setOpenTeeTimePicker(i)}
-                        disabled={scheduleRoundMutation.isPending}
-                        activeOpacity={0.7}
-                      >
-                        <Text
-                          className={`text-sm ${groupTeeTimes[i] ? t.textPrimary : ""}`}
-                          style={!groupTeeTimes[i] ? { color: t.colors.tabBarInactive } : undefined}
-                        >
-                          {groupTeeTimes[i] ? formatTeeTime(groupTeeTimes[i]) : "Set tee time (optional)"}
-                        </Text>
-                        <Ionicons name="time-outline" size={16} color={t.colors.tabBarInactive} />
-                      </TouchableOpacity>
+                      <View className="flex-1">
+                        <TimeInput
+                          value={groupTeeTimes[i] ?? ""}
+                          onChange={(v) => {
+                            const updated = [...groupTeeTimes];
+                            updated[i] = v;
+                            setGroupTeeTimes(updated);
+                          }}
+                          pickerTitle={`Group ${i + 1} Tee Time`}
+                          disabled={scheduleRoundMutation.isPending}
+                        />
+                      </View>
                     </View>
                   ))}
                 </View>
-
-                {/* Native time picker — Android uses a system dialog; iOS uses a bottom sheet. */}
-
-                {Platform.OS === "android" && openTeeTimePicker !== null && (
-                  <DateTimePicker
-                    value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
-                    mode="time"
-                    display="default"
-                    is24Hour={false}
-                    onChange={(event: DateTimePickerEvent, date?: Date) => {
-                      const idx = openTeeTimePicker;
-                      setOpenTeeTimePicker(null);
-                      // event.type === "set" means the user confirmed (not cancelled)
-                      if (event.type === "set" && date) {
-                        const updated = [...groupTeeTimes];
-                        updated[idx] = dateToTeeTime(date);
-                        setGroupTeeTimes(updated);
-                      }
-                    }}
-                  />
-                )}
-
-                {Platform.OS === "ios" && (
-                  <Modal
-                    visible={openTeeTimePicker !== null}
-                    transparent
-                    animationType="slide"
-                    onRequestClose={() => setOpenTeeTimePicker(null)}
-                  >
-                    <View className="flex-1">
-                      {/* Backdrop — tap to close */}
-                      <TouchableOpacity
-                        className="absolute inset-0 bg-black/40"
-                        activeOpacity={1}
-                        onPress={() => setOpenTeeTimePicker(null)}
-                      />
-
-                      <View className={`absolute bottom-0 left-0 right-0 ${t.surface} rounded-t-2xl pb-8`}>
-                        <View className={`flex-row items-center justify-between px-5 pt-4 pb-2 border-b ${t.divider}`}>
-                          <Text className={`font-semibold ${t.textSecondary}`}>
-                            {openTeeTimePicker !== null
-                              ? `Group ${openTeeTimePicker + 1} Tee Time`
-                              : "Tee Time"}
-                          </Text>
-                          <TouchableOpacity onPress={() => setOpenTeeTimePicker(null)}>
-                            <Text
-                              className="font-semibold text-base"
-                              style={{ color: t.colors.tabBarActive }}
-                            >
-                              Done
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Render only when picker is open — also satisfies TypeScript's null check */}
-                        {openTeeTimePicker !== null && (
-                          <DateTimePicker
-                            value={teeTimeToDate(groupTeeTimes[openTeeTimePicker] ?? "")}
-                            mode="time"
-                            display="spinner"
-                            onChange={(_event: DateTimePickerEvent, date?: Date) => {
-                              if (date && openTeeTimePicker !== null) {
-                                const updated = [...groupTeeTimes];
-                                updated[openTeeTimePicker] = dateToTeeTime(date);
-                                setGroupTeeTimes(updated);
-                              }
-                            }}
-                            // eslint-disable-next-line react-native/no-inline-styles
-                            style={{ height: 200 }}
-                          />
-                        )}
-                      </View>
-                    </View>
-                  </Modal>
-                )}
               </View>
 
               <TouchableOpacity

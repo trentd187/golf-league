@@ -1,39 +1,29 @@
 // components/DateInput.web.tsx
 // Web implementation of DateInput — Metro resolves this file over DateInput.tsx on web.
 //
-// Uses an imperatively created <input type="date"> (YYYY-MM-DD) instead of the native
-// date picker. The external interface (props, value format MM-DD-YY) is identical to
-// DateInput.tsx so all call sites work without changes.
+// The external interface (props, value format MM-DD-YY) is identical to DateInput.tsx
+// so all call sites work without changes. Two ways to enter a date:
+//   1. Type directly in the themed field (auto-formats to MM-DD-YY, inline error)
+//   2. Tap the calendar icon → the browser's native date picker
 //
-// HTML elements are created via document.createElement rather than JSX because the
-// TypeScript JSX namespace is React Native's, which doesn't include HTML intrinsics.
-// This is the same pattern used in profile.tsx's web image picker.
+// The native picker uses a real <input type="date"> created via document.createElement
+// (RN's JSX namespace has no HTML intrinsics, so we can't write <input> in JSX). The
+// element is appended to the DOM and opened with showPicker() (Chrome/Edge/Safari);
+// a detached .click() never reliably opens the picker, which was the original web bug.
 
 import { View, Text, TextInput, TouchableOpacity } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
+import {
+  apiToDisplay,
+  displayToApi,
+  isValidDisplayDate,
+  autoFormat,
+} from "@/utils/dateInput";
 
-// ─── Date conversion utilities ────────────────────────────────────────────────
-// Duplicated from DateInput.tsx — importing from "./DateInput" on web would import
-// this file itself (Metro's platform resolution), creating a circular dependency.
-// These are pure functions with no dependencies; duplication is safe.
-
-export function apiToDisplay(isoDate: string | null | undefined): string {
-  if (!isoDate) return "";
-  const parts = isoDate.split("-");
-  if (parts.length !== 3) return "";
-  const [year, month, day] = parts;
-  return `${month}-${day}-${year.slice(2)}`;
-}
-
-export function displayToApi(displayDate: string): string {
-  if (!displayDate) return "";
-  const parts = displayDate.split("-");
-  if (parts.length !== 3) return "";
-  const [month, day, year] = parts;
-  if (month.length !== 2 || day.length !== 2 || year.length !== 2) return "";
-  return `20${year}-${month}-${day}`;
-}
+// Re-export so call sites importing from "@/components/DateInput.web" (and the platform
+// alias "@/components/DateInput") keep resolving these converters.
+export { apiToDisplay, displayToApi };
 
 // toHtmlValue: MM-DD-YY → YYYY-MM-DD (HTML date input format).
 function toHtmlValue(display: string): string {
@@ -42,11 +32,7 @@ function toHtmlValue(display: string): string {
 
 // fromHtmlValue: YYYY-MM-DD → MM-DD-YY.
 function fromHtmlValue(html: string): string {
-  if (!html) return "";
-  const parts = html.split("-");
-  if (parts.length !== 3) return "";
-  const [year, month, day] = parts;
-  return `${month}-${day}-${year.slice(2)}`;
+  return apiToDisplay(html);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -68,21 +54,47 @@ export default function DateInput({
   required,
   optional,
   disabled,
+  returnKeyType,
 }: DateInputProps) {
   const t = useTheme();
 
+  // Show error only when the user has typed a full 8-char date that isn't valid.
+  const showError = value.length === 8 && !isValidDisplayDate(value);
+
+  const handleTextChange = (raw: string) => {
+    onChange(autoFormat(raw));
+  };
+
   const handleCalendarPress = () => {
-    // Create a hidden <input type="date"> and click it programmatically.
-    // The browser's native date picker opens without any JSX HTML intrinsics.
+    if (disabled) return;
+    // Create a real <input type="date">, attach it to the DOM (hidden), and open the
+    // browser's native picker. showPicker() is the reliable path; .click() is a fallback
+    // for older engines. A detached input's .click() does not open the picker.
     const input = document.createElement("input");
     input.type = "date";
     input.value = toHtmlValue(value);
-    if (disabled) return;
+    // Keep it out of layout/flow but still attached so showPicker() is allowed.
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.opacity = "0";
+
+    const cleanup = () => {
+      input.parentNode?.removeChild(input);
+    };
     input.onchange = (e) => {
       const target = e.target as HTMLInputElement;
       onChange(fromHtmlValue(target.value));
+      cleanup();
     };
-    input.click();
+    // Fired when the user dismisses the picker without choosing (modern browsers).
+    input.oncancel = cleanup;
+
+    document.body?.appendChild(input);
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+    } else {
+      input.click();
+    }
   };
 
   return (
@@ -100,16 +112,21 @@ export default function DateInput({
       )}
 
       <View
-        className={`flex-row items-center border rounded-xl ${t.surfaceSunken} ${t.borderInput}`}
+        className={`flex-row items-center border rounded-xl ${t.surfaceSunken} ${
+          showError ? "border-red-400" : t.borderInput
+        }`}
       >
-        {/* Display the current value in MM-DD-YY format to match the native component. */}
+        {/* Editable so users can type MM-DD-YY directly (the calendar icon is optional). */}
         <TextInput
           className={`flex-1 px-4 py-3 text-base ${t.textPrimary}`}
           placeholder="MM-DD-YY"
           placeholderTextColor={t.colors.tabBarInactive}
           value={value}
-          editable={false}
-          pointerEvents="none"
+          onChangeText={handleTextChange}
+          keyboardType="numeric"
+          maxLength={8}
+          editable={!disabled}
+          returnKeyType={returnKeyType}
         />
 
         <TouchableOpacity
@@ -126,6 +143,12 @@ export default function DateInput({
           />
         </TouchableOpacity>
       </View>
+
+      {showError && (
+        <Text className="text-red-500 text-xs mt-1 ml-1">
+          Please enter a valid date (MM-DD-YY)
+        </Text>
+      )}
     </View>
   );
 }

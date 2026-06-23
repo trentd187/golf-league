@@ -43,6 +43,10 @@ var (
 	// an active round references it. Course data changes mid-round would invalidate
 	// in-progress scores.
 	ErrCourseInUse = errors.New("cannot modify course data while an active round is in progress")
+	// ErrCourseHasRounds is returned by Delete when any round (of any status)
+	// references the course. rounds.course_id is intentionally non-cascading, so a
+	// referenced course can't be hard-deleted without orphaning round history.
+	ErrCourseHasRounds = errors.New("cannot delete a course that is referenced by one or more rounds")
 	// ErrCourseNotExternal is returned by Refresh when called on a manually-entered course.
 	ErrCourseNotExternal = errors.New("course was not imported from an external API; use manual editing instead")
 	// ErrExternalAPINotConfigured is returned when an external-API operation runs
@@ -330,6 +334,23 @@ func (s *CourseService) Update(ctx context.Context, courseID uuid.UUID, in Cours
 		return models.Course{}, fmt.Errorf("save course: %w", err)
 	}
 	return s.Get(ctx, courseID)
+}
+
+// Delete removes a course. Tees and holes cascade via the DB schema, but a course
+// referenced by any round is blocked with ErrCourseHasRounds (rounds.course_id is
+// non-cascading by design — deleting the course would otherwise orphan round history).
+func (s *CourseService) Delete(ctx context.Context, courseID uuid.UUID) error {
+	course, err := s.findCourse(ctx, courseID)
+	if err != nil {
+		return err
+	}
+	if err := s.guardCourseReferenced(ctx, courseID); err != nil {
+		return err
+	}
+	if err := s.DB.WithContext(ctx).Delete(&course).Error; err != nil {
+		return fmt.Errorf("delete course: %w", err)
+	}
+	return nil
 }
 
 // CreateTee adds a new tee set to a course.
@@ -728,6 +749,22 @@ func (s *CourseService) guardActiveRound(ctx context.Context, courseID uuid.UUID
 	}
 	if count > 0 {
 		return ErrCourseInUse
+	}
+	return nil
+}
+
+// guardCourseReferenced returns ErrCourseHasRounds if any round (of any status)
+// references the course. Used by Delete — broader than guardActiveRound, which
+// only blocks active rounds, because the rounds.course_id FK is non-cascading.
+func (s *CourseService) guardCourseReferenced(ctx context.Context, courseID uuid.UUID) error {
+	var count int64
+	if err := s.DB.WithContext(ctx).Model(&models.Round{}).
+		Where("course_id = ?", courseID).
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("course-reference check: %w", err)
+	}
+	if count > 0 {
+		return ErrCourseHasRounds
 	}
 	return nil
 }

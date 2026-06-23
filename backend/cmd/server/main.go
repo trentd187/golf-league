@@ -187,6 +187,7 @@ func main() {
 	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(courseService))
 	api.Get("/courses/:courseId", handlers.GetCourse(courseService))
 	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(courseService))
+	api.Delete("/courses/:courseId", middleware.RequireRole("admin"), handlers.DeleteCourse(courseService))
 
 	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(courseService))
 	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(courseService))

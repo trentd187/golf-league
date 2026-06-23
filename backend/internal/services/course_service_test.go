@@ -311,6 +311,51 @@ func TestCourseService_Update_BlockedByActiveRound(t *testing.T) {
 	assert.ErrorIs(t, err, services.ErrCourseInUse)
 }
 
+func TestCourseService_Delete_NotFound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewCourseService(db, nil)
+
+	err := svc.Delete(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, services.ErrCourseNotFound)
+}
+
+func TestCourseService_Delete_CascadesTeesAndHoles(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewCourseService(db, nil)
+
+	c := seedCourse(t, db)
+	tee := seedTee(t, db, c.ID)
+	require.NoError(t, db.Create(&models.Hole{
+		TeeID: tee.ID, HoleNumber: 1, Par: 4, StrokeIndex: 1,
+	}).Error)
+
+	require.NoError(t, svc.Delete(context.Background(), c.ID))
+
+	// Course gone.
+	_, err := svc.Get(context.Background(), c.ID)
+	assert.ErrorIs(t, err, services.ErrCourseNotFound)
+
+	// Tees + holes cascade away with the course.
+	var teeCount, holeCount int64
+	require.NoError(t, db.Model(&models.Tee{}).Where("course_id = ?", c.ID).Count(&teeCount).Error)
+	require.NoError(t, db.Model(&models.Hole{}).Where("tee_id = ?", tee.ID).Count(&holeCount).Error)
+	assert.Zero(t, teeCount)
+	assert.Zero(t, holeCount)
+}
+
+func TestCourseService_Delete_BlockedByReferencingRound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewCourseService(db, nil)
+
+	c := seedCourse(t, db)
+	// seedActiveRound creates a round referencing the course; Delete must block on
+	// ANY referencing round (the FK is non-cascading), so an active one suffices.
+	seedActiveRound(t, db, c.ID)
+
+	err := svc.Delete(context.Background(), c.ID)
+	assert.ErrorIs(t, err, services.ErrCourseHasRounds)
+}
+
 // ─── Tees ──────────────────────────────────────────────────────────────────────
 
 func TestCourseService_CreateTee_Validation(t *testing.T) {

@@ -54,6 +54,7 @@ export default function CourseDetailScreen() {
   const [teeFormTarget,    setTeeFormTarget]    = useState<TeeDetail | null>(null);
   const [deletingTeeId,    setDeletingTeeId]    = useState<string | null>(null);
   const [refreshingCourse, setRefreshingCourse] = useState(false);
+  const [deletingCourse,   setDeletingCourse]   = useState(false);
 
   // Edit course modal state.
   const [editCourseVisible, setEditCourseVisible] = useState(false);
@@ -151,6 +152,42 @@ export default function CourseDetailScreen() {
       `Delete "${tee.name}" tee?`,
       "This will also delete all hole data for this tee. This cannot be undone.",
       () => { void confirmDeleteTee(tee); },
+      "Delete",
+      "Cancel",
+    );
+  };
+
+  // ── Course delete ──────────────────────────────────────────────────────────
+  // Admin-only. The backend blocks (409) a course referenced by any round; we
+  // surface that message verbatim rather than masking it.
+  const confirmDeleteCourse = async () => {
+    setDeletingCourse(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/courses/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showAlert("Couldn't delete course", (body as { error?: string }).error ?? "Could not delete course.");
+        return;
+      }
+      setEditCourseVisible(false);
+      queryClient.invalidateQueries({ queryKey: ["courses"] });
+      router.replace("/(tabs)/courses");
+    } catch {
+      showAlert("Error", "Check your connection and try again.");
+    } finally {
+      setDeletingCourse(false);
+    }
+  };
+
+  const deleteCourse = () => {
+    showConfirm(
+      `Delete "${course?.name ?? "this course"}"?`,
+      "This permanently deletes the course and all of its tees and hole data. This cannot be undone.",
+      () => { void confirmDeleteCourse(); },
       "Delete",
       "Cancel",
     );
@@ -455,6 +492,19 @@ export default function CourseDetailScreen() {
                 <ActivityIndicator color="white" />
               ) : (
                 <Text className="text-white font-semibold text-base">Save Changes</Text>
+              )}
+            </TouchableOpacity>
+
+            {/* Destructive: permanently delete the course (admin-only screen). */}
+            <TouchableOpacity
+              className="rounded-xl py-3.5 items-center mt-1 border border-red-300"
+              onPress={deleteCourse}
+              disabled={deletingCourse || editCourseMutation.isPending}
+            >
+              {deletingCourse ? (
+                <ActivityIndicator color="#dc2626" />
+              ) : (
+                <Text className="text-red-600 font-semibold text-base">Delete Course</Text>
               )}
             </TouchableOpacity>
           </View>

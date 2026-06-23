@@ -195,6 +195,18 @@ func TestDeleteTee_InvalidTeeUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── DeleteCourse ──────────────────────────────────────────────────────────────
+
+// TestDeleteCourse_InvalidCourseUUID verifies that a malformed course ID returns 400.
+func TestDeleteCourse_InvalidCourseUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodDelete, "/courses/:courseId",
+		handlers.DeleteCourse(nilSvc(nil)))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodDelete, "/courses/bad-id", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── UpsertHoles ───────────────────────────────────────────────────────────────
 
 // TestUpsertHoles_InvalidCourseUUID verifies that a malformed course ID returns 400.
@@ -387,6 +399,7 @@ func TestWriteCourseError_StatusMapping(t *testing.T) {
 		{"tee not found", services.ErrTeeNotFound, http.StatusNotFound},
 		{"hole not found", services.ErrHoleNotFound, http.StatusNotFound},
 		{"course in use", services.ErrCourseInUse, http.StatusConflict},
+		{"course has rounds", services.ErrCourseHasRounds, http.StatusConflict},
 		{"course not external", services.ErrCourseNotExternal, http.StatusBadRequest},
 		{"external api not configured", services.ErrExternalAPINotConfigured, http.StatusServiceUnavailable},
 		{"already imported", &services.AlreadyImportedError{}, http.StatusConflict},
@@ -449,6 +462,7 @@ func TestWriteCourseError_NoDetailFor4xx(t *testing.T) {
 		&services.ValidationError{Field: "x", Message: "bad"},
 		services.ErrCourseNotFound,
 		services.ErrCourseInUse,
+		services.ErrCourseHasRounds,
 		services.ErrExternalAPINotConfigured,
 		&services.AlreadyImportedError{},
 	}

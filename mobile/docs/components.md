@@ -11,15 +11,22 @@ Shared UI components live in `mobile/components/`. Import with the `@/` alias.
 | User search + add list | `UserSearchList` from `@/components/UserSearchList` |
 | Status/type/role pills | Named exports from `@/components/badges` |
 | Date input with picker | `DateInput` from `@/components/DateInput` |
+| Time / tee-time input with picker | `TimeInput` from `@/components/TimeInput` |
 | Filter + Sort bar / sheets on a list screen | `FilterSortBar` + `FilterSheet` + `SortSheet` |
 
 ## Component catalog
 
-**`DateInput`** (`components/DateInput.tsx`) — date field with auto-formatting and native picker:
-- Displays/stores dates in `MM-DD-YY` format in form state; auto-inserts dashes as the user types
-- Calendar icon button opens platform native date picker (Android: dialog, iOS: bottom-sheet modal)
+**`DateInput`** (`components/DateInput.tsx`, web variant `DateInput.web.tsx`) — date field with auto-formatting and native picker:
+- Displays/stores dates in `MM-DD-YY` format in form state; auto-inserts dashes as the user types (typing works on web too)
+- Calendar icon opens the platform date picker — Android dialog, iOS bottom-sheet, **web** browser-native `<input type="date">` via `showPicker()` (a detached `.click()` does not reliably open it)
 - Inline red border + error message when a fully-typed date is invalid
-- Helpers: `apiToDisplay("YYYY-MM-DD")` → `"MM-DD-YY"` and `displayToApi("MM-DD-YY")` → `"YYYY-MM-DD"`
+- Pure helpers live in `utils/dateInput.ts` (`apiToDisplay`, `displayToApi`, `isValidDisplayDate`, `autoFormat`); `apiToDisplay`/`displayToApi` are re-exported from `@/components/DateInput` for existing call sites
+
+**`TimeInput`** (`components/TimeInput.tsx`, web variant `TimeInput.web.tsx`) — tee-time field, the time analogue of `DateInput`:
+- Value is `"HH:MM"` 24-hour (same as the backend and HTML `<input type="time">`); displays `"h:mm AM/PM"`
+- Opens the platform time picker — Android dialog, iOS bottom-sheet, **web** browser-native `<input type="time">` via `showPicker()`. `@react-native-community/datetimepicker` has no web support, so the inline picker was previously invisible on web
+- Props: `value`, `onChange`, `label?`, `placeholder?`, `pickerTitle?` (iOS sheet header), `disabled?`, `clearable?` (X to clear)
+- Pure conversion helpers live in `utils/teeTime.ts` (`teeTimeToDate`, `dateToTeeTime`, `formatTeeTime`, `parseFormattedTeeTime`)
 
 **`ModalHeader`** — standard title + close (✕) row for all modal sheets.
 - Props: `title`, `onClose`, `disabled?` (disables close button while a mutation is pending)

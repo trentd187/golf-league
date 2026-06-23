@@ -30,6 +30,10 @@ import { useEffect } from "react";
 import { AppState, AppStateStatus, Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
 import { Stack, useNavigationContainerRef } from "expo-router";
+// KeyboardProvider powers react-native-keyboard-controller's KeyboardAwareScrollView
+// (used on the scorecard) — it must wrap the app once at the root for the keyboard
+// height tracking to work. Native module: requires a dev/preview build, not Expo Go.
+import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import {
   initSentry,
@@ -86,13 +90,15 @@ function RootLayout() {
   }, [navigationRef]);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      {/* ErrorBoundary catches any uncaught render error, reports it to Sentry,
-          and shows a recovery UI instead of a blank screen. */}
-      <ErrorBoundary>
-        <Stack screenOptions={{ headerShown: false }} />
-      </ErrorBoundary>
-    </QueryClientProvider>
+    <KeyboardProvider>
+      <QueryClientProvider client={queryClient}>
+        {/* ErrorBoundary catches any uncaught render error, reports it to Sentry,
+            and shows a recovery UI instead of a blank screen. */}
+        <ErrorBoundary>
+          <Stack screenOptions={{ headerShown: false }} />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </KeyboardProvider>
   );
 }
 

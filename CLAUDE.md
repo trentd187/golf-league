@@ -359,7 +359,7 @@ go test -count=1 -coverpkg=github.com/trentd187/golf-league/internal/handlers,gi
 - `docker-compose.yml` at repo root is local-dev only
 - Backend waits for DB healthcheck before starting (`depends_on: condition: service_healthy`)
 - Migrations run automatically on every server startup via `database.RunMigrations()`
-- Dockerfile is multi-stage: `golang:1.24-alpine` build, `alpine:3.21` run
+- Dockerfile is multi-stage: `golang:1.26-alpine` build, `alpine:3.21` run
 
 **Production: Railway.** Builds and deploys the `Dockerfile` in `backend/` on push to `main`. PostgreSQL is a Railway managed service. Env vars configured in Railway project settings.
 

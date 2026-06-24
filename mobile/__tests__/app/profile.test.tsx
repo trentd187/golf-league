@@ -104,6 +104,14 @@ jest.mock("expo-image-picker", () => ({
   launchImageLibraryAsync: jest.fn(),
 }));
 
+// Mock the avatar resize helpers so the upload test doesn't pull in expo-image-manipulator
+// (native) or canvas (web). resizeNativeImageToJpegUri is what the native upload branch
+// now calls before fetch()->arrayBuffer(); it returns a resized local uri.
+jest.mock("@/utils/avatar", () => ({
+  resizeImageToJpegBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+  resizeNativeImageToJpegUri: jest.fn().mockResolvedValue("file:///tmp/resized.jpg"),
+}));
+
 jest.mock("@/hooks/useTheme", () => ({
   useTheme: () => ({
     screen: "",
@@ -220,7 +228,8 @@ it("avatar upload saves to custom_avatar_url, not avatar_url", async () => {
   ImagePicker.requestMediaLibraryPermissionsAsync.mockResolvedValue({ status: "granted" });
   ImagePicker.launchImageLibraryAsync.mockResolvedValue({
     canceled: false,
-    assets: [{ uri: "file:///tmp/photo.jpg", mimeType: "image/jpeg" }],
+    // width/height feed resizeNativeImageToJpegUri's downscale decision.
+    assets: [{ uri: "file:///tmp/photo.jpg", mimeType: "image/jpeg", width: 2000, height: 2000 }],
   });
 
   // Mock fetch so arrayBuffer() resolves — handlePickImage reads the file URI as ArrayBuffer.
@@ -308,6 +317,7 @@ it("calls settings mutation when a stat toggle is switched", async () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -400,6 +410,7 @@ it("calls settings mutation when score position pill is pressed", async () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -430,6 +441,7 @@ it("calls settings mutation with reordered stat_order when up arrow is pressed",
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -459,7 +471,7 @@ it("renders Player Visibility section heading and description", () => {
     if (opts?.queryKey?.[0] === "scorecardSettings") {
       return { data: { fir_enabled: true, gir_enabled: true, putts_enabled: true,
         first_putt_distance_enabled: true, putt_distance_made_enabled: true,
-        approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false,
+        approach_yds_enabled: true, tee_shot_club_enabled: false, tee_shot_distance_enabled: false, ob_enabled: true,
         stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
         score_position: "last" as const, show_group_on_scorecard: true }, isLoading: false };
     }
@@ -481,6 +493,7 @@ it("shows solo description when show_group_on_scorecard is false", () => {
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: false,
@@ -506,6 +519,7 @@ it("calls settings mutation when group visibility toggle is switched off", async
     approach_yds_enabled: true,
     tee_shot_club_enabled: false,
     tee_shot_distance_enabled: false,
+    ob_enabled: true,
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
     show_group_on_scorecard: true,
@@ -522,6 +536,35 @@ it("calls settings mutation when group visibility toggle is switched off", async
     fireEvent(getByTestId("show-group-toggle"), "valueChange", false);
   });
   expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, show_group_on_scorecard: false });
+});
+
+it("toggling the OB switch patches ob_enabled", async () => {
+  const knownSettings = {
+    fir_enabled: true,
+    gir_enabled: true,
+    putts_enabled: true,
+    first_putt_distance_enabled: true,
+    putt_distance_made_enabled: true,
+    approach_yds_enabled: true,
+    tee_shot_club_enabled: false,
+    tee_shot_distance_enabled: false,
+    ob_enabled: true,
+    stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
+    score_position: "last" as const,
+    show_group_on_scorecard: true,
+  };
+  mockUseQuery.mockImplementation((opts: { queryKey?: unknown[] }) => {
+    if (opts?.queryKey?.[0] === "scorecardSettings") {
+      return { data: knownSettings, isLoading: false };
+    }
+    return { data: undefined, isLoading: false };
+  });
+
+  const { getByTestId } = render(<ProfileScreen />);
+  await act(async () => {
+    fireEvent(getByTestId("ob-toggle"), "valueChange", false);
+  });
+  expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, ob_enabled: false });
 });
 
 // ─── Sign-out section ─────────────────────────────────────────────────────────

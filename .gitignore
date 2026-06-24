@@ -29,6 +29,9 @@ mobile/android/
 mobile/ios/
 mobile/*.jks
 mobile/*.keystore
+
+# Standalone ops scripts (own package.json)
+scripts/node_modules/
 mobile/*.p8
 mobile/*.p12
 mobile/*.mobileprovision

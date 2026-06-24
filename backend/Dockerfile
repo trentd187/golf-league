@@ -9,8 +9,9 @@
 # the Go compiler, source code, or build tools — only what's needed to run.
 
 # ---- Stage 1: Build ----
-# golang:1.25-alpine includes the Go compiler and standard library on a minimal Alpine Linux base.
-FROM golang:1.25-alpine AS builder
+# golang:1.26-alpine includes the Go compiler and standard library on a minimal Alpine Linux base.
+# The minor tag floats to the latest 1.26 patch, so each rebuild picks up Go stdlib security fixes.
+FROM golang:1.26-alpine AS builder
 
 # Set the working directory inside the container. All subsequent commands run from here.
 WORKDIR /app

@@ -13,7 +13,7 @@
 // Cross-platform: `WebSocket`, AppState, and NetInfo all work on native and web.
 
 import { useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState, type AppStateStatus, Platform } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -118,7 +118,12 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
 
       let socket: WebSocket;
       try {
-        socket = new WebSocket(buildWsUrl(API_URL, roundId, token));
+        // On web the socket scheme must follow the page protocol, not API_URL: a browser
+        // rejects a ws:// upgrade from an https page (mixed content). globalThis.location
+        // is undefined on native, so the gate keeps this web-only.
+        const pageProtocol =
+          Platform.OS === "web" ? globalThis.location?.protocol : undefined;
+        socket = new WebSocket(buildWsUrl(API_URL, roundId, token, pageProtocol));
       } catch (err) {
         reportWsError(err, roundId);
         scheduleReconnect();

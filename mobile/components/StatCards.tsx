@@ -204,7 +204,7 @@ export function ScoringCard({
 // so the user can filter to a specific approach yardage range. Bands come from
 // buildGirByBand(); the first element is always the "All" aggregate.
 export function DirectionalMissCard({
-  sectionLabel, centerLabel, centerValue, miss, denominator, naValue, extraRows, bands,
+  sectionLabel, centerLabel, centerValue, miss, denominator, naValue, obValue, extraRows, bands,
 }: Readonly<{
   sectionLabel: string;
   centerLabel: string;
@@ -212,6 +212,9 @@ export function DirectionalMissCard({
   miss: { left: number; right: number; short: number; long: number };
   denominator: number;
   naValue?: string;
+  // obValue is the overall OB% — used for the Driving card and as the non-banded
+  // Approach fallback. When bands are present, OB% is read from the selected band instead.
+  obValue?: string;
   extraRows?: { label: string; value: string }[];
   bands?: GirBandData[];
 }>) {
@@ -229,6 +232,12 @@ export function DirectionalMissCard({
   const displayMiss        = currentBand ? currentBand.miss : miss;
   const displayDenominator = currentBand ? currentBand.total : denominator;
   const hasData            = displayCenterValue !== "—";
+
+  // OB% follows the selected band when banded (Approach); otherwise the overall prop
+  // (Driving, or Approach before any approach distance is recorded).
+  const displayObValue = currentBand
+    ? (currentBand.obPercent !== null ? `${currentBand.obPercent.toFixed(0)}%` : "—")
+    : obValue;
 
   function pct(count: number): string {
     if (displayDenominator === 0) return "—";
@@ -302,10 +311,22 @@ export function DirectionalMissCard({
         </View>
       )}
 
-      {naValue !== undefined && (
+      {/* N/A (overall) and OB share one right-aligned line. Driving passes only OB;
+          Approach passes both. OB% is additive so the section total can exceed 100%. */}
+      {(naValue !== undefined || displayObValue !== undefined) && (
         <View className="flex-row justify-end mt-3">
-          <Text className={`text-sm ${t.textTertiary}`}>N/A  </Text>
-          <Text className={`text-sm font-semibold ${t.textSecondary}`}>{naValue}</Text>
+          {naValue !== undefined && (
+            <>
+              <Text className={`text-sm ${t.textTertiary}`}>N/A  </Text>
+              <Text className={`text-sm font-semibold ${t.textSecondary}`}>{naValue}</Text>
+            </>
+          )}
+          {displayObValue !== undefined && (
+            <>
+              <Text className={`text-sm ${t.textTertiary}`}>{naValue !== undefined ? "    OB  " : "OB  "}</Text>
+              <Text className={`text-sm font-semibold ${t.textSecondary}`}>{displayObValue}</Text>
+            </>
+          )}
         </View>
       )}
 

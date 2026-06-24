@@ -72,7 +72,7 @@ describe("buildStats", () => {
       hole_stats: [
         { hole_number: 1, gir: "hit", gir_miss_direction: null, fir: true, fir_miss_direction: null,
           putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
       ],
     });
     const sc = makeScorecard({ player });
@@ -127,7 +127,7 @@ describe("buildStats", () => {
     const p1 = makePlayer({ user_id: "u1", display_name: "Alice",
       hole_stats: [{ hole_number: 1, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
         putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-        tee_shot_club: null, tee_shot_distance: null }] });
+        tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null }] });
     const sc = makeScorecard({ player: p1 });
     const putts = buildStats([sc]).find((r) => r.category === "Putts")!;
     // Player with only null putts should not appear on the leaderboard.
@@ -220,14 +220,14 @@ describe("buildRoundStats", () => {
       hole_stats: [
         { hole_number: 1, gir: "hit",  gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 2, gir: "miss", gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         // "na" hole: should be excluded from hit% denominator
         { hole_number: 3, gir: "na",   gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -243,13 +243,13 @@ describe("buildRoundStats", () => {
       hole_stats: [
         { hole_number: 5, gir: null, gir_miss_direction: null, fir: true,  fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 6, gir: null, gir_miss_direction: null, fir: false, fir_miss_direction: "left",
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 7, gir: null, gir_miss_direction: null, fir: false, fir_miss_direction: "right",
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -260,21 +260,70 @@ describe("buildRoundStats", () => {
     expect(result.firTotal).toBe(3);
   });
 
+  it("computes driving OB% additively — a drive can be both a direction and OB", () => {
+    const player = makePlayer({
+      hole_stats: [
+        // Missed left AND went OB — counts toward both Left and OB (total can exceed 100%).
+        { hole_number: 1, gir: null, gir_miss_direction: null, fir: false, fir_miss_direction: "left",
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: true, gir_ob: null },
+        { hole_number: 2, gir: null, gir_miss_direction: null, fir: true, fir_miss_direction: null,
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
+      ],
+    });
+    const result = buildRoundStats(player, par72holes);
+    expect(result.firMiss.left).toBe(1);
+    expect(result.firTotal).toBe(2);
+    // 1 OB / 2 tracked tee shots = 50%.
+    expect(result.firObPercent).toBeCloseTo(50);
+  });
+
+  it("counts an OB-only tee shot (no direction) in the OB denominator", () => {
+    const player = makePlayer({
+      hole_stats: [
+        { hole_number: 1, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: true, gir_ob: null },
+      ],
+    });
+    const result = buildRoundStats(player, par72holes);
+    expect(result.firTotal).toBe(0);       // no directional FIR recorded
+    expect(result.firObPercent).toBeCloseTo(100); // 1 OB / 1 tracked (OB-only) tee shot
+  });
+
+  it("computes approach OB% (girObPercent), excluding the OB from the GIR hit denominator", () => {
+    const player = makePlayer({
+      hole_stats: [
+        { hole_number: 1, gir: "miss", gir_miss_direction: "left", fir: null, fir_miss_direction: null,
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: true },
+        { hole_number: 2, gir: "hit", gir_miss_direction: null, fir: null, fir_miss_direction: null,
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
+      ],
+    });
+    const result = buildRoundStats(player, par72holes);
+    expect(result.girPercent).toBeCloseTo(50); // 1 hit / 2 = 50%, unaffected by OB
+    // 1 OB / 2 tracked approaches = 50%.
+    expect(result.girObPercent).toBeCloseTo(50);
+  });
+
   it("calculates putt distribution and avg putts normalised to 18 holes", () => {
     const player = makePlayer({
       hole_stats: [
         { hole_number: 1, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: 1, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 2, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: 2, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 3, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: 3, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 4, gir: null, gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: 4, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
       ],
     });
     const result = buildRoundStats(player, par72holes);
@@ -367,6 +416,7 @@ describe("buildMyStats", () => {
         hole_stats: Array.from({ length: 9 }, (_, i) => ({
           hole_number: i + 1, gir: null as null, gir_miss_direction: null as null,
           fir: null as null, fir_miss_direction: null as null,
+          fir_ob: null as null, gir_ob: null as null,
           putts: 2, first_putt_distance: null as null, putt_distance_made: null as null, approach_yds: null as null,
           tee_shot_club: null as null, tee_shot_distance: null as null,
         })),
@@ -383,13 +433,13 @@ describe("buildMyStats", () => {
       hole_stats: [
         { hole_number: 1, gir: "hit",  gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 2, gir: "miss", gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
         { hole_number: 3, gir: "na",   gir_miss_direction: null, fir: null, fir_miss_direction: null,
           putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
-          tee_shot_club: null, tee_shot_distance: null },
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
       ],
     });
     const sc = makeScorecard({ player });
@@ -397,6 +447,27 @@ describe("buildMyStats", () => {
     // 1 hit / 2 eligible = 50%; "na" = 1/3 tracked = ~33%
     expect(result.girPercent).toBeCloseTo(50);
     expect(result.girNaPercent).toBeCloseTo(33.33);
+  });
+
+  it("aggregates driving and approach OB% across rounds", () => {
+    const player = makePlayer({
+      hole_stats: [
+        // Tee shot OB (left + OB); approach also OB.
+        { hole_number: 1, gir: "miss", gir_miss_direction: "left", fir: false, fir_miss_direction: "left",
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: true, gir_ob: true },
+        // Clean hole: fairway hit, green hit, no OB.
+        { hole_number: 2, gir: "hit", gir_miss_direction: null, fir: true, fir_miss_direction: null,
+          putts: null, first_putt_distance: null, putt_distance_made: null, approach_yds: null,
+          tee_shot_club: null, tee_shot_distance: null, fir_ob: null, gir_ob: null },
+      ],
+    });
+    const sc1 = makeScorecard({ round_id: "r1", player });
+    const sc2 = makeScorecard({ round_id: "r2", player });
+    const result = buildMyStats([sc1, sc2], rounds);
+    // 2 rounds × (1 OB / 2 tracked) → 2/4 = 50% for both driving and approach.
+    expect(result.firObPercent).toBeCloseTo(50);
+    expect(result.girObPercent).toBeCloseTo(50);
   });
 
   it("counts birdies, pars, bogeys, doubles across all rounds", () => {
@@ -425,19 +496,19 @@ describe("buildMyStats", () => {
           hole_number: 1, putts: null, gir: "hit", fir: null,
           approach_yds: 120, first_putt_distance: 10,
           fir_miss_direction: null, gir_miss_direction: null,
-          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null, fir_ob: null, gir_ob: null,
         },
         {
           hole_number: 2, putts: null, gir: "hit", fir: null,
           approach_yds: 80, first_putt_distance: 20,
           fir_miss_direction: null, gir_miss_direction: null,
-          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null, fir_ob: null, gir_ob: null,
         },
         {
           hole_number: 3, putts: null, gir: "miss", fir: null,
           approach_yds: 100, first_putt_distance: null, // miss — not counted
           fir_miss_direction: null, gir_miss_direction: "short",
-          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null,
+          tee_shot_distance: null, putt_distance_made: null, tee_shot_club: null, fir_ob: null, gir_ob: null,
         },
       ],
     });
@@ -459,6 +530,7 @@ function makeHoleStat(overrides: {
   gir?: "hit" | "miss" | "na" | null;
   gir_miss_direction?: "short" | "left" | "right" | "long" | null;
   approach_yds?: number | null;
+  gir_ob?: boolean | null;
 }) {
   return {
     hole_number:         overrides.hole_number ?? 1,
@@ -466,6 +538,8 @@ function makeHoleStat(overrides: {
     gir_miss_direction:  overrides.gir_miss_direction ?? null,
     fir:                 null as null,
     fir_miss_direction:  null as null,
+    fir_ob:              null as null,
+    gir_ob:              (overrides.gir_ob ?? null) as boolean | null,
     putts:               null as null,
     first_putt_distance: null as null,
     putt_distance_made:  null as null,
@@ -565,6 +639,29 @@ describe("buildGirByBand", () => {
     expect(allBand.miss.short).toBe(1);
     expect(allBand.miss.long).toBe(1);
     expect(allBand.girPercent).toBeCloseTo(0);
+  });
+
+  it("computes per-band OB% additively (band total can exceed 100%)", () => {
+    const player = makePlayer({
+      hole_stats: [
+        // Both fall in the 100–119 band; the OB hole is also a left miss.
+        makeHoleStat({ gir: "miss", approach_yds: 100, gir_miss_direction: "left", gir_ob: true }),
+        makeHoleStat({ gir: "hit",  approach_yds: 110 }),
+      ],
+    });
+    const sc = makeScorecard({ player });
+    const result = buildGirByBand([sc]);
+    // "All" aggregate: 1 OB / 2 = 50%.
+    expect(result[0].obPercent).toBeCloseTo(50);
+    const band100 = result.find((b) => b.band === "100–119 yds")!;
+    expect(band100.total).toBe(2);
+    expect(band100.obPercent).toBeCloseTo(50);
+    expect(band100.miss.left).toBe(1); // same hole counts as miss-left AND OB
+  });
+
+  it("reports obPercent null for a band with no holes tracked", () => {
+    const result = buildGirByBand([]); // no scorecards → only synthetic "All" with total 0
+    expect(result[0].obPercent).toBeNull();
   });
 
   it("accumulates across multiple scorecards", () => {

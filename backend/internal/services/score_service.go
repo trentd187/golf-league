@@ -47,6 +47,8 @@ type HoleStatInput struct {
 	GIRMissDirection *string `json:"gir_miss_direction"` // "short" | "left" | "right" | "long"
 	FIR              *bool   `json:"fir"`                // true=hit, false=miss
 	FIRMissDirection *string `json:"fir_miss_direction"`
+	FIROB            *bool   `json:"fir_ob"` // tee shot out of bounds (additive)
+	GIROB            *bool   `json:"gir_ob"` // approach out of bounds (additive)
 	Putts            *int    `json:"putts"`
 	FirstPuttDist    *int    `json:"first_putt_distance"` // feet
 	PuttDistMade     *int    `json:"putt_distance_made"`  // feet
@@ -79,6 +81,8 @@ type ScorecardHoleStatData struct {
 	GIRMissDirection  *string `json:"gir_miss_direction"`
 	FIR               *bool   `json:"fir"`
 	FIRMissDirection  *string `json:"fir_miss_direction"`
+	FIROB             *bool   `json:"fir_ob"`
+	GIROB             *bool   `json:"gir_ob"`
 	Putts             *int    `json:"putts"`
 	FirstPuttDistance *int    `json:"first_putt_distance"`
 	PuttDistanceMade  *int    `json:"putt_distance_made"`
@@ -452,7 +456,8 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		for _, st := range dbStats {
 			holeStats = append(holeStats, ScorecardHoleStatData{
 				HoleNumber: st.HoleNumber, GIR: st.GIR, GIRMissDirection: st.GIRMissDirection,
-				FIR: st.FIR, FIRMissDirection: st.FIRMissDirection, Putts: st.Putts,
+				FIR: st.FIR, FIRMissDirection: st.FIRMissDirection, FIROB: st.FIROB, GIROB: st.GIROB,
+				Putts:             st.Putts,
 				FirstPuttDistance: st.FirstPuttDistance, PuttDistanceMade: st.PuttDistanceMade,
 				ApproachYds: st.ApproachYds, TeeShotClub: st.TeeShotClub, TeeShotDistance: st.TeeShotDistance,
 			})
@@ -690,6 +695,8 @@ func (s *ScoreService) UpsertHoleStats(ctx context.Context, roundID, roundPlayer
 			GIRMissDirection:  st.GIRMissDirection,
 			FIR:               st.FIR,
 			FIRMissDirection:  st.FIRMissDirection,
+			FIROB:             st.FIROB,
+			GIROB:             st.GIROB,
 			Putts:             st.Putts,
 			FirstPuttDistance: st.FirstPuttDist,
 			PuttDistanceMade:  st.PuttDistMade,
@@ -704,6 +711,7 @@ func (s *ScoreService) UpsertHoleStats(ctx context.Context, roundID, roundPlayer
 		DoUpdates: clause.AssignmentColumns([]string{
 			"gir", "gir_miss_direction",
 			"fir", "fir_miss_direction",
+			"fir_ob", "gir_ob",
 			"putts", "first_putt_distance", "putt_distance_made", "approach_yds",
 			"tee_shot_club", "tee_shot_distance",
 			"updated_at",

@@ -201,6 +201,10 @@ func writeCourseError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			jsonKeyError: "cannot modify course data while an active round is in progress",
 		})
+	case errors.Is(err, services.ErrCourseHasRounds):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			jsonKeyError: "cannot delete a course that is referenced by one or more rounds",
+		})
 	case errors.Is(err, services.ErrCourseNotExternal):
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			jsonKeyError: "course was not imported from an external API; use manual editing instead",
@@ -375,6 +379,21 @@ func UpdateCourse(svc *services.CourseService) fiber.Handler {
 			return writeCourseError(c, err, "course.update", "failed to update course")
 		}
 		return c.JSON(buildCourseDetail(course))
+	}
+}
+
+// DeleteCourse returns a handler for DELETE /api/v1/courses/:courseId.
+// Tees and holes cascade in the DB; a course referenced by any round is blocked (409).
+func DeleteCourse(svc *services.CourseService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		courseID, ok := parseCourseID(c)
+		if !ok {
+			return nil
+		}
+		if err := svc.Delete(c.UserContext(), courseID); err != nil {
+			return writeCourseError(c, err, "course.delete", "failed to delete course")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 

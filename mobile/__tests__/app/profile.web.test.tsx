@@ -93,6 +93,12 @@ jest.mock("@/hooks/useMe", () => ({
   useMe: () => ({ data: { role: "user" } }),
 }));
 
+// The web upload path downscales via canvas (createImageBitmap + <canvas>) which
+// don't exist in the jest env — mock the resize util to return a fixed buffer.
+jest.mock("@/utils/avatar", () => ({
+  resizeImageToJpegBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+}));
+
 jest.mock("@/utils/supabase", () => ({
   supabase: {
     auth: {

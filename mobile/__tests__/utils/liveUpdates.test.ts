@@ -43,6 +43,33 @@ describe("buildWsUrl", () => {
       "token=a%20b%2Fc%2Bd",
     );
   });
+
+  // Web mixed-content rule: a browser rejects ws:// from an https page. When the hosting
+  // page is https the scheme must be wss even if the API base is http:// (the live web bug
+  // — EXPO_PUBLIC_API_URL was an http:// base behind Railway's TLS-terminating proxy).
+  it("forces wss when the page is https even with an http:// base", () => {
+    expect(buildWsUrl("http://api.example.com", "r", "t", "https:")).toBe(
+      "wss://api.example.com/api/v1/ws/rounds/r?token=t",
+    );
+  });
+
+  it("stays wss when the page is https and the base is already https", () => {
+    expect(buildWsUrl("https://api.example.com", "r", "t", "https:")).toBe(
+      "wss://api.example.com/api/v1/ws/rounds/r?token=t",
+    );
+  });
+
+  it("keeps ws for an http:// base when the page is http (local web dev)", () => {
+    expect(buildWsUrl("http://localhost:8080", "r", "t", "http:")).toBe(
+      "ws://localhost:8080/api/v1/ws/rounds/r?token=t",
+    );
+  });
+
+  it("ignores the page protocol on native (undefined) — base scheme wins", () => {
+    expect(buildWsUrl("http://localhost:8080", "r", "t", undefined)).toBe(
+      "ws://localhost:8080/api/v1/ws/rounds/r?token=t",
+    );
+  });
 });
 
 describe("nextReconnectDelay", () => {

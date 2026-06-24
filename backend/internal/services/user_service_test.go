@@ -214,6 +214,7 @@ func TestUserService_GetScorecardSettings_NoRowReturnsDefaults(t *testing.T) {
 	require.NotNil(t, data)
 	assert.True(t, data.FIREnabled)
 	assert.True(t, data.GIREnabled)
+	assert.True(t, data.OBEnabled) // OB tracking defaults on, like FIR/GIR.
 	assert.False(t, data.TeeShotClubEnabled)
 	assert.Equal(t, "last", data.ScorePosition)
 	assert.NotEmpty(t, data.StatOrder)
@@ -285,4 +286,32 @@ func TestUserService_UpsertScorecardSettings_ShowGroupFalse(t *testing.T) {
 	fetched, err := svc.GetScorecardSettings(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.False(t, fetched.ShowGroupOnScorecard)
+}
+
+// TestUserService_UpsertScorecardSettings_OBEnabledFalse verifies that ob_enabled=false
+// is written and re-read correctly. OB defaults to true at the column level, so the raw
+// SQL upsert must explicitly persist false rather than letting the DB default win.
+func TestUserService_UpsertScorecardSettings_OBEnabledFalse(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+
+	user := seedUser(t, db, "sc_ob_false")
+
+	in := services.ScorecardSettingsInput{
+		FIREnabled:    true,
+		GIREnabled:    true,
+		PuttsEnabled:  true,
+		OBEnabled:     false,
+		StatOrder:     []string{"fir", "gir", "putts"},
+		ScorePosition: "last",
+	}
+
+	data, err := svc.UpsertScorecardSettings(context.Background(), user.ID, in)
+	require.NoError(t, err)
+	assert.False(t, data.OBEnabled)
+
+	// Re-fetch to confirm false survived the round-trip through the DB.
+	fetched, err := svc.GetScorecardSettings(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.False(t, fetched.OBEnabled)
 }

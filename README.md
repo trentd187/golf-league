@@ -42,7 +42,7 @@ See [backend/README.md](backend/README.md) and [mobile/README.md](mobile/README.
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Go 1.24+](https://go.dev/dl/)
+- [Go 1.26+](https://go.dev/dl/)
 - [Node.js 20+](https://nodejs.org/) and [pnpm](https://pnpm.io/)
 - A [Clerk](https://clerk.com) account (free tier is sufficient)
 

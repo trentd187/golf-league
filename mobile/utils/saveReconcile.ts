@@ -67,6 +67,8 @@ const HOLE_STAT_FIELDS: readonly (keyof ScorecardHoleStat)[] = [
   "gir_miss_direction",
   "fir",
   "fir_miss_direction",
+  "fir_ob",
+  "gir_ob",
   "putts",
   "first_putt_distance",
   "putt_distance_made",

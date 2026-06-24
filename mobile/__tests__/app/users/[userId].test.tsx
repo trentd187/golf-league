@@ -118,8 +118,9 @@ const emptyStats = {
   avgPar3: null, avgPar4: null, avgPar5: null,
   birdiesOrBetter: 0, parsCount: 0, bogeysCount: 0, doublesPlus: 0,
   firPercent: null, firMiss: { left: 0, right: 0, short: 0, long: 0 }, firTotal: 0,
+  firObPercent: null,
   girPercent: null, girMiss: { left: 0, right: 0, short: 0, long: 0 }, girTotal: 0,
-  girNaPercent: null, proximityRows: [],
+  girNaPercent: null, girObPercent: null, proximityRows: [],
   avgPuttsPerRound: null, puttDist: { one: 0, two: 0, three: 0, fourPlus: 0 },
   avgPuttMadeDistance: null, longestPuttMade: null,
 };

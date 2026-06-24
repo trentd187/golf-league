@@ -1,19 +1,29 @@
 // __tests__/components/DateInput.web.test.tsx
 // Tests for the web-specific DateInput implementation.
-// Verifies date format conversion and that the calendar button triggers the
-// browser's native date picker via document.createElement.
+// Verifies date format conversion, that typing auto-formats + calls onChange, and
+// that the calendar button opens the browser's native picker via a DOM-attached
+// <input type="date"> + showPicker().
 
 // The React Native test environment doesn't include `document`. Provide a minimal
-// mock so the component's `document.createElement` call can be intercepted.
+// mock so the component's document.createElement / body.appendChild calls work.
 const mockInputEl = {
   type: "" as string,
   value: "" as string,
+  style: {} as Record<string, string>,
   onchange: null as ((e: { target: { value: string } }) => void) | null,
+  oncancel: null as (() => void) | null,
+  parentNode: null as { removeChild: jest.Mock } | null,
+  showPicker: jest.fn(),
   click: jest.fn(),
 };
 const mockCreateElement = jest.fn(() => mockInputEl);
+const mockAppendChild = jest.fn(() => {
+  // Simulate the DOM attaching the node so cleanup (removeChild) has a parent.
+  mockInputEl.parentNode = { removeChild: jest.fn() };
+});
 (globalThis as unknown as Record<string, unknown>).document = {
   createElement: mockCreateElement,
+  body: { appendChild: mockAppendChild },
 };
 
 // ─── Date utility tests ───────────────────────────────────────────────────────
@@ -71,9 +81,14 @@ jest.mock("@/hooks/useTheme", () => ({
 beforeEach(() => {
   mockInputEl.type = "";
   mockInputEl.value = "";
+  mockInputEl.style = {};
   mockInputEl.onchange = null;
+  mockInputEl.oncancel = null;
+  mockInputEl.parentNode = null;
+  mockInputEl.showPicker.mockClear();
   mockInputEl.click.mockClear();
   mockCreateElement.mockClear();
+  mockAppendChild.mockClear();
 });
 
 describe("DateInput.web component", () => {
@@ -98,7 +113,16 @@ describe("DateInput.web component", () => {
     expect(getByText("Start Date")).toBeTruthy();
   });
 
-  it("calls document.createElement('input') and clicks it when calendar button pressed", () => {
+  it("auto-formats typed input and calls onChange with MM-DD-YY", () => {
+    const mockOnChange = jest.fn();
+    const { getByPlaceholderText } = render(
+      <DateInput value="" onChange={mockOnChange} />
+    );
+    fireEvent.changeText(getByPlaceholderText("MM-DD-YY"), "030126");
+    expect(mockOnChange).toHaveBeenCalledWith("03-01-26");
+  });
+
+  it("opens the native picker via a DOM-attached input + showPicker when the calendar is pressed", () => {
     const { getByLabelText } = render(
       <DateInput value="05-14-26" onChange={jest.fn()} />
     );
@@ -107,9 +131,10 @@ describe("DateInput.web component", () => {
 
     expect(mockCreateElement).toHaveBeenCalledWith("input");
     expect(mockInputEl.type).toBe("date");
-    // Value must be converted to YYYY-MM-DD for the HTML date input
+    // Value must be converted to YYYY-MM-DD for the HTML date input.
     expect(mockInputEl.value).toBe("2026-05-14");
-    expect(mockInputEl.click).toHaveBeenCalled();
+    expect(mockAppendChild).toHaveBeenCalledWith(mockInputEl);
+    expect(mockInputEl.showPicker).toHaveBeenCalled();
   });
 
   it("calls onChange with MM-DD-YY when a date is selected", () => {
@@ -126,13 +151,15 @@ describe("DateInput.web component", () => {
     expect(mockOnChange).toHaveBeenCalledWith("06-01-26");
   });
 
-  it("does not click the input when disabled", () => {
+  it("does not open the picker when disabled", () => {
     const { getByLabelText } = render(
       <DateInput value="" onChange={jest.fn()} disabled />
     );
 
     fireEvent.press(getByLabelText("Open date picker"));
 
+    expect(mockCreateElement).not.toHaveBeenCalled();
+    expect(mockInputEl.showPicker).not.toHaveBeenCalled();
     expect(mockInputEl.click).not.toHaveBeenCalled();
   });
 });

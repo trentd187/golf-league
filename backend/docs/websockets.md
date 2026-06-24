@@ -63,6 +63,12 @@ invalidate rather than a second data path.
 | The hook (socket lifecycle, AppState, NetInfo, watchdog) | [mobile/hooks/useRoundLiveUpdates.ts](../../mobile/hooks/useRoundLiveUpdates.ts) |
 | Sentry reporters | [mobile/utils/sentry.ts](../../mobile/utils/sentry.ts) — `reportWsLifecycle` / `reportWsError` |
 
+> **Web scheme gotcha.** On web a browser rejects a `ws://` upgrade from an `https://` page
+> (mixed content → `SecurityError`). So `buildWsUrl` takes the hosting page's
+> `location.protocol` and forces `wss://` when the page is https — the scheme follows the
+> *page*, not `API_URL`, which can be an `http://` base behind Railway's TLS-terminating proxy.
+> The hook passes `globalThis.location?.protocol` only when `Platform.OS === "web"`.
+
 `useRoundLiveUpdates(roundId)` is a thin shell; all reconnect/disconnect *decisions* live in
 `utils/liveUpdates.ts` (pure + unit-tested, since `hooks/` is coverage-excluded):
 

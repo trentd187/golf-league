@@ -1,0 +1,13 @@
+{
+  "name": "golf-league-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Standalone one-off ops scripts. Isolated from the Expo app (mobile/) so its deps never touch the app bundle or expo-doctor.",
+  "scripts": {
+    "reprocess-avatars": "node reprocess-avatars.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "sharp": "^0.33.5"
+  }
+}

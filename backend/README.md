@@ -6,7 +6,7 @@ The Go REST API and WebSocket server for the Golf Stuff In Here app.
 
 | Tool | Purpose |
 |---|---|
-| [Go 1.24](https://go.dev) | Programming language |
+| [Go 1.26](https://go.dev) | Programming language |
 | [Fiber v2](https://gofiber.io) | HTTP web framework (Express-like) |
 | [GORM](https://gorm.io) | ORM for database access |
 | [golang-migrate](https://github.com/golang-migrate/migrate) | SQL migration runner |
@@ -48,7 +48,7 @@ backend/
 
 ### Prerequisites
 
-- Go 1.24 or newer
+- Go 1.26 or newer
 - Docker Desktop (for running PostgreSQL locally)
 - A [Clerk](https://clerk.com) account
 
@@ -142,7 +142,7 @@ The WebSocket hub in `internal/websocket/hub.go` broadcasts score updates to all
 
 The `Dockerfile` uses a two-stage build:
 
-1. **Build stage** (`golang:1.24-alpine`) — compiles the Go binary
+1. **Build stage** (`golang:1.26-alpine`) — compiles the Go binary
 2. **Runtime stage** (`alpine:latest`) — contains only the binary and migrations folder (~10MB total)
 
 **Local testing of the Docker image:**

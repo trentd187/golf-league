@@ -49,6 +49,7 @@ import {
   DEFAULT_SCORECARD_SETTINGS,
 } from "@/types/scorecard";
 import { moveStatUp, moveStatDown } from "@/utils/scorecard";
+import { resizeImageToJpegBuffer, resizeNativeImageToJpegUri } from "@/utils/avatar";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -206,8 +207,11 @@ export default function ProfileScreen() {
         if (!file) return;
         setUploadingPhoto(true);
         try {
-          const arrayBuffer = await file.arrayBuffer();
-          await uploadAvatarBuffer(arrayBuffer, file.type || "image/jpeg");
+          // Downscale before upload so we never store a multi-megapixel original —
+          // full-res avatars decoded across an avatar-heavy page crashed the web
+          // renderer (see utils/avatar.ts). Re-encodes to JPEG, hence the fixed type.
+          const arrayBuffer = await resizeImageToJpegBuffer(file);
+          await uploadAvatarBuffer(arrayBuffer, "image/jpeg");
           Sentry.logger.info("Profile image uploaded successfully", {
             event: "profile.avatar.uploaded",
           });
@@ -249,16 +253,24 @@ export default function ProfileScreen() {
     setUploadingPhoto(true);
 
     try {
-      const mimeType = asset.mimeType ?? "image/jpeg";
+      // Cap the longest edge at 512px and normalize to JPEG before upload — a full-res
+      // native photo (multi-megapixel) decoded across an avatar-heavy web page crashed the
+      // renderer (see utils/avatar.ts). This mirrors the web branch's downscale.
+      const uploadUri = await resizeNativeImageToJpegUri(
+        asset.uri,
+        asset.width,
+        asset.height,
+      );
 
       // Read the file as an ArrayBuffer rather than a Blob. On Android, React Native's
       // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
       // ("Network request failed"). ArrayBuffer bypasses the Blob bridge entirely and
       // is handled natively by both platforms.
-      const fileResponse = await fetch(asset.uri);
+      const fileResponse = await fetch(uploadUri);
       const arrayBuffer = await fileResponse.arrayBuffer();
 
-      await uploadAvatarBuffer(arrayBuffer, mimeType);
+      // Fixed "image/jpeg" because resizeNativeImageToJpegUri always re-encodes to JPEG.
+      await uploadAvatarBuffer(arrayBuffer, "image/jpeg");
       Sentry.logger.info("Profile image uploaded successfully", {
         event: "profile.avatar.uploaded",
       });
@@ -634,6 +646,36 @@ export default function ProfileScreen() {
                 </View>
               );
             })}
+          </View>
+
+          {/* ── Out of Bounds toggle ──────────────────────────────────────────── */}
+          {/* OB is a sub-pill inside the FIR/GIR sections, not a reorderable stat row,
+              so it lives outside the stat_order list with its own toggle. */}
+          <Text className={`text-xs font-semibold uppercase tracking-widest mb-3 mt-2 ${t.textTertiary}`}>
+            Out of Bounds
+          </Text>
+
+          <View className={`${t.surface} rounded-2xl mb-6 border ${t.border} overflow-hidden`}>
+            <View className="flex-row items-center justify-between px-4 py-3">
+              <View className="flex-1 mr-4">
+                <Text className={`text-sm ${t.textPrimary}`}>Track out of bounds (OB)</Text>
+                <Text className={`text-xs mt-0.5 ${t.textTertiary}`}>
+                  {settings.ob_enabled
+                    ? "An OB pill appears in the FIR and GIR sections"
+                    : "OB tracking is hidden from the scorecard"}
+                </Text>
+              </View>
+              <Switch
+                testID="ob-toggle"
+                value={settings.ob_enabled}
+                onValueChange={(val) =>
+                  settingsMutation.mutate({ ...settings, ob_enabled: val })
+                }
+                trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
+                thumbColor="#ffffff"
+                disabled={settingsMutation.isPending}
+              />
+            </View>
           </View>
 
           {/* ── Sign out button — always red, destructive action ──────────────── */}

@@ -26,7 +26,17 @@ export const WS_IDLE_MS = 60_000;
 // buildWsUrl converts the HTTP API base into a ws(s):// subscription URL for one round.
 // The JWT rides in ?token= because a browser can't set an Authorization header on a WS
 // upgrade. https→wss and http→ws; an already-ws(s) base is passed through.
-export function buildWsUrl(apiUrl: string, roundId: string, token: string): string {
+//
+// pageProtocol (web only) is the hosting page's location.protocol. A browser blocks a
+// ws:// connection from an https page (mixed content), so on web the socket scheme must
+// follow the *page*, not the API base — which may be http:// behind a TLS-terminating
+// proxy like Railway. Omit it on native, where there is no page protocol.
+export function buildWsUrl(
+  apiUrl: string,
+  roundId: string,
+  token: string,
+  pageProtocol?: string,
+): string {
   let scheme = "ws";
   let rest = apiUrl;
   if (apiUrl.startsWith("https://")) {
@@ -40,6 +50,9 @@ export function buildWsUrl(apiUrl: string, roundId: string, token: string): stri
   } else if (apiUrl.startsWith("ws://")) {
     rest = apiUrl.slice("ws://".length);
   }
+  // Force wss when the hosting page is https — the browser would otherwise reject a ws://
+  // upgrade as insecure. Only ever upgrades the scheme, never downgrades it.
+  if (pageProtocol === "https:") scheme = "wss";
   // Trim trailing slashes without a regex (a `\/+$` pattern trips ReDoS scanners) so the
   // path isn't doubled.
   let host = rest;

@@ -231,6 +231,7 @@ function RoundStatsModal({
                 centerValue={roundStats.firPercent === null ? "—" : `${roundStats.firPercent.toFixed(0)}%`}
                 miss={roundStats.firMiss}
                 denominator={roundStats.firTotal}
+                obValue={roundStats.firObPercent === null ? "—" : `${roundStats.firObPercent.toFixed(0)}%`}
               />
               <DirectionalMissCard
                 sectionLabel="Approach"
@@ -239,6 +240,7 @@ function RoundStatsModal({
                 miss={roundStats.girMiss}
                 denominator={roundStats.girTotal}
                 naValue={roundStats.girNaPercent === null ? "—" : `${roundStats.girNaPercent.toFixed(0)}%`}
+                obValue={roundStats.girObPercent === null ? "—" : `${roundStats.girObPercent.toFixed(0)}%`}
                 extraRows={roundStats.proximityRows}
                 bands={roundGirBands}
               />
@@ -786,6 +788,7 @@ export default function StatsScreen() {
                 centerValue={stats.firPercent === null ? "—" : `${stats.firPercent.toFixed(0)}%`}
                 miss={stats.firMiss}
                 denominator={stats.firTotal}
+                obValue={stats.firObPercent === null ? "—" : `${stats.firObPercent.toFixed(0)}%`}
               />
               <DirectionalMissCard
                 sectionLabel="Approach"
@@ -794,6 +797,7 @@ export default function StatsScreen() {
                 miss={stats.girMiss}
                 denominator={stats.girTotal}
                 naValue={stats.girNaPercent === null ? "—" : `${stats.girNaPercent.toFixed(0)}%`}
+                obValue={stats.girObPercent === null ? "—" : `${stats.girObPercent.toFixed(0)}%`}
                 extraRows={stats.proximityRows}
                 bands={girBands}
               />

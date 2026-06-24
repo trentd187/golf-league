@@ -26,10 +26,13 @@ import {
   TextInput,
   ActivityIndicator,
   RefreshControl,
-  KeyboardAvoidingView,
-  Platform,
   Dimensions,
 } from "react-native";
+// KeyboardAwareScrollView automatically lifts the focused input above the on-screen
+// keyboard and only insets the bottom while the keyboard is up — replacing the old
+// static paddingBottom + manual scrollToEnd glue. Requires <KeyboardProvider> at the
+// app root (app/_layout.tsx). Native module: dev/preview build only, not Expo Go.
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
@@ -73,6 +76,10 @@ type HoleStatEntry = {
   gir_miss_direction: string | null; // "short" | "left" | "right" | "long" | null
   fir: boolean | null;
   fir_miss_direction: string | null;
+  // fir_ob/gir_ob: additive out-of-bounds flags for the tee shot and approach.
+  // Set independently of the directional pills (a shot can be both a direction and OB).
+  fir_ob: boolean | null;
+  gir_ob: boolean | null;
   putts: string;
   first_putt_distance: string; // feet
   putt_distance_made: string;  // feet
@@ -165,6 +172,8 @@ function initStats(players: ScorecardPlayer[]): LocalStats {
         gir_miss_direction:  s.gir_miss_direction,
         fir:                 s.fir,
         fir_miss_direction:  s.fir_miss_direction,
+        fir_ob:              s.fir_ob ?? null,
+        gir_ob:              s.gir_ob ?? null,
         putts:               s.putts != null ? String(s.putts) : "",
         first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
         putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
@@ -200,6 +209,7 @@ function firKey(entry: HoleStatEntry | undefined): string | null {
 const emptyHoleStat: HoleStatEntry = {
   gir: null, gir_miss_direction: null,
   fir: null, fir_miss_direction: null,
+  fir_ob: null, gir_ob: null,
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
   tee_shot_club: null, tee_shot_distance: "",
 };
@@ -385,14 +395,10 @@ export default function ScorecardScreen() {
     lastHoleRef.current = start + hCount - 1;
   }, [scorecard]);
 
-  // focusingRef: set to true immediately before programmatically calling .focus()
-  // on the next TextInput in the chain so onBlur handlers on the departing field
-  // know not to scroll the view back to the top (the keyboard is staying up).
-  const focusingRef = useRef(false);
-
-  // outerScrollRef: used to programmatically scroll the main ScrollView when
-  // the bottom stat inputs (Putts, First Putt, Made Putt) are focused so they
-  // are not hidden behind the keyboard.
+  // outerScrollRef: KeyboardAwareScrollView keeps the focused input visible on its
+  // own, so this ref is only used to jump back to the top after the final hole saves
+  // (see the last-hole scrollTo below). KeyboardAwareScrollView forwards a ScrollView
+  // ref, so scrollTo works the same as on a plain ScrollView.
   const outerScrollRef = useRef<ScrollView>(null);
 
   // pillScrollRef: horizontal ScrollView holding the hole selector pills.
@@ -520,6 +526,8 @@ export default function ScorecardScreen() {
           gir_miss_direction:   entry.gir_miss_direction,
           fir:                  entry.fir,
           fir_miss_direction:   entry.fir_miss_direction,
+          fir_ob:               entry.fir_ob,
+          gir_ob:               entry.gir_ob,
           putts:                toInt(entry.putts),
           first_putt_distance:  toInt(entry.first_putt_distance),
           putt_distance_made:   toInt(entry.putt_distance_made),
@@ -868,10 +876,7 @@ export default function ScorecardScreen() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <KeyboardAvoidingView
-      className={`flex-1 ${t.screen}`}
-      behavior={Platform.OS === "android" ? "height" : undefined}
-    >
+    <View className={`flex-1 ${t.screen}`}>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <View className={`${t.surface} border-b ${t.divider} px-4 pt-14 pb-3 flex-row items-center gap-3`}>
@@ -910,11 +915,15 @@ export default function ScorecardScreen() {
         )}
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollView
         ref={outerScrollRef}
         className="flex-1"
-        contentContainerStyle={{ paddingBottom: 320 }}
-        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+        // Small resting pad only — KeyboardAwareScrollView adds the keyboard-sized
+        // inset dynamically while the keyboard is up, then removes it (no permanent
+        // whitespace). bottomOffset is the gap kept between the focused input and the
+        // top of the keyboard.
+        contentContainerStyle={{ paddingBottom: 24 }}
+        bottomOffset={24}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
@@ -1444,6 +1453,24 @@ export default function ScorecardScreen() {
                 autoSaveStats(rpId, currentHole, 0);
               };
 
+              // handleOBTap toggles the additive OB flag for the tee shot (fir_ob) or
+              // approach (gir_ob). Unlike the directional pills it does NOT clear the
+              // sibling selection — a shot can be both a direction and OB. Tapping again
+              // clears just the OB flag (true ⇄ null).
+              const handleOBTap = (field: "fir_ob" | "gir_ob") => {
+                setStats((prev) => {
+                  const entry = prev[rpId]?.[currentHole] ?? emptyHoleStat;
+                  return {
+                    ...prev,
+                    [rpId]: {
+                      ...(prev[rpId] ?? {}),
+                      [currentHole]: { ...entry, [field]: entry[field] === true ? null : true },
+                    },
+                  };
+                });
+                autoSaveStats(rpId, currentHole, 0);
+              };
+
               // handleTeeShotClubTap toggles the selected tee shot club.
               // Tapping the already-selected club deselects it (sets to null).
               const handleTeeShotClubTap = (club: TeeShotClub) => {
@@ -1490,17 +1517,10 @@ export default function ScorecardScreen() {
                       // the keyboard when score is the last input.
                       blurOnSubmit={scoreNextTarget === null}
                       returnKeyType={scoreNextTarget !== null ? "next" : "done"}
-                      onFocus={() => {
-                        // When score is at the bottom (after stats), scroll to show it.
-                        // focusingRef suppresses the departing stat's scroll-to-top so
-                        // this 150 ms call is the only scroll that runs.
-                        if (settings.score_position !== "first") {
-                          setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
-                        }
-                      }}
                       onSubmitEditing={() => {
+                        // KeyboardAwareScrollView keeps the focused field visible, so this
+                        // only advances focus to the first stat when score is chained first.
                         if (scoreNextTarget !== null) {
-                          focusingRef.current = true;
                           statsInputRefs.current[scoreNextTarget]?.focus();
                         }
                       }}
@@ -1627,6 +1647,21 @@ export default function ScorecardScreen() {
                                   </TouchableOpacity>
                                 );
                               })}
+                              {/* OB is additive — selectable alongside a directional pill (left AND OB). */}
+                              {settings.ob_enabled && (
+                                <>
+                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
+                                  <TouchableOpacity
+                                    onPress={() => { if (holeData.par !== 3 && canEditSelected) handleOBTap("fir_ob"); }}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      holeStat.fir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={holeData.par === 3 || !canEditSelected ? 1 : 0.7}
+                                  >
+                                    <Text className={`text-xs font-semibold ${holeStat.fir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
+                                  </TouchableOpacity>
+                                </>
+                              )}
                             </View>
                           </View>
                         ) : null;
@@ -1656,6 +1691,21 @@ export default function ScorecardScreen() {
                                   </TouchableOpacity>
                                 );
                               })}
+                              {/* OB is additive — selectable alongside a directional/N-A pill. */}
+                              {settings.ob_enabled && (
+                                <>
+                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
+                                  <TouchableOpacity
+                                    onPress={() => { if (canEditSelected) handleOBTap("gir_ob"); }}
+                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
+                                      holeStat.gir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
+                                    } ${!canEditSelected ? "opacity-50" : ""}`}
+                                    activeOpacity={!canEditSelected ? 1 : 0.7}
+                                  >
+                                    <Text className={`text-xs font-semibold ${holeStat.gir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
+                                  </TouchableOpacity>
+                                </>
+                              )}
                             </View>
                           </View>
                         ) : null;
@@ -1715,10 +1765,8 @@ export default function ScorecardScreen() {
                                 returnKeyType={focusNext !== null ? "next" : "done"}
                                 onSubmitEditing={() => {
                                   if (typeof focusNext === "number") {
-                                    focusingRef.current = true;
                                     statsInputRefs.current[focusNext]?.focus();
                                   } else if (focusNext === "score") {
-                                    focusingRef.current = true;
                                     scoreInputRef.current?.focus();
                                   }
                                 }}
@@ -1752,21 +1800,7 @@ export default function ScorecardScreen() {
                                     }
                                   }
                                 }}
-                                onFocus={() => {
-                                  // Delay lets the keyboard animation start before we scroll,
-                                  // ensuring the inset has been applied and there is room to move.
-                                  setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
-                                }}
-                                onBlur={() => {
-                                  autoSaveStats(rpId, currentHole, 400);
-                                  // Only scroll back to the top when the keyboard is actually
-                                  // dismissing. When chaining to the next field, focusingRef is
-                                  // true and the keyboard stays up, so no scroll-to-top is needed.
-                                  if (!focusingRef.current) {
-                                    setTimeout(() => outerScrollRef.current?.scrollTo({ x: 0, y: 0, animated: true }), 150);
-                                  }
-                                  focusingRef.current = false;
-                                }}
+                                onBlur={() => autoSaveStats(rpId, currentHole, 400)}
                               />
                             </View>
                           </View>
@@ -1909,7 +1943,7 @@ export default function ScorecardScreen() {
         )}
 
 
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }

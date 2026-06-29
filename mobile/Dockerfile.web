@@ -61,22 +61,25 @@ ENV EXPO_PUBLIC_SENTRY_ENVIRONMENT=$EXPO_PUBLIC_SENTRY_ENVIRONMENT
 # uploaded below. buildSentryOptions omits release when this is empty (native/CI).
 ENV EXPO_PUBLIC_SENTRY_RELEASE=$RAILWAY_GIT_COMMIT_SHA
 
-# --clear flushes Metro's transform cache so every Railway build produces a
-# fresh bundle. Without it, BuildKit may cache the export layer and serve
+# --source-maps emits a .js.map next to the bundle (and a sourceMappingURL ref) — without
+# it the export ships only the minified .js, so the upload below had nothing to symbolicate
+# against ("no sourcemap found"). --clear flushes Metro's transform cache so every Railway
+# build produces a fresh bundle. Without it, BuildKit may cache the export layer and serve
 # stale output even when babel.config.js or metro.config.js change.
-RUN npx expo export --platform web --clear
+RUN npx expo export --platform web --source-maps --clear
 
 # Upload the web source maps to Sentry so browser stack traces are symbolicated instead
 # of showing minified frames (y(entry), Object.l, …). Metro already embeds debug IDs via
-# getSentryExpoConfig; `inject` reconciles them across the JS + maps, then `upload` ships
-# them under the release. We invoke the CLI by running its node shim directly
-# (node_modules/@sentry/cli/bin/sentry-cli) rather than via `npx --yes @sentry/cli`: npx
-# re-resolved the scoped package instead of using the local install and ended up exec'ing a
-# bare `sentry-cli` off PATH (sh: sentry-cli: not found, exit 127). The hoisted layout (from
-# the .npmrc copied before install) puts @sentry/cli at the top level, and the shim resolves
-# its platform binary from the @sentry/cli-linux-x64 optional dependency — present even under
-# --ignore-scripts (that flag only skips the postinstall *fallback* download, which the
-# optional-dep binary makes unnecessary). Guarded on SENTRY_AUTH_TOKEN so token-less builds skip it.
+# getSentryExpoConfig into BOTH the bundle and its map, so `inject` is a no-op reconcile and
+# `upload` ships the .js + .js.map under the release, paired by debug id. We invoke the CLI by
+# running its node shim directly (node_modules/@sentry/cli/bin/sentry-cli) rather than via
+# `npx --yes @sentry/cli`: npx re-resolved the scoped package instead of using the local
+# install and ended up exec'ing a bare `sentry-cli` off PATH (sh: sentry-cli: not found, exit
+# 127). The hoisted layout (from the .npmrc copied before install) puts @sentry/cli at the top
+# level, and the shim resolves its platform binary from the @sentry/cli-linux-x64 optional
+# dependency — present even under --ignore-scripts (that flag only skips the postinstall
+# *fallback* download, which the optional-dep binary makes unnecessary). Guarded on
+# SENTRY_AUTH_TOKEN so token-less builds skip it.
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
 ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
@@ -86,6 +89,12 @@ RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
     else \
       echo "SENTRY_AUTH_TOKEN unset — skipping web source-map upload"; \
     fi
+
+# Source maps exist only for Sentry symbolication — don't serve 12MB+ of readable source to
+# every browser. Delete them from the static output after the upload (Sentry keeps its copy).
+# Unconditional, so token-less builds never ship maps either; the leftover sourceMappingURL
+# comment in the JS just yields a silent devtools-only 404, never a runtime or Sentry error.
+RUN find dist -name '*.map' -delete
 
 # ── Stage 2: Serve ────────────────────────────────────────────────────────────
 # caddy:alpine is Go-based with a strong security track record and native env var

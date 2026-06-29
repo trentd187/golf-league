@@ -102,6 +102,8 @@ Build-time only (source-map upload — never bundled into the app). On **native*
 | `SENTRY_PROJECT` | Sentry project slug. |
 | `SENTRY_AUTH_TOKEN` | Source-map upload token. Provide via **EAS Secrets** (native) / **Railway build variables** (web), never commit. Web upload is skipped when this is empty. |
 
+> **Gotcha — `.npmrc` must be copied before `pnpm install` in `Dockerfile.web`.** The upload step runs `node node_modules/@sentry/cli/bin/sentry-cli sourcemaps …`. That resolves only under the **hoisted** layout (`node-linker=hoisted`), which comes from `.npmrc`. If `.npmrc` is copied only by `COPY . .` *after* install, pnpm installs symlinked and buries the transitive `@sentry/cli` (and its `@sentry/cli-linux-x64` binary) under `.pnpm/`, so the upload fails (`sentry-cli: not found`, exit 127) the moment `SENTRY_AUTH_TOKEN` is set. We invoke the shim with `node` directly, not `npx --yes @sentry/cli` — npx re-resolves the scoped package and exec's a bare `sentry-cli` off PATH.
+
 See [.env.example](../.env.example) for the runtime placeholders.
 
 ## Build identification (releases, dist, and tags)

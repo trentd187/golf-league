@@ -43,8 +43,9 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
-import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardPlayer, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps } from "@/utils/scorecard";
+import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericStatField } from "@/utils/scorecard";
+import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
@@ -63,39 +64,8 @@ import {
 import type { ComponentProps } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-// LocalScores maps round_player_id → hole_number → gross score string input.
-// String rather than number so empty input fields stay blank.
-type LocalScores = Record<string, Record<number, string>>;
-
-// LocalHandicaps maps round_player_id → handicap string input.
-type LocalHandicaps = Record<string, string>;
-
-// HoleStatEntry holds the editable state for one hole's advanced stats.
-// Putts and distances use strings so TextInput fields can be blank.
-type HoleStatEntry = {
-  gir: string | null;               // "hit" | "miss" | "na" | null
-  gir_miss_direction: string | null; // "short" | "left" | "right" | "long" | null
-  fir: boolean | null;
-  fir_miss_direction: string | null;
-  // fir_ob/gir_ob: additive out-of-bounds flags for the tee shot and approach.
-  // Set independently of the directional pills (a shot can be both a direction and OB).
-  fir_ob: boolean | null;
-  gir_ob: boolean | null;
-  putts: string;
-  first_putt_distance: string; // feet
-  putt_distance_made: string;  // feet
-  approach_yds: string;        // yards; optional
-  tee_shot_club: TeeShotClub | null;
-  tee_shot_distance: string;   // yards
-};
-
-// NumericStatField is the subset of HoleStatEntry keys that are string fields
-// rendered as TextInput number-pads in the stats section.
-type NumericStatField = "putts" | "first_putt_distance" | "putt_distance_made" | "approach_yds" | "tee_shot_distance";
-
-// LocalStats maps round_player_id → hole_number → HoleStatEntry.
-type LocalStats = Record<string, Record<number, HoleStatEntry>>;
+// LocalScores/LocalStats/LocalHandicaps/HoleStatEntry/NumericStatField and the init
+// builders now live in utils/scorecard.ts so the live-merge helpers share one shape.
 
 // IoniconsName is used to type the icon prop on stat option buttons.
 type IoniconsName = ComponentProps<typeof Ionicons>["name"];
@@ -131,27 +101,6 @@ const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string 
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// initScores builds the initial LocalScores state from existing server scores.
-function initScores(players: ScorecardPlayer[]): LocalScores {
-  const out: LocalScores = {};
-  for (const p of players) {
-    out[p.round_player_id] = {};
-    for (const s of p.scores) {
-      out[p.round_player_id][s.hole_number] = String(s.gross_score);
-    }
-  }
-  return out;
-}
-
-// initHandicaps builds the initial LocalHandicaps state from existing server data.
-function initHandicaps(players: ScorecardPlayer[]): LocalHandicaps {
-  const out: LocalHandicaps = {};
-  for (const p of players) {
-    out[p.round_player_id] = p.course_handicap != null ? String(p.course_handicap) : "";
-  }
-  return out;
-}
-
 // handicapStrokes returns the number of strokes a player receives on a hole.
 // strokeIndex must be a normalized rank within the played set (1 = hardest).
 // holeCount is the number of holes being played (9 or 18).
@@ -161,31 +110,6 @@ function handicapStrokes(courseHandicap: number, strokeIndex: number, holeCount:
   const base = Math.floor(courseHandicap / holeCount);
   const remainder = courseHandicap % holeCount;
   return base + (strokeIndex <= remainder ? 1 : 0);
-}
-
-// initStats builds the initial LocalStats state from server-loaded hole_stats.
-function initStats(players: ScorecardPlayer[]): LocalStats {
-  const out: LocalStats = {};
-  for (const p of players) {
-    out[p.round_player_id] = {};
-    for (const s of p.hole_stats) {
-      out[p.round_player_id][s.hole_number] = {
-        gir:                 s.gir,
-        gir_miss_direction:  s.gir_miss_direction,
-        fir:                 s.fir,
-        fir_miss_direction:  s.fir_miss_direction,
-        fir_ob:              s.fir_ob ?? null,
-        gir_ob:              s.gir_ob ?? null,
-        putts:               s.putts != null ? String(s.putts) : "",
-        first_putt_distance: s.first_putt_distance != null ? String(s.first_putt_distance) : "",
-        putt_distance_made:  s.putt_distance_made != null ? String(s.putt_distance_made) : "",
-        approach_yds:        s.approach_yds != null ? String(s.approach_yds) : "",
-        tee_shot_club:       s.tee_shot_club ?? null,
-        tee_shot_distance:   s.tee_shot_distance != null ? String(s.tee_shot_distance) : "",
-      };
-    }
-  }
-  return out;
 }
 
 // girKey converts a HoleStatEntry's GIR fields into the compound key used by
@@ -595,22 +519,50 @@ export default function ScorecardScreen() {
 
   // ── Initialisation ──────────────────────────────────────────────────────────
 
-  const initializedRef = useRef(false);
+  // One-time VIEW setup: the starting hole and the Advanced-view player. This is view
+  // state, not data — a later refetch (WS push / poll) must never yank the user back to
+  // hole 1 or a different player, so it stays guarded behind viewInitRef.
+  const viewInitRef = useRef(false);
   useEffect(() => {
-    if (group && !initializedRef.current) {
-      setScores(initScores(group.players));
-      setHandicaps(initHandicaps(group.players));
-      setStats(initStats(group.players));
-      // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
-      setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
-      // Default Advanced view to the current user's player, then first player.
-      // Use scorecard.caller_user_id (DB UUID) — it differs from the Supabase auth UUID.
-      const myPlayer = group.players.find((p) => p.user_id === scorecard?.caller_user_id);
-      setSelectedPlayerId(
-        myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""
-      );
-      initializedRef.current = true;
-    }
+    if (!group || viewInitRef.current) return;
+    // Start on the first hole in play: hole 10 for back nine, hole 1 for everything else.
+    setCurrentHole(scorecard?.nine_hole_selection === "back" ? 10 : 1);
+    // Default Advanced view to the current user's player, then first player.
+    // Use scorecard.caller_user_id (DB UUID) — it differs from the Supabase auth UUID.
+    const myPlayer = group.players.find((p) => p.user_id === scorecard?.caller_user_id);
+    setSelectedPlayerId(
+      myPlayer?.round_player_id ?? group.players[0]?.round_player_id ?? ""
+    );
+    viewInitRef.current = true;
+  }, [group, scorecard?.nine_hole_selection, scorecard?.caller_user_id]);
+
+  // Live re-sync: whenever the scorecard query data changes (WS "scores_updated" push,
+  // 60s poll, hole-change refetch, or pull-to-refresh) merge the fresh server snapshot
+  // into local state so OTHER players' scores/stats appear without leaving the screen —
+  // the bug this fixes. A 3-way merge against the LAST server snapshot (server*Ref)
+  // preserves any of THIS device's unsaved in-flight edits (see utils/scorecard.ts).
+  // `group` keeps a stable reference between refetches (React Query structural sharing),
+  // so this only runs when the data actually changed. The functional setState form reads
+  // the latest local state without putting `scores`/`stats` in the dep array (which would
+  // re-run the merge on every keystroke). Bases are captured BEFORE the refs are advanced
+  // so the deferred updaters merge against the correct snapshot.
+  const serverScoresRef    = useRef<LocalScores>({});
+  const serverStatsRef     = useRef<LocalStats>({});
+  const serverHandicapsRef = useRef<LocalHandicaps>({});
+  useEffect(() => {
+    if (!group) return;
+    const incomingScores    = initScores(group.players);
+    const incomingStats     = initStats(group.players);
+    const incomingHandicaps = initHandicaps(group.players);
+    const baseScores    = serverScoresRef.current;
+    const baseStats     = serverStatsRef.current;
+    const baseHandicaps = serverHandicapsRef.current;
+    setScores((local)    => threeWayMergeScores(baseScores, local, incomingScores));
+    setStats((local)     => threeWayMergeStats(baseStats, local, incomingStats));
+    setHandicaps((local) => threeWayMergeHandicaps(baseHandicaps, local, incomingHandicaps));
+    serverScoresRef.current    = incomingScores;
+    serverStatsRef.current     = incomingStats;
+    serverHandicapsRef.current = incomingHandicaps;
   }, [group]);
 
   // ── Handicap save ───────────────────────────────────────────────────────────

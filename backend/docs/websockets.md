@@ -17,12 +17,22 @@ score PUT ──▶ ScoreService save ──▶ hub.BroadcastToRound(roundId, {"
                                         │
             client WS  ◀───────────────┘   (one message per round, no score data)
                 │
-                └─▶ queryClient.invalidateQueries(["scorecard", roundId])  ──▶ refetch
+                ├─▶ queryClient.invalidateQueries(["scorecard", roundId])  ──▶ refetch
+                │
+                └─▶ scorecard screen 3-way-merges the fresh snapshot into local edit
+                    state  (utils/scorecard.ts threeWayMerge*)  ──▶ peers' scores appear
 ```
 
 The message carries **no** score data — just "something changed" — so the client reuses its
 existing scorecard query. That keeps the server payload trivial and the client a one-line
 invalidate rather than a second data path.
+
+The scorecard holds scores/stats in **local** React state (the editable TextInputs), so the
+refetch alone isn't enough — the screen must fold the fresh server snapshot back into that
+local state. It does a **3-way merge** (`threeWayMergeScores`/`Stats`/`Handicaps` in
+[mobile/utils/scorecard.ts](../../mobile/utils/scorecard.ts)) against the last synced server
+snapshot: peers' cells flow in, while this device's unsaved in-flight edits are preserved until
+the server echoes them back. Without this, other players' scores only appeared on exit/re-entry.
 
 ## Backend
 
@@ -44,6 +54,12 @@ invalidate rather than a second data path.
   `wsPingInterval` (30s); each pong extends a `wsPongWait` (45s) read deadline, so a half-open
   socket (phone vanished with no close frame) is reaped within 45s instead of leaking. Every
   write is bounded by `wsWriteWait` (10s).
+- **App-level heartbeat** (`wsHeartbeat`): on the same 30s tick the server also sends a TEXT
+  frame `{"type":"ping"}`. This is *separate* from the control ping for a reason — browsers/RN
+  auto-pong control frames at the protocol level, so those never surface to the client's
+  `onmessage`. The text frame does, which resets the client's idle watchdog (below). Without it,
+  the watchdog saw the multi-minute gaps between scoring events as "silence" and churned through
+  reconnects on healthy sockets. The client treats the `ping` type as a no-op.
 - **Coordinated shutdown:** a `done` channel ties the reader and writer goroutines together so
   neither leaks; whichever exits first stops the other. Both carry `defer sentry.Recover()` —
   gofiber runs the connection handler outside Fiber's recover middleware, so a panic here would
@@ -78,8 +94,10 @@ invalidate rather than a second data path.
 - **Catch-up:** every successful (re)connect invalidates `["scorecard", roundId]` so anything
   missed while disconnected is pulled immediately.
 - **Watchdog** (`isStaleConnection`, `WS_IDLE_MS` 60s): a socket silent past the idle window is
-  recycled even without an error/close event (the half-open cellular case; the server pings every
-  30s, so silence is abnormal).
+  recycled even without an error/close event (the half-open cellular case). "Silence" means no
+  *data* frame — and because the server's control pings don't reach `onmessage`, the watchdog
+  keys off the app-level `{"type":"ping"}` heartbeat (every 30s). A genuinely dead link misses two
+  heartbeats and is recycled; a healthy idle socket is no longer falsely churned.
 - **AppState:** reconnect on foreground (mobile OSes suspend sockets in the background).
 - **NetInfo:** reconnect when connectivity returns; drop the socket + pending retry when it's lost
   (don't hammer a dead radio).

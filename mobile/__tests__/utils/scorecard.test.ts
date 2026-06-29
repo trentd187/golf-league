@@ -1,7 +1,9 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, holeStatEntryEquals, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps } from "@/utils/scorecard";
+import type { HoleStatEntry } from "@/utils/scorecard";
+import type { ScorecardPlayer } from "@/types/scorecard";
 
 // ─── girScoreFromPutts ────────────────────────────────────────────────────────
 
@@ -214,5 +216,166 @@ describe("scoreFocusNext", () => {
     expect(scoreFocusNext("last", 3)).toBeNull();
     expect(scoreFocusNext("last", 1)).toBeNull();
     expect(scoreFocusNext("last", 0)).toBeNull();
+  });
+});
+
+// ─── Fixtures for init + merge tests ──────────────────────────────────────────
+
+// entry builds a HoleStatEntry with the same all-empty defaults the screen uses, so a
+// user-edited entry compares equal to the server-derived one once the save lands.
+function entry(overrides: Partial<HoleStatEntry> = {}): HoleStatEntry {
+  return {
+    gir: null, gir_miss_direction: null,
+    fir: null, fir_miss_direction: null,
+    fir_ob: null, gir_ob: null,
+    putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
+    tee_shot_club: null, tee_shot_distance: "",
+    ...overrides,
+  };
+}
+
+function player(overrides: Partial<ScorecardPlayer> = {}): ScorecardPlayer {
+  return {
+    round_player_id: "rp1",
+    user_id: "u1",
+    display_name: "Player",
+    avatar_url: null,
+    course_handicap: null,
+    effective_course_handicap: null,
+    team_id: null,
+    team_name: null,
+    scores: [],
+    hole_stats: [],
+    total_gross: null,
+    total_net: null,
+    ...overrides,
+  };
+}
+
+// ─── initScores / initHandicaps / initStats ───────────────────────────────────
+
+describe("initScores", () => {
+  it("builds a hole→string map per player from server scores", () => {
+    const p = player({
+      scores: [
+        { hole_number: 1, gross_score: 4, net_score: 4 },
+        { hole_number: 2, gross_score: 5, net_score: 4 },
+      ],
+    });
+    expect(initScores([p])).toEqual({ rp1: { 1: "4", 2: "5" } });
+  });
+
+  it("yields an empty map for a player with no scores", () => {
+    expect(initScores([player()])).toEqual({ rp1: {} });
+  });
+});
+
+describe("initHandicaps", () => {
+  it("stringifies course_handicap and uses '' for null", () => {
+    const withHcp = player({ round_player_id: "a", course_handicap: 12 });
+    const noHcp = player({ round_player_id: "b", course_handicap: null });
+    expect(initHandicaps([withHcp, noHcp])).toEqual({ a: "12", b: "" });
+  });
+});
+
+describe("initStats", () => {
+  it("maps server hole_stats into editable string-form entries", () => {
+    const p = player({
+      hole_stats: [
+        {
+          hole_number: 1, gir: "hit", gir_miss_direction: null,
+          fir: true, fir_miss_direction: null, fir_ob: null, gir_ob: null,
+          putts: 2, first_putt_distance: 15, putt_distance_made: null,
+          approach_yds: null, tee_shot_club: "DR", tee_shot_distance: 250,
+        },
+      ],
+    });
+    expect(initStats([p])).toEqual({
+      rp1: {
+        1: entry({ gir: "hit", fir: true, putts: "2", first_putt_distance: "15", tee_shot_club: "DR", tee_shot_distance: "250" }),
+      },
+    });
+  });
+});
+
+// ─── holeStatEntryEquals ──────────────────────────────────────────────────────
+
+describe("holeStatEntryEquals", () => {
+  it("is true for two structurally identical entries", () => {
+    expect(holeStatEntryEquals(entry({ gir: "hit", putts: "2" }), entry({ gir: "hit", putts: "2" }))).toBe(true);
+  });
+
+  it("is false when any field differs", () => {
+    expect(holeStatEntryEquals(entry({ putts: "2" }), entry({ putts: "3" }))).toBe(false);
+    expect(holeStatEntryEquals(entry({ gir: "hit" }), entry({ gir: "miss" }))).toBe(false);
+    expect(holeStatEntryEquals(entry({ fir_ob: true }), entry({ fir_ob: null }))).toBe(false);
+  });
+});
+
+// ─── threeWayMergeScores ──────────────────────────────────────────────────────
+
+describe("threeWayMergeScores", () => {
+  it("adopts the server snapshot on the first sync (empty base + local)", () => {
+    expect(threeWayMergeScores({}, {}, { rp1: { 1: "4" } })).toEqual({ rp1: { 1: "4" } });
+  });
+
+  it("flows in a peer's new score when this device hasn't diverged", () => {
+    const base = { rp1: { 1: "4" } };
+    const local = { rp1: { 1: "4" } };
+    const incoming = { rp1: { 1: "4" }, rp2: { 1: "5" } };
+    expect(threeWayMergeScores(base, local, incoming)).toEqual({ rp1: { 1: "4" }, rp2: { 1: "5" } });
+  });
+
+  it("flows in a peer's changed score (local matched the old base)", () => {
+    expect(threeWayMergeScores({ rp2: { 1: "5" } }, { rp2: { 1: "5" } }, { rp2: { 1: "6" } })).toEqual({ rp2: { 1: "6" } });
+  });
+
+  it("preserves an unsaved local edit when the server snapshot is still stale", () => {
+    // base has no hole 1; local typed "4"; server hasn't received it yet.
+    expect(threeWayMergeScores({ rp1: {} }, { rp1: { 1: "4" } }, { rp1: {} })).toEqual({ rp1: { 1: "4" } });
+  });
+
+  it("graduates a local edit back to server control once the server echoes it", () => {
+    expect(threeWayMergeScores({ rp1: {} }, { rp1: { 1: "4" } }, { rp1: { 1: "4" } })).toEqual({ rp1: { 1: "4" } });
+  });
+
+  it("omits blank cells so a missing key and '' stay equivalent", () => {
+    expect(threeWayMergeScores({ rp1: {} }, { rp1: { 1: "" } }, { rp1: {} })).toEqual({ rp1: {} });
+  });
+});
+
+// ─── threeWayMergeStats ───────────────────────────────────────────────────────
+
+describe("threeWayMergeStats", () => {
+  it("flows in a peer's new hole stat when this device hasn't diverged", () => {
+    const incoming = { rp1: { 1: entry({ gir: "hit" }) } };
+    expect(threeWayMergeStats({ rp1: {} }, { rp1: {} }, incoming)).toEqual(incoming);
+  });
+
+  it("preserves an unsaved local stat when the server snapshot is stale", () => {
+    const local = { rp1: { 1: entry({ gir: "hit", putts: "2" }) } };
+    expect(threeWayMergeStats({ rp1: {} }, local, { rp1: {} })).toEqual(local);
+  });
+
+  it("graduates a local stat once the server echoes the same values", () => {
+    const local = { rp1: { 1: entry({ gir: "hit", putts: "2" }) } };
+    const incoming = { rp1: { 1: entry({ gir: "hit", putts: "2" }) } };
+    expect(threeWayMergeStats({ rp1: {} }, local, incoming)).toEqual(incoming);
+  });
+});
+
+// ─── threeWayMergeHandicaps ───────────────────────────────────────────────────
+
+describe("threeWayMergeHandicaps", () => {
+  it("adopts the server handicap on first sync", () => {
+    expect(threeWayMergeHandicaps({}, {}, { rp1: "10" })).toEqual({ rp1: "10" });
+  });
+
+  it("preserves an unsaved local handicap edit when the server is stale", () => {
+    expect(threeWayMergeHandicaps({ rp1: "" }, { rp1: "12" }, { rp1: "" })).toEqual({ rp1: "12" });
+  });
+
+  it("flows in a saved handicap when local matched the old base", () => {
+    expect(threeWayMergeHandicaps({ rp1: "" }, { rp1: "" }, { rp1: "9" })).toEqual({ rp1: "9" });
   });
 });

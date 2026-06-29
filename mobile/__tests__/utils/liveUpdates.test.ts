@@ -141,6 +141,10 @@ describe("parseLiveMessage", () => {
     ).toEqual({ type: "scores_updated", roundId: "r9" });
   });
 
+  it("decodes the server's app-level heartbeat as a ping no-op", () => {
+    expect(parseLiveMessage('{"type":"ping"}')).toEqual({ type: "ping" });
+  });
+
   it("returns unknown for an unrecognized type", () => {
     expect(parseLiveMessage('{"type":"something_else"}')).toEqual({
       type: "unknown",

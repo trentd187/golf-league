@@ -35,6 +35,13 @@ const (
 	wsSendBuffer   = 16               // per-client outbound buffer before the hub evicts a slow consumer
 )
 
+// wsHeartbeat is the app-level keepalive frame the writePump emits each tick. It's a
+// TEXT frame (not a control ping) on purpose: browsers/RN auto-pong control pings at the
+// protocol level, so those never reach the client's onmessage. This data frame does,
+// resetting the client's idle watchdog so it stops recycling healthy sockets during the
+// multi-minute gaps between scoring events. The client treats "ping" as a no-op.
+var wsHeartbeat = []byte(`{"type":"ping"}`)
+
 // RunHubSupervised runs the hub's broadcast loop and restarts it if it panics, so a
 // single bad broadcast can't permanently kill live updates for every connected
 // client. hub.Run() normally blocks forever; it only returns here after a recovered
@@ -147,8 +154,15 @@ func writePump(conn *gofiberws.Conn, send <-chan []byte, done <-chan struct{}, s
 				return
 			}
 		case <-ticker.C:
+			// Control ping drives the server's own pong-deadline (dead-client detection).
 			_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := conn.WriteMessage(gofiberws.PingMessage, nil); err != nil {
+				return
+			}
+			// App-level heartbeat: keeps the client's idle watchdog from recycling a
+			// healthy socket between scoring events (see wsHeartbeat).
+			_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			if err := conn.WriteMessage(gofiberws.TextMessage, wsHeartbeat); err != nil {
 				return
 			}
 		case <-done:

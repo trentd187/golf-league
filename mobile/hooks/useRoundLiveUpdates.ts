@@ -120,9 +120,12 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       try {
         // On web the socket scheme must follow the page protocol, not API_URL: a browser
         // rejects a ws:// upgrade from an https page (mixed content). globalThis.location
-        // is undefined on native, so the gate keeps this web-only.
+        // is undefined on native, so the gate keeps this web-only. Default to "https:"
+        // when the protocol is briefly unreadable on web — prod web is always https, and
+        // a wrong "ws://" guess throws SecurityError (the FRONTEND-7 issue); wss from an
+        // http page is always allowed, so https is the safe default.
         const pageProtocol =
-          Platform.OS === "web" ? globalThis.location?.protocol : undefined;
+          Platform.OS === "web" ? (globalThis.location?.protocol ?? "https:") : undefined;
         socket = new WebSocket(buildWsUrl(API_URL, roundId, token, pageProtocol));
       } catch (err) {
         reportWsError(err, roundId);

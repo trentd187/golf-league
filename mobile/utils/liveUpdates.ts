@@ -91,10 +91,15 @@ export function shouldReconnect(params: ShouldReconnectParams): boolean {
   return params.attempt < max;
 }
 
-// LiveAction is the decoded intent of a server message. Only "scores_updated" matters
-// today; anything else is "unknown" and ignored (forward-compatible).
+// LiveAction is the decoded intent of a server message.
+//   "scores_updated" → refetch the scorecard.
+//   "ping"           → the server's app-level heartbeat (see conn.go wsHeartbeat); a
+//                      no-op for invalidation, but it still bumps the client's idle
+//                      watchdog (the hook stamps lastMessageAt on every frame).
+//   anything else    → "unknown" and ignored (forward-compatible).
 export type LiveAction =
   | { type: "scores_updated"; roundId?: string }
+  | { type: "ping" }
   | { type: "unknown" };
 
 // parseLiveMessage decodes a raw socket payload into a LiveAction. Malformed JSON or an
@@ -105,6 +110,9 @@ export function parseLiveMessage(raw: string): LiveAction {
     const data = JSON.parse(raw) as { type?: string; round_id?: string };
     if (data?.type === "scores_updated") {
       return { type: "scores_updated", roundId: data.round_id };
+    }
+    if (data?.type === "ping") {
+      return { type: "ping" };
     }
   } catch {
     // fall through to unknown

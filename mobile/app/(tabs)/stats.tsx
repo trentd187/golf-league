@@ -12,7 +12,8 @@
 // Data flow:
 //   1. GET /api/v1/rounds fetches all rounds the user is in (cached with the Rounds tab)
 //   2. Completed rounds are filtered to the active period
-//   3. Scorecards for those rounds are fetched in parallel via useQueries
+//   3. Scorecards are fetched in ONE batched GET /api/v1/users/:id/scorecards?last=N call
+//      (avoids the per-round fan-out — the FRONTEND-2 N+1), then filtered client-side
 //   4. caller_user_id (DB UUID returned by the API) identifies the caller's player entry
 //
 // ScoringCard, DirectionalMissCard, and PuttingCard live in components/StatCards.tsx
@@ -29,7 +30,7 @@ import {
   RefreshControl,
 } from "react-native";
 import { useAuth } from "@/hooks/useAuth";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
@@ -585,27 +586,32 @@ export default function StatsScreen() {
     return completedRounds.filter((r) => r.scheduled_date.startsWith(activeFilter));
   }, [completedRounds, activeFilter]);
 
-  // Fetch scorecards for the filtered rounds. React Query caches per round ID,
-  // so switching filters reuses previously loaded results without extra requests.
-  const scorecardQueries = useQueries({
-    queries: filteredRounds.map((round) => ({
-      queryKey: ["scorecard", round.id],
-      queryFn: async () => {
-        const token = await getToken();
-        const res = await apiFetch(`${API_URL}/api/v1/rounds/${round.id}/scorecard`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-        return res.json() as Promise<Scorecard>;
-      },
-      enabled: filteredRounds.length > 0,
-    })),
+  // Fetch the caller's completed-round scorecards in ONE batched request rather than
+  // fanning out a /rounds/:id/scorecard call per round (the FRONTEND-2 N+1). `last` is
+  // sized to the caller's full completed-round count (server-bounded to 200) so the
+  // All-Time / per-year filters aggregate every round, not just the most recent 20. We
+  // fetch once and filter client-side, so switching period filters never refetches.
+  const last = Math.min(Math.max(completedRounds.length, 1), 200);
+  const { data: userScorecards, isLoading: scorecardsLoading } = useQuery<Scorecard[]>({
+    queryKey: ["userScorecards", me?.id, last],
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/scorecards?last=${last}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to fetch scorecards: ${res.status}`);
+      return res.json();
+    },
+    enabled: !!me?.id && completedRounds.length > 0,
   });
 
-  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
-  const scorecards = scorecardQueries
-    .map((q) => q.data)
-    .filter((sc): sc is Scorecard => sc !== undefined);
+  // Narrow the batched scorecards to the active period. filteredRounds already encodes
+  // the filter, so a Set membership check keeps the downstream stat math unchanged.
+  const filteredRoundIds = useMemo(() => new Set(filteredRounds.map((r) => r.id)), [filteredRounds]);
+  const scorecards = useMemo(
+    () => (userScorecards ?? []).filter((sc) => filteredRoundIds.has(sc.round_id)),
+    [userScorecards, filteredRoundIds],
+  );
 
   const stats        = useMemo(() => buildMyStats(scorecards, filteredRounds),       [scorecards, filteredRounds]);
   const girBands     = useMemo(() => buildGirByBand(scorecards),                     [scorecards]);

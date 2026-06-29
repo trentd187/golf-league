@@ -73,8 +73,8 @@ invalidate rather than a second data path.
 `utils/liveUpdates.ts` (pure + unit-tested, since `hooks/` is coverage-excluded):
 
 - **Reconnect** with capped exponential **Full Jitter** (`nextReconnectDelay`, shared rationale
-  with the save retry path), giving up after `WS_RECONNECT.maxAttempts` (8) → `ws.gave_up` Issue,
-  then leaning on the 60s poll.
+  with the save retry path), giving up after `WS_RECONNECT.maxAttempts` (8) → `ws.gave_up` warning
+  log (not an Issue — the poll is the floor, so the user loses nothing), then leaning on the 60s poll.
 - **Catch-up:** every successful (re)connect invalidates `["scorecard", roundId]` so anything
   missed while disconnected is pulled immediately.
 - **Watchdog** (`isStaleConnection`, `WS_IDLE_MS` 60s): a socket silent past the idle window is
@@ -106,7 +106,7 @@ Every state transition emits a signal. If a transition isn't here, it isn't done
 | Client disconnected | backend | `ws.disconnected` info log + `reason` (client_close / pong_timeout / read_error) |
 | Disconnected | mobile | `ws.disconnected` warn log (code + reason) |
 | Reconnect attempt | mobile | `ws.reconnect_attempt` breadcrumb (attempt, delayMs) |
-| Reconnects exhausted | mobile | `ws.gave_up` **Issue** (`error_source:ws`, `ws_state:gave_up`) → poll fallback |
+| Reconnects exhausted | mobile | `ws.gave_up` **warn log** (`event:ws.gave_up`, `error_source:ws`, `ws_state:gave_up`) → poll fallback (not an Issue — user loses nothing) |
 | Slow consumer evicted | backend | `ws.send_dropped` warn log |
 | Hub broadcast buffer full | backend | `ws.broadcast_dropped` warn log |
 | Hub goroutine panic | backend | `ws.hub_panic` **Issue** via `sentry.Recover()` + auto-restart |

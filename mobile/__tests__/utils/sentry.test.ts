@@ -5,8 +5,21 @@
 // native module.
 
 import * as Sentry from "@sentry/react-native";
+
+// Mock expo-constants so initSentry sees build metadata in expoConfig.extra (the values
+// app.config.js bakes in at build time). appOwnership is provided because sentry.ts reads
+// it at module load to gate TTID instrumentation.
+jest.mock("expo-constants", () => ({
+  __esModule: true,
+  default: {
+    appOwnership: "standalone",
+    expoConfig: { extra: { commitSha: "testsha", appVariant: "preview" } },
+  },
+}));
+
 import {
   resolveSentryEnvironment,
+  resolveBuildTags,
   buildSentryOptions,
   syncSentryUser,
   reportQueryError,
@@ -39,6 +52,29 @@ describe("resolveSentryEnvironment", () => {
 
   it("falls back to production when no explicit value and __DEV__ is false", () => {
     expect(resolveSentryEnvironment(undefined, false)).toBe("production");
+  });
+});
+
+describe("resolveBuildTags", () => {
+  it("maps commitSha and appVariant into build_commit / app_variant tags", () => {
+    expect(
+      resolveBuildTags({ commitSha: "abc1234", appVariant: "preview" }),
+    ).toEqual({ build_commit: "abc1234", app_variant: "preview" });
+  });
+
+  it("omits tags whose values are missing, empty, or non-string", () => {
+    expect(resolveBuildTags({ commitSha: "abc1234" })).toEqual({
+      build_commit: "abc1234",
+    });
+    expect(resolveBuildTags({ commitSha: "", appVariant: "preview" })).toEqual({
+      app_variant: "preview",
+    });
+    expect(resolveBuildTags({ commitSha: 123, appVariant: null })).toEqual({});
+  });
+
+  it("returns an empty object when extra is undefined or null (local dev / Expo Go)", () => {
+    expect(resolveBuildTags(undefined)).toEqual({});
+    expect(resolveBuildTags(null)).toEqual({});
   });
 });
 
@@ -113,6 +149,25 @@ describe("buildSentryOptions", () => {
     });
     expect(Sentry.mobileReplayIntegration).toHaveBeenCalled();
     expect(Sentry.browserReplayIntegration).not.toHaveBeenCalled();
+  });
+
+  it("includes release only when provided (native omits it to keep the SDK auto-release)", () => {
+    const withRelease = buildSentryOptions({
+      dsn: undefined,
+      environment: "development",
+      isDev: false,
+      platformOS: "web",
+      release: "deadbeef",
+    });
+    expect(withRelease.release).toBe("deadbeef");
+
+    const withoutRelease = buildSentryOptions({
+      dsn: undefined,
+      environment: "production",
+      isDev: false,
+      platformOS: "android",
+    });
+    expect("release" in withoutRelease).toBe(false);
   });
 });
 
@@ -483,17 +538,19 @@ describe("reportWsLifecycle", () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it("captures an Issue tagged ws_state:gave_up when reconnects are exhausted", () => {
+  it("logs a warning (not an Issue) tagged ws.gave_up when reconnects are exhausted", () => {
     reportWsLifecycle("gave_up", { roundId: "r1", attempt: 8 });
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+    // The user loses nothing (the 60s poll is the floor), so gave_up is a searchable
+    // log, not an Issue — alert on the ws.gave_up facet instead.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("gave up"),
       expect.objectContaining({
-        level: "warning",
-        tags: expect.objectContaining({
-          error_source: "ws",
-          ws_state: "gave_up",
-        }),
-        extra: expect.objectContaining({ roundId: "r1", attempts: 8 }),
+        event: "ws.gave_up",
+        error_source: "ws",
+        ws_state: "gave_up",
+        roundId: "r1",
+        attempts: 8,
       }),
     );
   });
@@ -547,6 +604,11 @@ describe("addSaveBreadcrumb", () => {
 });
 
 describe("initSentry", () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_SENTRY_DSN;
+    delete process.env.EXPO_PUBLIC_SENTRY_RELEASE;
+  });
+
   it("initialises the SDK with the resolved options", () => {
     process.env.EXPO_PUBLIC_SENTRY_DSN = "https://x@o1.ingest.sentry.io/9";
     initSentry();
@@ -554,6 +616,18 @@ describe("initSentry", () => {
     const passed = (Sentry.init as jest.Mock).mock.calls[0][0];
     expect(passed.dsn).toBe("https://x@o1.ingest.sentry.io/9");
     expect(passed.enableLogs).toBe(true);
-    delete process.env.EXPO_PUBLIC_SENTRY_DSN;
+  });
+
+  it("passes EXPO_PUBLIC_SENTRY_RELEASE through as the release (web source-map match)", () => {
+    process.env.EXPO_PUBLIC_SENTRY_RELEASE = "deadbeef";
+    initSentry();
+    const passed = (Sentry.init as jest.Mock).mock.calls[0][0];
+    expect(passed.release).toBe("deadbeef");
+  });
+
+  it("tags every event with the build's commit + variant from expoConfig.extra", () => {
+    initSentry();
+    expect(Sentry.setTag).toHaveBeenCalledWith("build_commit", "testsha");
+    expect(Sentry.setTag).toHaveBeenCalledWith("app_variant", "preview");
   });
 });

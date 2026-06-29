@@ -63,6 +63,7 @@ module.exports = {
   mobileReplayIntegration: jest.fn(() => ({ name: "MobileReplay" })),
   browserReplayIntegration: jest.fn(() => ({ name: "BrowserReplay" })),
   setUser: jest.fn(),
+  setTag: jest.fn(),
   captureException: jest.fn(),
   captureMessage: jest.fn(),
   addBreadcrumb: jest.fn(),

@@ -36,17 +36,46 @@ ARG EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 # variables to enable error/trace/replay reporting from the browser.
 ARG EXPO_PUBLIC_SENTRY_DSN
 ARG EXPO_PUBLIC_SENTRY_ENVIRONMENT
+# Build-time source-map upload. RAILWAY_GIT_COMMIT_SHA is provided automatically by
+# Railway and is the git SHA we use as the web Sentry release — it both names the
+# uploaded artifact bundle and tags runtime events, so each deploy is distinguishable
+# and its stack traces symbolicate. SENTRY_AUTH_TOKEN / ORG / PROJECT are set as Railway
+# web-service build variables (the same secret EAS uses); when SENTRY_AUTH_TOKEN is empty
+# the upload step below is skipped, so local/CI smoke builds still work.
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG SENTRY_AUTH_TOKEN
+ARG SENTRY_ORG
+ARG SENTRY_PROJECT
 
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL
 ENV EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 ENV EXPO_PUBLIC_SENTRY_DSN=$EXPO_PUBLIC_SENTRY_DSN
 ENV EXPO_PUBLIC_SENTRY_ENVIRONMENT=$EXPO_PUBLIC_SENTRY_ENVIRONMENT
+# Inlined into the bundle so browser events report release=<sha>, matching the artifacts
+# uploaded below. buildSentryOptions omits release when this is empty (native/CI).
+ENV EXPO_PUBLIC_SENTRY_RELEASE=$RAILWAY_GIT_COMMIT_SHA
 
 # --clear flushes Metro's transform cache so every Railway build produces a
 # fresh bundle. Without it, BuildKit may cache the export layer and serve
 # stale output even when babel.config.js or metro.config.js change.
 RUN npx expo export --platform web --clear
+
+# Upload the web source maps to Sentry so browser stack traces are symbolicated instead
+# of showing minified frames (y(entry), Object.l, …). Metro already embeds debug IDs via
+# getSentryExpoConfig; `inject` reconciles them across the JS + maps, then `upload` ships
+# them under the release. We invoke the CLI via `npx --yes @sentry/cli` because the
+# pnpm install above ran with --ignore-scripts, so @sentry/cli's bundled binary was never
+# downloaded into node_modules. Guarded on SENTRY_AUTH_TOKEN so token-less builds skip it.
+ENV SENTRY_ORG=$SENTRY_ORG
+ENV SENTRY_PROJECT=$SENTRY_PROJECT
+ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
+RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
+      npx --yes @sentry/cli sourcemaps inject dist && \
+      npx --yes @sentry/cli sourcemaps upload --release "$RAILWAY_GIT_COMMIT_SHA" dist; \
+    else \
+      echo "SENTRY_AUTH_TOKEN unset — skipping web source-map upload"; \
+    fi
 
 # ── Stage 2: Serve ────────────────────────────────────────────────────────────
 # caddy:alpine is Go-based with a strong security track record and native env var

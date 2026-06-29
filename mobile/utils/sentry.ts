@@ -43,6 +43,27 @@ export function resolveSentryEnvironment(
   return isDev ? "development" : "production";
 }
 
+// resolveBuildTags maps the build metadata baked into app.config.js's `extra` block
+// (Constants.expoConfig.extra at runtime) into stable Sentry tags so every event can be
+// pinned to the exact build that produced it. `build_commit` is the git SHA of the build
+// (the EAS/Railway/CI commit), `app_variant` is the EAS profile (development|preview|
+// production). Pure and tolerant of a missing/partial `extra` (local dev, Expo Go) so it
+// stays inside the Jest coverage set; absent values are simply omitted.
+export function resolveBuildTags(
+  extra: Record<string, unknown> | undefined | null,
+): Record<string, string> {
+  const tags: Record<string, string> = {};
+  const commitSha = extra?.commitSha;
+  const appVariant = extra?.appVariant;
+  if (typeof commitSha === "string" && commitSha.length > 0) {
+    tags.build_commit = commitSha;
+  }
+  if (typeof appVariant === "string" && appVariant.length > 0) {
+    tags.app_variant = appVariant;
+  }
+  return tags;
+}
+
 // buildSentryOptions assembles the Sentry.init options object. Pure (it does not
 // call Sentry.init) so it can be unit-tested against a mocked SDK.
 export function buildSentryOptions(opts: {
@@ -50,8 +71,9 @@ export function buildSentryOptions(opts: {
   environment: string;
   isDev: boolean;
   platformOS: string;
+  release?: string;
 }): Sentry.ReactNativeOptions {
-  const { dsn, environment, isDev, platformOS } = opts;
+  const { dsn, environment, isDev, platformOS, release } = opts;
   const isWeb = platformOS === "web";
 
   // Preview is our pre-release league-testing channel: low volume, and event days
@@ -70,6 +92,12 @@ export function buildSentryOptions(opts: {
   return {
     dsn,
     environment,
+    // Spread `release` only when provided. On native the SDK auto-derives the release
+    // from the build's native version (e.g. com.…@1.0.0+12), and overriding it would
+    // break source-map matching — so we leave it undefined there. Web has no native
+    // version, so the Dockerfile.web export sets EXPO_PUBLIC_SENTRY_RELEASE to the git
+    // SHA (matching the maps uploaded by that build) and passes it through here.
+    ...(release ? { release } : {}),
     // First-party app — attach user email/IP. Sentry's recommended default.
     sendDefaultPii: true,
     // Route Sentry.logger.* records to Sentry Logs (searchable, no Issues quota).
@@ -367,10 +395,13 @@ export interface WsLifecycleContext {
 }
 
 // reportWsLifecycle routes a WebSocket lifecycle event to the right Sentry channel —
-// the mobile half of the WS observability matrix (backend/docs/websockets.md). Healthy
-// transitions are breadcrumbs/logs (no Issues noise); only "gave_up" (reconnects
-// exhausted → falling back to the poll) becomes a searchable Issue, because that's the
-// "realtime is unhealthy for this user" signal worth alerting on.
+// the mobile half of the WS observability matrix (backend/docs/websockets.md). Every
+// transition stays out of the Issues stream: healthy ones are breadcrumbs, and the
+// unhealthy "gave_up" (reconnects exhausted → falling back to the poll) is a searchable
+// warning *log* rather than an Issue. The user loses nothing when this fires — the 60s
+// poll is the floor — so it doesn't deserve an Issue; on web it was pure noise (the
+// now-fixed ws:// mixed-content bug), on mobile it's a benign cellular drop. Alert on the
+// `ws.gave_up` log facet instead.
 export function reportWsLifecycle(
   event: "connected" | "reconnect_attempt" | "disconnected" | "gave_up",
   ctx: WsLifecycleContext,
@@ -401,12 +432,14 @@ export function reportWsLifecycle(
       });
       break;
     case "gave_up":
-      Sentry.captureMessage(
+      Sentry.logger.warn(
         "WebSocket gave up reconnecting; falling back to the scorecard poll",
         {
-          level: "warning",
-          tags: { error_source: "ws", ws_state: "gave_up" },
-          extra: { roundId: ctx.roundId, attempts: ctx.attempt },
+          event: "ws.gave_up",
+          error_source: "ws",
+          ws_state: "gave_up",
+          roundId: ctx.roundId,
+          attempts: ctx.attempt,
         },
       );
       break;
@@ -450,7 +483,9 @@ export function addSaveBreadcrumb(ctx: SaveBreadcrumbContext): void {
 }
 
 // initSentry initialises the SDK once at app start. Reads runtime config from
-// EXPO_PUBLIC_* env vars (inlined into the bundle by Expo at build time).
+// EXPO_PUBLIC_* env vars (inlined into the bundle by Expo at build time) plus the build
+// metadata baked into app.config.js's `extra` block (Constants.expoConfig.extra), and
+// pins every event to the build that produced it via build_commit / app_variant tags.
 export function initSentry(): void {
   Sentry.init(
     buildSentryOptions({
@@ -461,6 +496,18 @@ export function initSentry(): void {
       ),
       isDev: __DEV__,
       platformOS: Platform.OS,
+      // Native: undefined → SDK keeps its auto-derived release. Web: the export sets
+      // this to the git SHA so events match the uploaded source maps.
+      release: process.env.EXPO_PUBLIC_SENTRY_RELEASE,
     }),
   );
+
+  // Tag every subsequent event with the exact build (git SHA + EAS variant). Done after
+  // init so the tags ride on all events; resolveBuildTags omits anything absent.
+  const buildTags = resolveBuildTags(
+    Constants.expoConfig?.extra as Record<string, unknown> | undefined,
+  );
+  for (const [key, value] of Object.entries(buildTags)) {
+    Sentry.setTag(key, value);
+  }
 }

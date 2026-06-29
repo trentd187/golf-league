@@ -20,7 +20,12 @@ WORKDIR /app
 RUN npm install -g pnpm
 
 # Copy lockfile first so dependency installation is cached separately from source.
-COPY package.json pnpm-lock.yaml ./
+# .npmrc MUST be copied here, before install — it sets node-linker=hoisted, which the
+# rest of the toolchain assumes. Without it pnpm uses its default symlinked layout, which
+# buries the transitive @sentry/cli (and its @sentry/cli-linux-x64 binary) under .pnpm/
+# where the source-map upload step below can't resolve it. (It used to be copied only by
+# `COPY . .` after install, so install ran symlinked and the upload step failed.)
+COPY package.json pnpm-lock.yaml .npmrc ./
 # --ignore-scripts skips the postinstall `lefthook install` step. The builder
 # stage has no git repo, so lefthook would fail. Git hooks are not needed for
 # a static web export.
@@ -67,11 +72,11 @@ RUN npx expo export --platform web --clear
 # them under the release. We invoke the CLI by running its node shim directly
 # (node_modules/@sentry/cli/bin/sentry-cli) rather than via `npx --yes @sentry/cli`: npx
 # re-resolved the scoped package instead of using the local install and ended up exec'ing a
-# bare `sentry-cli` off PATH (sh: sentry-cli: not found, exit 127). The shim resolves the
-# platform binary from @sentry/cli's optional dependency (@sentry/cli-linux-x64), which the
-# pnpm install above installs into node_modules even under --ignore-scripts — that flag only
-# skips the postinstall *fallback* download, which the optional-dep binary makes unnecessary.
-# Guarded on SENTRY_AUTH_TOKEN so token-less builds skip it.
+# bare `sentry-cli` off PATH (sh: sentry-cli: not found, exit 127). The hoisted layout (from
+# the .npmrc copied before install) puts @sentry/cli at the top level, and the shim resolves
+# its platform binary from the @sentry/cli-linux-x64 optional dependency — present even under
+# --ignore-scripts (that flag only skips the postinstall *fallback* download, which the
+# optional-dep binary makes unnecessary). Guarded on SENTRY_AUTH_TOKEN so token-less builds skip it.
 ENV SENTRY_ORG=$SENTRY_ORG
 ENV SENTRY_PROJECT=$SENTRY_PROJECT
 ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN

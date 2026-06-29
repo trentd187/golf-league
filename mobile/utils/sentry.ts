@@ -482,6 +482,22 @@ export function addSaveBreadcrumb(ctx: SaveBreadcrumbContext): void {
   });
 }
 
+// addStatFocusBreadcrumb records that an advanced-stat input received focus, with whether
+// it was editable at the time. The scorecard's only *typed* stat is Putts (FIR/GIR/OB are
+// taps), so a "couldn't edit putts" report is ambiguous between a real editability bug and
+// a keyboard-reachability issue (the field sitting under the on-screen keyboard). This
+// breadcrumb lands on the session replay and any captured event, so the trail shows whether
+// the field actually focused and its editable state — distinguishing the two. Info level:
+// it never opens an Issue on its own.
+export function addStatFocusBreadcrumb(field: string, editable: boolean): void {
+  Sentry.addBreadcrumb({
+    category: "scorecard",
+    level: "info",
+    message: `stat ${field} focused`,
+    data: { field, editable },
+  });
+}
+
 // initSentry initialises the SDK once at app start. Reads runtime config from
 // EXPO_PUBLIC_* env vars (inlined into the bundle by Expo at build time) plus the build
 // metadata baked into app.config.js's `extra` block (Constants.expoConfig.extra), and

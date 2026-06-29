@@ -27,6 +27,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Dimensions,
+  Platform,
 } from "react-native";
 // KeyboardAwareScrollView automatically lifts the focused input above the on-screen
 // keyboard and only insets the bottom while the keyboard is up — replacing the old
@@ -52,6 +53,7 @@ import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { addStatFocusBreadcrumb } from "@/utils/sentry";
 import {
   extractServerScores,
   scoresReconciled,
@@ -1771,6 +1773,20 @@ export default function ScorecardScreen() {
                                   }
                                 }}
                                 editable={canEditSelected}
+                                onFocus={() => {
+                                  // Diagnostic trail: "couldn't edit putts" is ambiguous
+                                  // between an editability bug and the field sitting under
+                                  // the keyboard. Record that it focused + its editable state.
+                                  addStatFocusBreadcrumb(field, canEditSelected);
+                                  // Native keyboard-reachability safeguard: KeyboardAwareScrollView
+                                  // usually lifts the focused input, but the bottom-most stat inputs
+                                  // (Putts is the only typed stat) could sit under the keyboard after
+                                  // the 6/23 migration dropped the manual scroll glue — nudge it into
+                                  // view. No-op on web (no on-screen keyboard).
+                                  if (Platform.OS !== "web") {
+                                    setTimeout(() => outerScrollRef.current?.scrollToEnd({ animated: true }), 150);
+                                  }
+                                }}
                                 value={holeStat[field] as string}
                                 onChangeText={(v) => {
                                   setStats((prev) => {

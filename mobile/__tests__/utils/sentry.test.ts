@@ -32,6 +32,7 @@ import {
   reportWsLifecycle,
   reportWsError,
   addSaveBreadcrumb,
+  addStatFocusBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
 
@@ -600,6 +601,26 @@ describe("addSaveBreadcrumb", () => {
     });
     const arg = (Sentry.addBreadcrumb as jest.Mock).mock.calls[0][0];
     expect(arg.level).toBe("error");
+  });
+});
+
+describe("addStatFocusBreadcrumb", () => {
+  it("records a scorecard breadcrumb with the field and editable state", () => {
+    addStatFocusBreadcrumb("putts", true);
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "scorecard",
+        level: "info",
+        message: "stat putts focused",
+        data: { field: "putts", editable: true },
+      }),
+    );
+  });
+
+  it("captures editable:false so a non-editable focus is visible in the trail", () => {
+    addStatFocusBreadcrumb("first_putt_distance", false);
+    const arg = (Sentry.addBreadcrumb as jest.Mock).mock.calls[0][0];
+    expect(arg.data).toEqual({ field: "first_putt_distance", editable: false });
   });
 });
 

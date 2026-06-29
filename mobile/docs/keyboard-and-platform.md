@@ -20,10 +20,18 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 Requirements: `<KeyboardProvider>` must wrap the app once at the root (`app/_layout.tsx`),
 and it's a native module (dev/preview build only — not Expo Go). See
 [dependencies.md](dependencies.md). This **supersedes** the old pattern of a static
-`paddingBottom` (≈320) plus a `scrollToEnd` ref call on `onFocus`. Field-to-field focus
-chaining (`blurOnSubmit`/`returnKeyType`/`onSubmitEditing` → `.focus()` the next ref) is
-unrelated and still used to keep the keyboard up while moving between inputs. Reference
+`paddingBottom` (≈320). Field-to-field focus chaining
+(`blurOnSubmit`/`returnKeyType`/`onSubmitEditing` → `.focus()` the next ref) is unrelated
+and still used to keep the keyboard up while moving between inputs. Reference
 implementation: `scorecard/[roundId].tsx`.
+
+> **Bottom-input safeguard.** After a field-reachability report (a user couldn't edit the
+> Putts input — the scorecard's only *typed* stat, on an Android build), a lightweight
+> `scrollToEnd` on the numeric stat inputs' `onFocus` was **re-added** as a belt-and-suspenders
+> for when `KeyboardAwareScrollView` under-lifts a bottom field. It is native-gated
+> (`Platform.OS !== "web"`) and pairs with an `addStatFocusBreadcrumb` diagnostic so a future
+> "couldn't edit" report shows in the replay/breadcrumb trail whether the field focused at all
+> and whether it was editable. Keep both until validated against a dev build.
 
 ## KeyboardAvoidingView — always handle both platforms
 
@@ -54,8 +62,9 @@ onSubmitEditing={() => {
 ```
 
 Keeping the focused field on screen is handled by `KeyboardAwareScrollView` (see the
-section above), so no `onFocus`/`onBlur` scroll glue is needed. See
-`scorecard/[roundId].tsx` numeric stat → score chaining for a full example.
+section above), with a lightweight `onFocus` `scrollToEnd` safeguard re-added on the numeric
+stat inputs (see the bottom-input safeguard note above). See `scorecard/[roundId].tsx`
+numeric stat → score chaining for a full example.
 
 ## Platform-split rendering
 

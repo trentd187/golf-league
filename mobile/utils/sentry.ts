@@ -381,6 +381,53 @@ export function addCreateBreadcrumb(ctx: SaveBreadcrumbContext): void {
   });
 }
 
+// ─── Scorecard re-sync reporting ────────────────────────────────────────────────
+
+// ScorecardMergeSkipContext describes a scorecard re-sync where the incoming server
+// snapshot was degraded — it collapsed to zero scores/stats while local state still held
+// data — and was therefore SKIPPED so the 3-way merge could not blank the screen. This is
+// the guard for Incident B ("stats disappeared" after an end→reactivate refetch/WS push).
+// Logged, not an Issue: the guard means the user lost nothing, but a rise in this facet
+// points at a backend/WS path returning empty payloads, so alert on scorecard.merge_skipped.
+export interface ScorecardMergeSkipContext {
+  roundId: string;
+  scoresDegraded: boolean;
+  statsDegraded: boolean;
+  localScoreCells: number;
+  localStatCells: number;
+}
+
+// reportScorecardMergeSkipped records a skipped degraded re-sync as a searchable warning Log.
+export function reportScorecardMergeSkipped(ctx: ScorecardMergeSkipContext): void {
+  Sentry.logger.warn("scorecard re-sync skipped: incoming server snapshot was degraded", {
+    event: "scorecard.merge_skipped",
+    roundId: ctx.roundId,
+    scores_degraded: ctx.scoresDegraded,
+    stats_degraded: ctx.statsDegraded,
+    local_score_cells: ctx.localScoreCells,
+    local_stat_cells: ctx.localStatCells,
+  });
+}
+
+// addScorecardLoadBreadcrumb records the size of each scorecard snapshot the screen syncs
+// (initial load, 60s poll, hole-change refetch, or WS push). A breadcrumb — not a per-poll
+// Log — so it stays cheap (1/min/user would spam Logs like the WS disconnect did) while
+// still riding along on any event that fires, giving the payload trail that shows when a
+// snapshot shrank toward empty right before something broke.
+export function addScorecardLoadBreadcrumb(ctx: {
+  roundId: string;
+  players: number;
+  scoreCells: number;
+  statCells: number;
+}): void {
+  Sentry.addBreadcrumb({
+    category: "scorecard",
+    level: "info",
+    message: `scorecard synced: ${ctx.players} players, ${ctx.scoreCells} scores, ${ctx.statCells} stats`,
+    data: ctx,
+  });
+}
+
 // ─── Live-update WebSocket reporting ────────────────────────────────────────────
 
 // WsLifecycleContext carries the per-event detail for the live-score WebSocket. The

@@ -1,7 +1,7 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, holeStatEntryEquals, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, holeStatEntryEquals, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
 import type { HoleStatEntry } from "@/utils/scorecard";
 import type { ScorecardPlayer } from "@/types/scorecard";
 
@@ -377,5 +377,52 @@ describe("threeWayMergeHandicaps", () => {
 
   it("flows in a saved handicap when local matched the old base", () => {
     expect(threeWayMergeHandicaps({ rp1: "" }, { rp1: "" }, { rp1: "9" })).toEqual({ rp1: "9" });
+  });
+});
+
+// ─── Degraded-snapshot guard (Incident B: stats "disappeared" after reactivate) ──
+
+describe("countScoreCells / countStatCells", () => {
+  it("count zero for an empty snapshot", () => {
+    expect(countScoreCells({})).toBe(0);
+    expect(countScoreCells({ rp1: {}, rp2: {} })).toBe(0);
+    expect(countStatCells({ rp1: {} })).toBe(0);
+  });
+
+  it("count populated cells across all players", () => {
+    expect(countScoreCells({ rp1: { 1: "4", 2: "5" }, rp2: { 1: "6" } })).toBe(3);
+    expect(countStatCells({ rp1: { 1: entry({ gir: "hit" }), 2: entry({ putts: "2" }) } })).toBe(2);
+  });
+});
+
+describe("incomingSnapshotIsDegraded", () => {
+  it("is true when a snapshot collapses to zero while local still holds data", () => {
+    expect(incomingSnapshotIsDegraded(30, 0)).toBe(true);
+  });
+
+  it("is false when both are empty (a genuinely empty round)", () => {
+    expect(incomingSnapshotIsDegraded(0, 0)).toBe(false);
+  });
+
+  it("is false on the first load (empty local, populated incoming)", () => {
+    expect(incomingSnapshotIsDegraded(0, 25)).toBe(false);
+  });
+
+  it("is false for a single-cell peer deletion (drops by one, not to zero)", () => {
+    expect(incomingSnapshotIsDegraded(30, 29)).toBe(false);
+  });
+});
+
+// This test documents the exact hazard the guard exists to prevent: when local equals
+// base (no unsaved edit) an EMPTY incoming makes threeWayMergeStats drop the cell — i.e.
+// a failed/partial refetch would blank the screen. The screen's effect must therefore use
+// incomingSnapshotIsDegraded to skip the merge instead of trusting such a snapshot.
+describe("threeWayMergeStats degraded-incoming hazard", () => {
+  it("WOULD delete a saved stat when incoming is empty and local == base (why the guard exists)", () => {
+    const saved = { rp1: { 1: entry({ gir: "hit", putts: "2" }) } };
+    // base == local (saved, no local edit), incoming collapsed to empty.
+    expect(threeWayMergeStats(saved, saved, { rp1: {} })).toEqual({ rp1: {} });
+    // The guard catches precisely this case:
+    expect(incomingSnapshotIsDegraded(countStatCells(saved), countStatCells({ rp1: {} }))).toBe(true);
   });
 });

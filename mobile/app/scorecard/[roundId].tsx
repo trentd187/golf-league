@@ -43,7 +43,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
 import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericStatField } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
@@ -54,7 +54,7 @@ import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
-import { addStatFocusBreadcrumb } from "@/utils/sentry";
+import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb } from "@/utils/sentry";
 import {
   extractServerScores,
   scoresReconciled,
@@ -554,16 +554,45 @@ export default function ScorecardScreen() {
     const incomingScores    = initScores(group.players);
     const incomingStats     = initStats(group.players);
     const incomingHandicaps = initHandicaps(group.players);
-    const baseScores    = serverScoresRef.current;
-    const baseStats     = serverStatsRef.current;
+
+    // Degraded-snapshot guard (Incident B): a failed/partial refetch or a thin WS push can
+    // deliver a snapshot that collapsed to empty. Feeding that to the 3-way merge would treat
+    // every unchanged cell as a peer deletion and blank out scores/stats the DB still has —
+    // the "stats disappeared after reactivate" bug. Guard scores and stats independently
+    // (a round can legitimately have scores but no stats), and read the live local counts
+    // from the refs so the check reflects what's actually on screen right now.
+    const localScoreCells = countScoreCells(scoresRef.current);
+    const localStatCells  = countStatCells(statsRef.current);
+    const scoresDegraded  = incomingSnapshotIsDegraded(localScoreCells, countScoreCells(incomingScores));
+    const statsDegraded   = incomingSnapshotIsDegraded(localStatCells, countStatCells(incomingStats));
+
+    addScorecardLoadBreadcrumb({
+      roundId,
+      players: group.players.length,
+      scoreCells: countScoreCells(incomingScores),
+      statCells: countStatCells(incomingStats),
+    });
+    if (scoresDegraded || statsDegraded) {
+      reportScorecardMergeSkipped({ roundId, scoresDegraded, statsDegraded, localScoreCells, localStatCells });
+    }
+
+    // Merge only the trustworthy halves. For a skipped half, keep the last-good base ref so
+    // the 3-way invariant (base = last real server snapshot) holds and the next good poll
+    // converges normally. Handicaps carry no "empty" state to degrade to, so they always merge.
+    if (!scoresDegraded) {
+      const baseScores = serverScoresRef.current;
+      setScores((local) => threeWayMergeScores(baseScores, local, incomingScores));
+      serverScoresRef.current = incomingScores;
+    }
+    if (!statsDegraded) {
+      const baseStats = serverStatsRef.current;
+      setStats((local) => threeWayMergeStats(baseStats, local, incomingStats));
+      serverStatsRef.current = incomingStats;
+    }
     const baseHandicaps = serverHandicapsRef.current;
-    setScores((local)    => threeWayMergeScores(baseScores, local, incomingScores));
-    setStats((local)     => threeWayMergeStats(baseStats, local, incomingStats));
     setHandicaps((local) => threeWayMergeHandicaps(baseHandicaps, local, incomingHandicaps));
-    serverScoresRef.current    = incomingScores;
-    serverStatsRef.current     = incomingStats;
     serverHandicapsRef.current = incomingHandicaps;
-  }, [group]);
+  }, [group, roundId]);
 
   // ── Handicap save ───────────────────────────────────────────────────────────
 

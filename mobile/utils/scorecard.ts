@@ -300,3 +300,39 @@ export function threeWayMergeHandicaps(
   }
   return out;
 }
+
+// ─── Degraded-snapshot guard (Incident B: stats "disappeared" after reactivate) ──
+// The 3-way merge's contract is that `incoming` is a trustworthy full server snapshot:
+// when a cell is unchanged locally (local == base) it takes `incoming`, so a *missing*
+// incoming cell is treated as a peer deletion and dropped. That's correct for a real
+// snapshot, but a failed/partial refetch or a thin WS push can deliver a snapshot that
+// collapsed to empty — and merging it blanks out scores/stats the DB (and the user) still
+// have. These helpers let the call site detect that case and skip the merge for the
+// affected half, keeping the last-good local state and base ref.
+
+// countScoreCells returns the number of populated gross-score cells across all players.
+export function countScoreCells(s: LocalScores): number {
+  let n = 0;
+  for (const pid of Object.keys(s)) n += Object.keys(s[pid]).length;
+  return n;
+}
+
+// countStatCells returns the number of populated hole-stat cells across all players.
+export function countStatCells(s: LocalStats): number {
+  let n = 0;
+  for (const pid of Object.keys(s)) n += Object.keys(s[pid]).length;
+  return n;
+}
+
+// incomingSnapshotIsDegraded returns true when a fresh server snapshot has collapsed to
+// zero populated cells while we still hold some locally — the signature of a failed/partial
+// refetch or a thin WS push, NOT a legitimate edit. A genuine single-cell peer deletion is
+// not degraded (the count drops by one, not to zero), so live peer updates still flow. The
+// tradeoff: a rare bulk clear of an entire group's card won't reflect until remount — an
+// acceptable price for never blanking data that is still committed server-side.
+export function incomingSnapshotIsDegraded(
+  localCells: number,
+  incomingCells: number,
+): boolean {
+  return localCells > 0 && incomingCells === 0;
+}

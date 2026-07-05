@@ -33,6 +33,8 @@ import {
   reportWsError,
   addSaveBreadcrumb,
   addStatFocusBreadcrumb,
+  reportScorecardMergeSkipped,
+  addScorecardLoadBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
 
@@ -621,6 +623,42 @@ describe("addStatFocusBreadcrumb", () => {
     addStatFocusBreadcrumb("first_putt_distance", false);
     const arg = (Sentry.addBreadcrumb as jest.Mock).mock.calls[0][0];
     expect(arg.data).toEqual({ field: "first_putt_distance", editable: false });
+  });
+});
+
+describe("reportScorecardMergeSkipped", () => {
+  it("logs a scorecard.merge_skipped warning with the degraded flags and cell counts", () => {
+    reportScorecardMergeSkipped({
+      roundId: "r1",
+      scoresDegraded: false,
+      statsDegraded: true,
+      localScoreCells: 12,
+      localStatCells: 30,
+    });
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: "scorecard.merge_skipped",
+        roundId: "r1",
+        scores_degraded: false,
+        stats_degraded: true,
+        local_score_cells: 12,
+        local_stat_cells: 30,
+      }),
+    );
+  });
+});
+
+describe("addScorecardLoadBreadcrumb", () => {
+  it("records a scorecard breadcrumb carrying the snapshot's player/score/stat counts", () => {
+    addScorecardLoadBreadcrumb({ roundId: "r1", players: 4, scoreCells: 40, statCells: 18 });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "scorecard",
+        level: "info",
+        data: { roundId: "r1", players: 4, scoreCells: 40, statCells: 18 },
+      }),
+    );
   });
 });
 

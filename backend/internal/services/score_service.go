@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/models"
@@ -646,6 +647,15 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 	if result.Error != nil {
 		return 0, fmt.Errorf("upsert scores: %w", result.Error)
 	}
+	// score.saved business event: confirms a score save actually landed server-side — the
+	// signal the 7/1 "stats weren't saving" report had no way to verify. Emitted at the
+	// commit site so Tier 2 service tests cover it; ctx carries the per-request Sentry hub.
+	slog.InfoContext(ctx, "Player scores saved",
+		"event_type_label", "score.saved",
+		"round_id", roundID.String(),
+		"round_player_id", roundPlayerID.String(),
+		"count", len(records),
+	)
 	return len(records), nil
 }
 
@@ -720,5 +730,13 @@ func (s *ScoreService) UpsertHoleStats(ctx context.Context, roundID, roundPlayer
 	if result.Error != nil {
 		return 0, fmt.Errorf("upsert hole stats: %w", result.Error)
 	}
+	// score.hole_stats_saved business event: the server-side confirmation a1steaksauce's
+	// 7/1 "stats not saving" report had no way to verify. Commit-site emit (Tier 2 covered).
+	slog.InfoContext(ctx, "Hole stats saved",
+		"event_type_label", "score.hole_stats_saved",
+		"round_id", roundID.String(),
+		"round_player_id", roundPlayerID.String(),
+		"count", len(records),
+	)
 	return len(records), nil
 }

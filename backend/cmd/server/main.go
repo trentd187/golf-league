@@ -107,6 +107,12 @@ func main() {
 	// follow sentryfiber so the per-request hub is on c.UserContext().
 	app.Use(middleware.ErrorLogger())
 
+	// RequestLogger emits a per-request access line (method, path, status, latency, caller)
+	// to stdout (Railway deploy logs) and Sentry Logs, escalating 4xx/5xx and slow requests
+	// to Warn. It closes the "empty http log stream" gap that left the 7/3 502 window
+	// undiagnosable. 2s is the slow threshold — above the 99th percentile of normal handlers.
+	app.Use(middleware.RequestLogger(2 * time.Second))
+
 	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
 	app.Get("/health", handlers.HealthCheck)
 

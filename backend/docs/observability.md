@@ -63,6 +63,23 @@ The `event_type_label` attr is a convention left over from the Loki era — it g
 
 Every handler records a server fault's root cause in `c.Locals("error_detail")` via its `write<Domain>Error` helper. [`internal/middleware/errorlog.go`](../internal/middleware/errorlog.go) is the **single consumer** of that value: registered right after `sentryfiber`, it inspects the final status after `c.Next()` and, for any 5xx, emits `slog.ErrorContext(..., "event_type_label", "http.error", ...)` — which lands as both a Sentry Issue and a searchable `level:error` / `event_type_label:http.error` log. Before it existed the legacy metrics middleware that read `error_detail` had been removed in the Sentry migration and not replaced, so non-panic 5xx faults produced **no** Issue and **no** log (only uncaught *panics* reached Sentry, via `fiberrecover`/`sentryfiber`). 4xx are expected client errors and are deliberately not logged. Keep `error_detail` populated for every 5xx in the `write*Error` helpers.
 
+## Access + slow-request logging (`middleware.RequestLogger`)
+
+[`internal/middleware/requestlog.go`](../internal/middleware/requestlog.go) logs one access line per request (`event_type_label:http.request`) with method, path, status, `latency_ms`, and `user_id`, to stdout (Railway deploy logs) **and** Sentry Logs. Healthy 2xx log at Info; **4xx/5xx and any request at/over the 2s slow threshold escalate to Warn** with `slow:true`. It exists because Railway's proxy `http` log stream was empty during the 7/3 502 incident, leaving no record of in-flight or slow requests while the backend went unresponsive (metrics showed the process alive but idle). It complements `ErrorLogger` (which still opens the Issue for 5xx) — this adds the latency + access trail as a searchable Log. A true hang never returns from `c.Next()` and so can't be logged here; that gap is closed by request timeouts + the `/health` DB ping.
+
+## Business events (service-layer emit)
+
+Business events are emitted at the **service commit site** via `slog.InfoContext(ctx, …)` — the handler passes `c.UserContext()`, so the per-request hub rides along. Emitting there (not the handler) keeps them covered by Tier 2 service tests and out of the handler coverage set. Stable facets:
+
+| `event_type_label` | Emitted by | Fires when |
+|---|---|---|
+| `round.status_changed` | `RoundService.Update` | a patch transitions status (start / end / **reactivate**) — carries `old_status`, `new_status`, `actor_user_id`, `event_id` |
+| `score.saved` | `ScoreService.UpsertScores` | a score upsert commits — carries `round_player_id`, `count` |
+| `score.hole_stats_saved` | `ScoreService.UpsertHoleStats` | a hole-stats upsert commits — carries `round_player_id`, `count` |
+| `event.status_changed` | `handlers/events.go` (handler-level, pre-existing) | an event's status changes |
+
+The absence of `round.status_changed` and the two `score.*` events is exactly what left the 7/1 stat-save and 7/2 end→reactivate incidents with no server-side trail.
+
 ## Idempotency-Key replay detection (`middleware.IdempotencyReplayLog`)
 
 The mobile client sends a stable `Idempotency-Key` per logical write, reused across its internal retries (`mobile/utils/saveWithRetry.ts` + `utils/idempotency.ts`). [`internal/middleware/idempotency.go`](../internal/middleware/idempotency.go) has **two** stores for the two failure modes:

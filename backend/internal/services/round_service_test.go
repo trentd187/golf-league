@@ -415,6 +415,49 @@ func TestRoundService_Update_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Championship Round", result.Round.Name)
 	assert.Equal(t, models.RoundStatusActive, result.Round.Status)
+	// StatusChanged drives the round.status_changed observability event (the signal the
+	// 7/2 end→reactivate incident lacked). A real transition sets it with old/new status.
+	assert.True(t, result.StatusChanged)
+	assert.Equal(t, models.RoundStatusScheduled, result.OldStatus)
+	assert.Equal(t, models.RoundStatusActive, result.NewStatus)
+}
+
+// TestRoundService_Update_StatusChangedFlag covers both directions the observability event
+// keys off: a real transition (active→completed "end", completed→active "reactivate") sets
+// StatusChanged, while a patch that leaves status untouched must not.
+func TestRoundService_Update_StatusChangedFlag(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	eventSvc := services.NewEventService(db)
+	svc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org9b")
+	event := seedEvent(t, eventSvc, organizer.ID)
+	course, tee := seedCourseWithTee(t, db, "Bridges")
+	scheduled := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+	ctx := context.Background()
+
+	// A name-only patch does not touch status → StatusChanged is false.
+	nameOnly, err := svc.Update(ctx, scheduled.Round.ID, organizer.ID, "user", services.UpdateRoundInput{
+		Name: strPtr("Week 9 - Bridges Front"),
+	})
+	require.NoError(t, err)
+	assert.False(t, nameOnly.StatusChanged, "a non-status edit must not report a status change")
+
+	// End the round: active first, then completed.
+	_, err = svc.Update(ctx, scheduled.Round.ID, organizer.ID, "user", services.UpdateRoundInput{Status: strPtr("active")})
+	require.NoError(t, err)
+	ended, err := svc.Update(ctx, scheduled.Round.ID, organizer.ID, "user", services.UpdateRoundInput{Status: strPtr("completed")})
+	require.NoError(t, err)
+	assert.True(t, ended.StatusChanged)
+	assert.Equal(t, models.RoundStatusActive, ended.OldStatus)
+	assert.Equal(t, models.RoundStatusCompleted, ended.NewStatus)
+
+	// Reactivate: completed → active (the 7/2 operation).
+	reactivated, err := svc.Update(ctx, scheduled.Round.ID, organizer.ID, "user", services.UpdateRoundInput{Status: strPtr("active")})
+	require.NoError(t, err)
+	assert.True(t, reactivated.StatusChanged)
+	assert.Equal(t, models.RoundStatusCompleted, reactivated.OldStatus)
+	assert.Equal(t, models.RoundStatusActive, reactivated.NewStatus)
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────

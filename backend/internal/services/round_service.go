@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -180,6 +181,13 @@ type ScheduleRoundResult struct {
 type RoundUpdateResult struct {
 	Round      models.Round
 	CourseName string
+	// StatusChanged is true when this patch actually transitioned the round's status
+	// (e.g. active→completed on "end", completed→active on "reactivate"). The handler
+	// uses it to emit the round.status_changed observability event — the signal whose
+	// absence made the 7/2 end→reactivate incident invisible.
+	StatusChanged bool
+	OldStatus     models.RoundStatus
+	NewStatus     models.RoundStatus
 }
 
 // MyRoundResult is one row in a GetMyRounds list.
@@ -622,6 +630,10 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		return RoundUpdateResult{}, fmt.Errorf("load round: %w", err)
 	}
 
+	// Capture the pre-patch status so the handler can emit round.status_changed only on a
+	// real transition (not on every unrelated field edit).
+	oldStatus := round.Status
+
 	if in.Name != nil {
 		round.Name = *in.Name
 	}
@@ -720,7 +732,34 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 
 	// Reload for the fresh course name after a potential course change.
 	s.DB.WithContext(ctx).Preload("Course").First(&round, "id = ?", roundID)
-	return RoundUpdateResult{Round: round, CourseName: round.Course.Name}, nil
+
+	statusChanged := in.Status != nil && oldStatus != round.Status
+	if statusChanged {
+		// round.status_changed business event — the signal whose absence made the 7/2
+		// end→reactivate incident invisible server-side. ctx is the request context
+		// (c.UserContext()), so this rides the per-request Sentry hub. Emitted at the
+		// commit site rather than the handler so it's covered by Tier 2 service tests.
+		eventID := ""
+		if round.EventID != nil {
+			eventID = round.EventID.String()
+		}
+		slog.InfoContext(ctx, "Round status changed",
+			"event_type_label", "round.status_changed",
+			"round_id", round.ID.String(),
+			"event_id", eventID,
+			"old_status", string(oldStatus),
+			"new_status", string(round.Status),
+			"actor_user_id", callerID.String(),
+		)
+	}
+
+	return RoundUpdateResult{
+		Round:         round,
+		CourseName:    round.Course.Name,
+		StatusChanged: statusChanged,
+		OldStatus:     oldStatus,
+		NewStatus:     round.Status,
+	}, nil
 }
 
 // Delete permanently removes a round. ON DELETE CASCADE removes groups and players.

@@ -50,6 +50,10 @@ Scorecard saves (scores, hole-stats, course handicap) do **not** go through TanS
 
 When a transport failure is *reconciled* (read-back confirms the write landed — the phantom-save deeper fix in [network-saves.md](network-saves.md)), `savePut` instead calls `reportSaveReconciled`: an **info** message tagged `error_source:save`, `save_outcome:reconciled`. That's the client-side phantom-save counter — chart it against `reportSaveFailure` (genuinely unrecovered) to see whether last-mile loss is worsening.
 
+## Scorecard re-sync guard (`scorecard.merge_skipped`)
+
+The scorecard merges each fresh server snapshot into local state with a 3-way merge ([utils/scorecard.ts](../utils/scorecard.ts)). If a refetch or a thin WS push returns a **degraded** snapshot (collapsed to zero scores/stats while local still holds data — a failed/partial fetch), feeding it to the merge would treat every unchanged cell as a peer deletion and blank the screen — the 7/2 "stats disappeared after reactivate" incident (Incident B). The screen's re-sync effect ([app/scorecard/[roundId].tsx](../app/scorecard/[roundId].tsx)) guards this with `incomingSnapshotIsDegraded` and, when it skips a degraded half, calls `reportScorecardMergeSkipped` — a **warning log** `event:scorecard.merge_skipped` carrying `scores_degraded` / `stats_degraded` / local cell counts. The user loses nothing (the guard keeps last-good local + base), so it's a Log, not an Issue; **alert on the `scorecard.merge_skipped` facet** to catch a backend/WS path returning empty payloads. Every re-sync also drops an `addScorecardLoadBreadcrumb` (`category:scorecard`) with the snapshot's player/score/stat counts — a cheap trail (not a per-poll Log) that shows on any event when a payload shrank toward empty.
+
 ## Live-score WebSocket
 
 The round live-update WebSocket reports its lifecycle through `reportWsLifecycle` /

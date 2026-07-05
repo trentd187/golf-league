@@ -78,7 +78,16 @@ export async function savePost<T = unknown>(opts: SavePostOptions<T>): Promise<T
     label: opts.label,
     profile: opts.retry ?? CREATE_SAVE,
     errorPrefix: "Create failed: HTTP",
-    parse: (res) => res.json() as Promise<T>,
+    // Most creates return the new row (id needed to navigate); some return 204 with no body
+    // (follow, request-join), which makes res.json() throw. Tolerate both — an empty/
+    // unparseable body resolves undefined so those callers don't need the response.
+    parse: async (res) => {
+      try {
+        return (await res.json()) as T;
+      } catch {
+        return undefined as T;
+      }
+    },
     // Surface the API's { error } message on a non-2xx so the user sees the real reason
     // (e.g. "scheduled_date required") instead of a bare status code.
     parseErrorMessage: async (res) => {

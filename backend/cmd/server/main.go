@@ -150,7 +150,10 @@ func main() {
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
 	api.Post("/events/:id/rounds", durableIdempotency, handlers.ScheduleEventRound(roundService))
 
-	api.Post("/events/:id/request-join", handlers.RequestJoinEvent(eventService))
+	// request-join is a non-idempotent create (RequestJoin returns ErrMemberAlreadyExists on a
+	// duplicate), so it needs durableIdempotency for the client's savePost retry to replay the
+	// original 2xx instead of surfacing "already a member" after a cellular phantom.
+	api.Post("/events/:id/request-join", durableIdempotency, handlers.RequestJoinEvent(eventService))
 	api.Get("/events/:id/join-requests", handlers.GetJoinRequests(eventService))
 	api.Patch("/events/:id/join-requests/:userId", handlers.HandleJoinRequest(eventService))
 
@@ -190,12 +193,14 @@ func main() {
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))
-	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(courseService))
+	// Course create is a non-idempotent insert; durableIdempotency (after the admin gate)
+	// lets savePost retry a cellular phantom without creating a duplicate course.
+	api.Post("/courses", middleware.RequireRole("admin"), durableIdempotency, handlers.CreateCourse(courseService))
 	api.Get("/courses/:courseId", handlers.GetCourse(courseService))
 	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(courseService))
 	api.Delete("/courses/:courseId", middleware.RequireRole("admin"), handlers.DeleteCourse(courseService))
 
-	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(courseService))
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), durableIdempotency, handlers.CreateTee(courseService))
 	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(courseService))
 	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(courseService))
 
@@ -204,7 +209,7 @@ func main() {
 
 	// External course import — search returns results without writing; import/refresh write to DB
 	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(courseService))
-	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(courseService))
+	api.Post("/courses/import-external", middleware.RequireRole("admin"), durableIdempotency, handlers.ImportExternalCourse(courseService))
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(courseService))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
@@ -220,7 +225,10 @@ func main() {
 	// screen feeds these to the client-side stat math instead of fanning out one
 	// /rounds/:id/scorecard per round (removes the FRONTEND-2 N+1).
 	api.Get("/users/:userId/scorecards", handlers.GetUserScorecards(scoreService))
-	api.Post("/users/:userId/follow", handlers.FollowUser(userService))
+	// Follow is a non-idempotent create (FollowUser returns ErrAlreadyFollowing on a duplicate);
+	// durableIdempotency lets the client's savePost retry replay the original 2xx. Unfollow
+	// (DELETE) is already idempotent, so it routes through savePut(DELETE) unwrapped.
+	api.Post("/users/:userId/follow", durableIdempotency, handlers.FollowUser(userService))
 	api.Delete("/users/:userId/follow", handlers.UnfollowUser(userService))
 	api.Get("/users", handlers.SearchUsers(userService))
 

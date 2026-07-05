@@ -22,6 +22,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge } from "@/components/badges";
 import { apiToDisplay } from "@/components/DateInput";
@@ -84,14 +85,14 @@ export default function PublicEventsScreen() {
   const requestJoinMutation = useMutation({
     mutationFn: async (eventId: string) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${eventId}/request-join`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+      // savePost: request-join is durable-idempotency wrapped on the backend, so a cellular
+      // phantom (commit + lost ack) retry replays the original 2xx instead of "already a member".
+      await savePost({
+        url: `${API_URL}/api/v1/events/${eventId}/request-join`,
+        token: token ?? "",
+        body: {},
+        label: "request-join",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
       return eventId;
     },
     onSuccess: (eventId) => {

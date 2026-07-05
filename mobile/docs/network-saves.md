@@ -44,6 +44,34 @@ await savePut({
 // try/catch still sets its UI error flag.
 ```
 
+## Every mutation goes through a helper — no raw `fetch`/`apiFetch` writes
+
+The chokepoint isn't just for scorecard `PUT`s. **Every state-mutating request in the app**
+routes through `savePut` (idempotent `PUT`/`PATCH`/`DELETE`) or `savePost`
+([`utils/savePost.ts`](../utils/savePost.ts), non-idempotent `POST` creates). Screens/components
+call `apiFetch` only for **reads**. This closed the remaining raw sites — round end/reactivate
+/edit/delete, group + member + team deletes, event edit/cancel/delete/role/join-request, course
+create/edit/delete/refresh, tee + hole authoring, request-join, and follow/unfollow.
+
+- **`savePut` method** is `PUT` (default), `PATCH`, or `DELETE`. `DELETE` is idempotent and
+  **404-tolerant**: a 404 on a retry means the row is already gone (a phantom delete whose ack
+  was lost, or a double-tap) — the goal state — so the core treats it as success. Pass
+  `body: undefined` on a `DELETE`.
+- **`parseErrorMessage: readApiErrorMessage`** on a user-facing idempotent mutation surfaces the
+  API's `{ error }` (e.g. "course is referenced by a round") instead of a generic
+  `Save failed: HTTP 409`. Background scorecard saves omit it (their failures are telemetry).
+- **`savePost`** parses the created row's JSON (id needed to navigate) but tolerates an empty
+  `204` body (follow, request-join) by resolving `undefined`.
+- **Follow/unfollow** shares one helper, [`utils/follow.ts`](../utils/follow.ts): unfollow →
+  `savePut(DELETE)`, follow → `savePost` (its route is durable-idempotency wrapped).
+- **Retrying a non-idempotent create is only safe where the backend dedupes it.** `savePost`'s
+  retry replays the original response via the durable `Idempotency-Key` store
+  ([`backend/internal/middleware/idempotency.go`](../../backend/internal/middleware/idempotency.go)).
+  Phase 2 wrapped the remaining create routes with `durableIdempotency` — `request-join`,
+  `POST /courses`, `POST /courses/:id/tees`, `import-external`, and `follow` — since each returns
+  an "already exists" error on a blind duplicate. Never route a create through `savePost` unless
+  its route is wrapped (or the handler is naturally idempotent).
+
 ## Retry profiles (documented, not arbitrary)
 
 Per the AWS Architecture Blog *Exponential Backoff And Jitter* and the FreeRTOS/AWS-IoT

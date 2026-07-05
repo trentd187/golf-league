@@ -19,6 +19,8 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { savePost } from "@/utils/savePost";
+import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import ModalHeader from "@/components/ModalHeader";
 import type { TeeDetail } from "@/types/courses";
 
@@ -97,35 +99,38 @@ export default function TeeForm({
     setSaving(true);
     try {
       const token = await getToken();
-      const url = isEdit
-        ? `${API_URL}/api/v1/courses/${courseId}/tees/${existing!.id}`
-        : `${API_URL}/api/v1/courses/${courseId}/tees`;
-      const method = isEdit ? "PATCH" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: {
-          Authorization:  `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name:          name.trim(),
-          course_rating: ratingNum,
-          slope_rating:  slopeNum,
-          par:           parNum,
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        Alert.alert("Error", (body as { error?: string }).error ?? "Could not save tee.");
-        return;
+      const body = {
+        name:          name.trim(),
+        course_rating: ratingNum,
+        slope_rating:  slopeNum,
+        par:           parNum,
+      };
+      if (isEdit) {
+        // savePut(PATCH): idempotent tee edit — retry + stable key + surfaced API error.
+        await savePut({
+          url: `${API_URL}/api/v1/courses/${courseId}/tees/${existing!.id}`,
+          token: token ?? "",
+          method: "PATCH",
+          body,
+          label: "tee-edit",
+          retry: FOREGROUND_SAVE,
+          parseErrorMessage: readApiErrorMessage,
+        });
+      } else {
+        // savePost: tee create is durable-idempotency wrapped (backend), so a phantom retry
+        // replays the original row instead of duplicating the tee. Was a raw fetch().
+        await savePost({
+          url: `${API_URL}/api/v1/courses/${courseId}/tees`,
+          token: token ?? "",
+          body,
+          label: "tee",
+        });
       }
 
       onSaved();
       onClose();
-    } catch {
-      Alert.alert("Error", "Check your connection and try again.");
+    } catch (err) {
+      Alert.alert("Error", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setSaving(false);
     }

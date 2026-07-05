@@ -70,6 +70,26 @@ describe("savePost — happy path", () => {
     expect(noSleep).not.toHaveBeenCalled();
     expect(opts.netInfoFetch).not.toHaveBeenCalled(); // lazy: failure-only
   });
+
+  it("resolves undefined when the create returns an empty body (204 — e.g. follow, request-join)", async () => {
+    // A 204 / empty body makes res.json() throw; savePost's empty-tolerant parse resolves
+    // undefined instead of erroring, so callers that don't need the row (follow) still succeed.
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: () => Promise.reject(new Error("Unexpected end of JSON input")),
+    });
+    const opts = baseOpts({
+      fetchImpl,
+      url: "http://localhost:8080/api/v1/users/u1/follow",
+      body: {},
+      label: "follow",
+    });
+
+    await expect(savePost(opts)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(opts.report).not.toHaveBeenCalled();
+  });
 });
 
 describe("savePost — idempotency key", () => {

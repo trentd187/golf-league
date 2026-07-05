@@ -25,6 +25,8 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
+import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import ModalHeader from "@/components/ModalHeader";
 import HoleDataGrid from "@/components/HoleDataGrid";
 import TeeForm from "@/components/TeeForm";
@@ -103,19 +105,20 @@ export default function CourseDetailScreen() {
   const editCourseMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/courses/${id}`, {
+      // savePut(PATCH): idempotent course edit — retry + stable key + surfaced API error.
+      await savePut({
+        url: `${API_URL}/api/v1/courses/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           name:  editName.trim(),
           city:  editCity.trim()  || undefined,
           state: editState.trim() || undefined,
-        }),
+        },
+        label: "course-edit",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? "Failed to update course");
-      }
     },
     onSuccess: () => {
       invalidateCourse();
@@ -129,19 +132,21 @@ export default function CourseDetailScreen() {
     setDeletingTeeId(tee.id);
     try {
       const token = await getToken();
-      const res = await fetch(
-        `${API_URL}/api/v1/courses/${id}/tees/${tee.id}`,
-        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        showAlert("Error", (body as { error?: string }).error ?? "Could not delete tee.");
-        return;
-      }
+      // savePut(DELETE): idempotent tee delete (404-as-success on retry). Was a raw fetch()
+      // with no retry, no timeout, and no telemetry — the weakest of the raw mutation sites.
+      await savePut({
+        url: `${API_URL}/api/v1/courses/${id}/tees/${tee.id}`,
+        token: token ?? "",
+        method: "DELETE",
+        body: undefined,
+        label: "tee-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
+      });
       if (expandedTeeId === tee.id) setExpandedTeeId(null);
       invalidateCourse();
-    } catch {
-      showAlert("Error", "Check your connection and try again.");
+    } catch (err) {
+      showAlert("Error", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setDeletingTeeId(null);
     }
@@ -164,20 +169,22 @@ export default function CourseDetailScreen() {
     setDeletingCourse(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses/${id}`, {
+      // savePut(DELETE): idempotent course delete (404-as-success on retry). A real 409 (the
+      // course is referenced by a round) still surfaces via the API message. Was a raw fetch().
+      await savePut({
+        url: `${API_URL}/api/v1/courses/${id}`,
+        token: token ?? "",
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        body: undefined,
+        label: "course-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        showAlert("Couldn't delete course", (body as { error?: string }).error ?? "Could not delete course.");
-        return;
-      }
       setEditCourseVisible(false);
       queryClient.invalidateQueries({ queryKey: ["courses"] });
       router.replace("/(tabs)/courses");
-    } catch {
-      showAlert("Error", "Check your connection and try again.");
+    } catch (err) {
+      showAlert("Couldn't delete course", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setDeletingCourse(false);
     }
@@ -198,19 +205,19 @@ export default function CourseDetailScreen() {
     setRefreshingCourse(true);
     try {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/courses/${id}/refresh`, {
-        method:  "POST",
-        headers: { Authorization: `Bearer ${token}` },
+      // savePost: refresh re-imports external data (idempotent — re-running updates the same
+      // course, creates no row), so retrying a cellular phantom is safe. savePost surfaces the
+      // API's { error } on a non-2xx via its built-in parseErrorMessage.
+      await savePost({
+        url: `${API_URL}/api/v1/courses/${id}/refresh`,
+        token: token ?? "",
+        body: {},
+        label: "course-refresh",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        showAlert("Refresh failed", (body as { error?: string }).error ?? "Could not refresh.");
-        return;
-      }
       invalidateCourse();
       showAlert("Refreshed", "Course data updated from external source.");
-    } catch {
-      showAlert("Refresh failed", "Check your connection and try again.");
+    } catch (err) {
+      showAlert("Refresh failed", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setRefreshingCourse(false);
     }

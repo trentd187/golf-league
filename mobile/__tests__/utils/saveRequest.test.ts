@@ -5,6 +5,7 @@
 
 import {
   savePut,
+  readApiErrorMessage,
   BACKGROUND_SAVE,
   FOREGROUND_SAVE,
 } from "@/utils/saveRequest";
@@ -80,6 +81,86 @@ describe("savePut — happy path", () => {
 
     await expect(savePut(opts)).resolves.toBeUndefined();
     expect(fetchImpl.mock.calls[0][1].method).toBe("PATCH");
+  });
+});
+
+describe("savePut — DELETE (idempotent, 404-tolerant)", () => {
+  it("issues a DELETE and resolves on 204 No Content", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: true, status: 204 });
+    const opts = baseOpts({
+      fetchImpl,
+      method: "DELETE",
+      url: "http://localhost:8080/api/v1/rounds/r1/groups/g1",
+      body: undefined,
+      label: "group-delete",
+    });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("treats a 404 as success (phantom delete already gone) — no retry, no report", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 404 });
+    const opts = baseOpts({
+      fetchImpl,
+      method: "DELETE",
+      body: undefined,
+      label: "group-delete",
+      retry: FOREGROUND_SAVE,
+    });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // 404 is success for DELETE — no retry
+    expect(opts.report).not.toHaveBeenCalled();
+  });
+
+  it("still surfaces a non-404 HTTP error on DELETE (e.g. 403 forbidden)", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 403 });
+    const opts = baseOpts({
+      fetchImpl,
+      method: "DELETE",
+      body: undefined,
+      label: "group-delete",
+      retry: FOREGROUND_SAVE,
+    });
+
+    await expect(savePut(opts)).rejects.toThrow();
+    expect(opts.report).toHaveBeenCalled();
+  });
+});
+
+describe("readApiErrorMessage", () => {
+  it("returns the API's { error } string", async () => {
+    const res = { json: async () => ({ error: "scheduled_date required" }) } as unknown as Response;
+    await expect(readApiErrorMessage(res)).resolves.toBe("scheduled_date required");
+  });
+
+  it("returns undefined when the body has no error field or isn't JSON", async () => {
+    const noField = { json: async () => ({}) } as unknown as Response;
+    await expect(readApiErrorMessage(noField)).resolves.toBeUndefined();
+    const notJson = { json: async () => { throw new Error("not json"); } } as unknown as Response;
+    await expect(readApiErrorMessage(notJson)).resolves.toBeUndefined();
+  });
+});
+
+describe("savePut — parseErrorMessage passthrough", () => {
+  it("surfaces the API error message on a non-2xx when parseErrorMessage is provided", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "name cannot be empty" }),
+    });
+    const opts = baseOpts({
+      fetchImpl,
+      method: "PATCH",
+      body: { name: "" },
+      label: "round-edit",
+      retry: FOREGROUND_SAVE,
+      parseErrorMessage: readApiErrorMessage,
+    });
+
+    await expect(savePut(opts)).rejects.toThrow("name cannot be empty");
   });
 });
 

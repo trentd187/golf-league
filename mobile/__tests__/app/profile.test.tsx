@@ -365,8 +365,7 @@ it("settings queryFn fetches from the correct endpoint with auth header", async 
   expect(result).toEqual({ fir_enabled: true, gir_enabled: true });
 });
 
-it("settings mutationFn PATCHes settings and onSuccess updates the query cache", async () => {
-  const { apiFetch } = require("@/utils/api");
+it("settings mutationFn PATCHes settings via savePut and onSuccess updates the query cache", async () => {
   const nextSettings = {
     fir_enabled: false, gir_enabled: true, putts_enabled: true,
     first_putt_distance_enabled: true, putt_distance_made_enabled: true,
@@ -374,10 +373,13 @@ it("settings mutationFn PATCHes settings and onSuccess updates the query cache",
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
   };
-  apiFetch.mockResolvedValue({
-    ok: true,
-    json: jest.fn().mockResolvedValue(nextSettings),
+  // The settings save now routes through savePut, which uses the global fetch (not apiFetch)
+  // and attaches a stable Idempotency-Key. Mock fetch ok so the single attempt resolves.
+  const mockFetch = jest.fn().mockResolvedValue({
+    ok: true, status: 200, json: jest.fn().mockResolvedValue(nextSettings),
   });
+  (globalThis as unknown as { fetch: jest.Mock }).fetch = mockFetch;
+
   const mockSetQueryData = jest.fn();
   // Override useQueryClient for this test to spy on setQueryData.
   const reactQuery = require("@tanstack/react-query");
@@ -387,15 +389,20 @@ it("settings mutationFn PATCHes settings and onSuccess updates the query cache",
   expect(mockCapturedMutationFn).toBeDefined();
   expect(mockCapturedOnSuccess).toBeDefined();
 
-  const data = await mockCapturedMutationFn!(nextSettings);
-  expect(apiFetch).toHaveBeenCalledWith(
+  await mockCapturedMutationFn!(nextSettings);
+  // savePut issues a PATCH to the settings endpoint with a bearer + Idempotency-Key.
+  expect(mockFetch).toHaveBeenCalledWith(
     expect.stringContaining("scorecard-settings"),
-    expect.objectContaining({ method: "PATCH" })
+    expect.objectContaining({
+      method: "PATCH",
+      headers: expect.objectContaining({ "Idempotency-Key": expect.any(String) }),
+    })
   );
-  expect(data).toEqual(nextSettings);
 
-  // onSuccess calls queryClient.setQueryData with the new settings.
-  mockCapturedOnSuccess!(nextSettings, nextSettings);
+  // onSuccess writes the new settings into the scorecardSettings cache (uses the variables,
+  // not the mutationFn's now-void return).
+  mockCapturedOnSuccess!(undefined, nextSettings);
+  expect(mockSetQueryData).toHaveBeenCalledWith(["scorecardSettings"], nextSettings);
 });
 
 // ─── Score position picker ─────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import type { HoleRow } from "@/types/courses";
 import {
   buildInitialEditRows,
@@ -96,28 +97,22 @@ export default function HoleDataGrid({
       const token = await getToken();
       const payload = editRowsToHolePayload(editRows);
 
-      const res = await fetch(
-        `${API_URL}/api/v1/courses/${courseId}/tees/${teeId}/holes`,
-        {
-          method:  "PUT",
-          headers: {
-            Authorization:  `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ holes: payload }),
-        },
-      );
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        Alert.alert("Save failed", (body as { error?: string }).error ?? "Could not save holes.");
-        return;
-      }
+      // savePut(PUT): the holes upsert is idempotent (replace-set per tee), so retry with a
+      // stable Idempotency-Key is safe. Was a raw fetch() with no retry/timeout/telemetry.
+      await savePut({
+        url: `${API_URL}/api/v1/courses/${courseId}/tees/${teeId}/holes`,
+        token: token ?? "",
+        method: "PUT",
+        body: { holes: payload },
+        label: "holes",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
+      });
 
       setEditing(false);
       onSaved?.();
-    } catch {
-      Alert.alert("Save failed", "Check your connection and try again.");
+    } catch (err) {
+      Alert.alert("Save failed", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setSaving(false);
     }

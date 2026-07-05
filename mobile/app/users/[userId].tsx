@@ -28,6 +28,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
+import { followOrUnfollow } from "@/utils/follow";
 import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 import HandicapSection from "@/components/HandicapSection";
@@ -141,13 +142,8 @@ export default function UserProfileScreen() {
   const followMutation = useMutation({
     mutationFn: async ({ following }: { following: boolean }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/follow`, {
-        method: following ? "DELETE" : "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok && res.status !== 204) {
-        throw new Error(`Failed to ${following ? "unfollow" : "follow"}: ${res.status}`);
-      }
+      // followOrUnfollow routes to savePut(DELETE) or savePost per direction (see utils/follow.ts).
+      await followOrUnfollow({ url: `${API_URL}/api/v1/users/${userId}/follow`, token: token ?? "", following });
     },
     onSuccess: (_, { following }) => {
       queryClient.setQueryData<UserProfile>(["user", userId], (prev) =>

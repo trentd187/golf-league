@@ -10,7 +10,10 @@
 // here and t.Setenv fully controls the environment each case sees.
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestFirstNonEmpty covers the fallback-chain helper used by every config value
 // that reads from more than one env var.
@@ -62,4 +65,59 @@ func TestLoad_SentryReleaseFallback(t *testing.T) {
 			t.Errorf("SentryRelease = %q, want empty", got)
 		}
 	})
+}
+
+// TestLoad_PoolAndTimeoutDefaults guards the DB-pool + request-timeout defaults added for
+// the availability hardening. The pool was previously unconfigured (Go's unlimited-open
+// default), which let the backend exhaust Railway Postgres and wedge — these defaults bound
+// and recycle it. An empty value resolves to the default (envInt reads "" as unset).
+func TestLoad_PoolAndTimeoutDefaults(t *testing.T) {
+	for _, k := range []string{
+		"DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS",
+		"DB_CONN_MAX_LIFETIME_SEC", "DB_CONN_MAX_IDLE_TIME_SEC", "REQUEST_TIMEOUT_SEC",
+	} {
+		t.Setenv(k, "")
+	}
+	cfg := Load()
+	if cfg.DBMaxOpenConns != 20 {
+		t.Errorf("DBMaxOpenConns = %d, want 20", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 10 {
+		t.Errorf("DBMaxIdleConns = %d, want 10", cfg.DBMaxIdleConns)
+	}
+	if cfg.DBConnMaxLifetime != 300*time.Second {
+		t.Errorf("DBConnMaxLifetime = %v, want 5m", cfg.DBConnMaxLifetime)
+	}
+	if cfg.DBConnMaxIdleTime != 300*time.Second {
+		t.Errorf("DBConnMaxIdleTime = %v, want 5m", cfg.DBConnMaxIdleTime)
+	}
+	if cfg.RequestTimeout != 30*time.Second {
+		t.Errorf("RequestTimeout = %v, want 30s", cfg.RequestTimeout)
+	}
+}
+
+func TestLoad_PoolAndTimeoutOverrides(t *testing.T) {
+	t.Setenv("DB_MAX_OPEN_CONNS", "50")
+	t.Setenv("DB_CONN_MAX_LIFETIME_SEC", "120")
+	t.Setenv("REQUEST_TIMEOUT_SEC", "15")
+
+	cfg := Load()
+	if cfg.DBMaxOpenConns != 50 {
+		t.Errorf("DBMaxOpenConns = %d, want 50", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBConnMaxLifetime != 120*time.Second {
+		t.Errorf("DBConnMaxLifetime = %v, want 120s", cfg.DBConnMaxLifetime)
+	}
+	if cfg.RequestTimeout != 15*time.Second {
+		t.Errorf("RequestTimeout = %v, want 15s", cfg.RequestTimeout)
+	}
+}
+
+// TestLoad_UnparseablePoolValueFallsBackToDefault covers the envInt guard: a garbage value
+// must not panic or zero the pool (0 = unlimited again) — it falls back to the default.
+func TestLoad_UnparseablePoolValueFallsBackToDefault(t *testing.T) {
+	t.Setenv("DB_MAX_OPEN_CONNS", "not-a-number")
+	if got := Load().DBMaxOpenConns; got != 20 {
+		t.Errorf("DBMaxOpenConns = %d, want 20 (fallback)", got)
+	}
 }

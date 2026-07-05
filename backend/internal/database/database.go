@@ -2,6 +2,8 @@
 package database
 
 import (
+	"time"
+
 	"github.com/golang-migrate/migrate/v4"
 	// Blank imports register side-effect drivers with the migrate library.
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -11,9 +13,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// Connect opens a GORM database handle using the given DSN (connection string).
-func Connect(dsn string) (*gorm.DB, error) {
-	return gorm.Open(postgres.Open(dsn), &gorm.Config{})
+// PoolConfig bounds the database/sql connection pool. Without it Go defaults to UNLIMITED
+// open connections and no lifetime, which let the backend exhaust Railway Postgres's
+// connection cap under a live round and wedge (goroutines parked waiting for a connection).
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+}
+
+// Connect opens a GORM database handle using the given DSN and applies the pool bounds.
+func Connect(dsn string, pool PoolConfig) (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(pool.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(pool.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(pool.ConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(pool.ConnMaxIdleTime)
+	return db, nil
 }
 
 // RunMigrations applies any pending "up" migrations from the migrations/ directory.

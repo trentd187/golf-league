@@ -40,9 +40,19 @@ func main() {
 	defer sentryShutdown()
 	slog.SetDefault(logger)
 
-	db, err := database.Connect(cfg.DatabaseURL)
+	db, err := database.Connect(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+	})
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
+	}
+	// sqlDB is the pooled *sql.DB behind GORM — used by the /health readiness ping.
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal("Failed to access database handle:", err)
 	}
 
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
@@ -82,6 +92,12 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
+		// IdleTimeout closes idle keep-alive connections so a churn of half-open sockets
+		// (the cellular case) doesn't accumulate. ReadTimeout/WriteTimeout are intentionally
+		// left unset: WriteTimeout would break the long-lived live-score WebSocket, and the
+		// meaningful bound on slow work is the per-request context deadline (RequestTimeout
+		// on the /api/v1 group), which turns a hung DB query into a fast, logged 5xx.
+		IdleTimeout: 60 * time.Second,
 	})
 
 	// fiberrecover catches any panics in middleware or handlers and returns 500 instead
@@ -113,12 +129,16 @@ func main() {
 	// undiagnosable. 2s is the slow threshold — above the 99th percentile of normal handlers.
 	app.Use(middleware.RequestLogger(2 * time.Second))
 
-	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
-	app.Get("/health", handlers.HealthCheck)
+	// GET /health — readiness probe for Railway and load balancers: no auth, but it pings the
+	// DB so a wedged connection pool surfaces as a 503 instead of a false 200 (the 7/3 mode).
+	app.Get("/health", handlers.HealthCheck(sqlDB))
 
-	// All routes under /api/v1 require a valid Supabase JWT.
+	// All routes under /api/v1 require a valid Supabase JWT. RequestTimeout runs first so
+	// every handler's context carries a deadline — a hung DB query fails fast into a logged
+	// 5xx instead of a silent 502. The live-score WebSocket is registered on `app` (below),
+	// outside this group, so its long-lived connection is exempt from the deadline.
 	// app.Group applies the middleware to every route registered on the returned group.
-	api := app.Group("/api/v1", middleware.Auth(cfg, db))
+	api := app.Group("/api/v1", middleware.RequestTimeout(cfg.RequestTimeout), middleware.Auth(cfg, db))
 
 	// durableIdempotency makes the non-idempotent POST creates it wraps safe to retry on
 	// a flaky cellular link: a repeat bearing the same Idempotency-Key replays the

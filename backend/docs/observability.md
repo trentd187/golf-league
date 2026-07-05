@@ -80,6 +80,39 @@ Business events are emitted at the **service commit site** via `slog.InfoContext
 
 The absence of `round.status_changed` and the two `score.*` events is exactly what left the 7/1 stat-save and 7/2 end→reactivate incidents with no server-side trail.
 
+## Backend availability — DB pool, request timeout, `/health` (the 7/3 502 hardening)
+
+The 7/3 incident was a ~10-minute window of proxy `502`s while Railway metrics showed the
+process alive and idle (low CPU/mem) — a wedged backend, not a crash. Root cause: the DB
+connection pool was **unconfigured**, so Go defaulted to UNLIMITED open connections with no
+lifetime; under a live round the backend could exceed Railway Postgres's connection cap and
+park every goroutine waiting for a connection. Four changes bound, recover, and expose it:
+
+- **Bounded, recycled pool** — [`internal/database/database.go`](../internal/database/database.go)
+  `Connect(dsn, PoolConfig)` applies `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/
+  `SetConnMaxIdleTime` (defaults 20 / 10 / 5m / 5m; env `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`,
+  `DB_CONN_MAX_LIFETIME_SEC`, `DB_CONN_MAX_IDLE_TIME_SEC`). The lifetime recycles a
+  Railway-proxy-dropped connection instead of handing it to a request that then hangs on it.
+- **Per-request timeout** — [`internal/middleware/requesttimeout.go`](../internal/middleware/requesttimeout.go)
+  on the `/api/v1` group (env `REQUEST_TIMEOUT_SEC`, default 30) bounds `c.UserContext()` so a
+  hung query aborts with `context.DeadlineExceeded` → a service error → a **logged 5xx that
+  reaches Sentry**, not a silent 502. The live-score WebSocket is registered on `app` (outside
+  the group), so its long-lived connection is exempt.
+- **DB-aware `/health`** — [`internal/handlers/health.go`](../internal/handlers/health.go) pings
+  the DB (2s timeout) and returns `503` + logs `event_type_label:health.db_unreachable` (an
+  Issue-level event) on failure. Previously `/health` ignored the DB and returned `200` while
+  every real request 502'd, so Railway kept routing into the stuck backend. **Alert on the
+  `health.db_unreachable` facet, and add a Sentry uptime monitor against the `/health` URL,** so
+  the next DB/pool outage pages instead of surfacing via user reports.
+- **`IdleTimeout: 60s`** on the Fiber server closes idle keep-alive sockets. `ReadTimeout`/
+  `WriteTimeout` are deliberately unset — `WriteTimeout` would break the long-lived WebSocket.
+
+The WebSocket **hub + connection pumps** ([`internal/websocket/`](../internal/websocket/)) were
+audited and left unchanged: the hub snapshots targets under RLock then sends non-blocking (a slow
+client is evicted, never blocking others), the broadcast buffer drops-and-logs when full, and each
+connection carries read/write deadlines, a ping/pong + app-level heartbeat, coordinated goroutine
+shutdown, and `sentry.Recover()`. It was not a contributor to the 502s.
+
 ## Idempotency-Key replay detection (`middleware.IdempotencyReplayLog`)
 
 The mobile client sends a stable `Idempotency-Key` per logical write, reused across its internal retries (`mobile/utils/saveWithRetry.ts` + `utils/idempotency.ts`). [`internal/middleware/idempotency.go`](../internal/middleware/idempotency.go) has **two** stores for the two failure modes:

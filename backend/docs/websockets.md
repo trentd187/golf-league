@@ -91,6 +91,20 @@ the server echoes them back. Without this, other players' scores only appeared o
 - **Reconnect** with capped exponential **Full Jitter** (`nextReconnectDelay`, shared rationale
   with the save retry path), giving up after `WS_RECONNECT.maxAttempts` (8) → `ws.gave_up` warning
   log (not an Issue — the poll is the floor, so the user loses nothing), then leaning on the 60s poll.
+- **Reconnect-storm guards** (added after a 7/3 web/Safari session logged 50 disconnects in 20
+  minutes — a socket that opened then immediately closed, worsened by a briefly-unreachable
+  backend). Three pure gates bound it:
+  - **Floor** (`WS_RECONNECT.floorMs` 1s): Full Jitter alone is `random(0, ceiling)` with no lower
+    bound, so early attempts could fire back-to-back; the floor guarantees minimum spacing.
+  - **Stability gate** (`connectionWasStable`, `minStableMs` 10s): `onopen` no longer resets the
+    attempt counter — a flap that opens then closes within 10s would otherwise pin it at attempt 0
+    forever and never reach the give-up cap. The counter resets only when a connection actually
+    held (checked in `onclose`), so a flapping socket climbs to `gave_up` and stops.
+  - **Give-up cooldown** (`shouldAttemptAfterGaveUp`, `gaveUpCooldownMs` 60s): after giving up, a
+    foreground (AppState) or network-regained (NetInfo) event must wait out the cooldown before
+    restarting, so app-switching can't re-trigger the whole storm.
+  - **Log sampling** (`shouldSampleDisconnect`): the `ws.disconnected` log keeps the first 3 of a
+    storm then every 10th, so a persistent flap stays visible without flooding Sentry Logs.
 - **Catch-up:** every successful (re)connect invalidates `["scorecard", roundId]` so anything
   missed while disconnected is pulled immediately.
 - **Watchdog** (`isStaleConnection`, `WS_IDLE_MS` 60s): a socket silent past the idle window is
@@ -109,7 +123,7 @@ the server echoes them back. Without this, other players' scores only appeared o
 | `wsPingInterval` | server | 30s | Proactively probe the link; well under any idle proxy timeout. |
 | `wsPongWait` | server | 45s | Read deadline; > ping interval so one dropped pong isn't fatal, but reaps a dead phone fast. |
 | `wsWriteWait` | server | 10s | Bound a single stuck write. |
-| `WS_RECONNECT` | mobile | base 1s, cap 30s, Full Jitter, maxAttempts 8 | Recover quickly, back off, then give up to the poll. |
+| `WS_RECONNECT` | mobile | base 1s, cap 30s, floor 1s, Full Jitter, maxAttempts 8, minStable 10s, gaveUpCooldown 60s | Recover quickly, back off with a floor so a flap can't storm, give up after 8, then hold off 60s before a foreground/network event restarts. |
 | `WS_IDLE_MS` | mobile | 60s | No traffic ⇒ assume half-open and recycle. |
 
 ## Observability matrix

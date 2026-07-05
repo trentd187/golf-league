@@ -15,6 +15,18 @@ import { fullJitterDelay } from "@/utils/withRetry";
 export const WS_RECONNECT = {
   baseMs: 1_000,
   capMs: 30_000,
+  // floorMs: full jitter alone is random(0, ceiling) — no lower bound — so early attempts
+  // can fire back-to-back. On a socket that opens then immediately closes (the web/Safari
+  // case, worsened by a briefly-unreachable backend) that is a reconnect storm; the floor
+  // guarantees a minimum spacing between attempts (the 7/3 session logged 50 disconnects/20m).
+  floorMs: 1_000,
+  // minStableMs: a connection must hold at least this long before its open is treated as a
+  // real success that resets the attempt counter. Without this, a flapping socket resets to
+  // attempt 0 on every brief open and NEVER reaches maxAttempts — an unbounded storm.
+  minStableMs: 10_000,
+  // gaveUpCooldownMs: after giving up (maxAttempts failed → poll fallback), a foreground or
+  // network-regained event must not immediately restart a full storm. Wait this long first.
+  gaveUpCooldownMs: 60_000,
   maxAttempts: 8, // after this many failed reconnects, give up and lean on the 60s poll
 } as const;
 
@@ -61,16 +73,54 @@ export function buildWsUrl(
 }
 
 // nextReconnectDelay returns the ms to wait before reconnect attempt `attempt`
-// (zero-based: 0 = the wait after the first disconnect). rng is injectable for tests.
+// (zero-based: 0 = the wait after the first disconnect). Full-Jitter with a floor so a
+// flapping socket can't reconnect faster than floorMs. rng is injectable for tests.
 export function nextReconnectDelay(
   attempt: number,
   rng: () => number = Math.random,
 ): number {
-  return fullJitterDelay(
+  const jittered = fullJitterDelay(
     attempt,
     { baseMs: WS_RECONNECT.baseMs, capMs: WS_RECONNECT.capMs },
     rng,
   );
+  return Math.max(WS_RECONNECT.floorMs, jittered);
+}
+
+// connectionWasStable reports whether a connection that stayed open for openMs held long
+// enough to count as a real success — the gate for resetting the reconnect-attempt counter.
+// A socket that opens then closes within minStableMs never truly connected, so resetting on
+// its open would pin the storm at attempt 0 forever (never reaching the give-up cap).
+export function connectionWasStable(
+  openMs: number,
+  minStableMs: number = WS_RECONNECT.minStableMs,
+): boolean {
+  return openMs >= minStableMs;
+}
+
+// shouldAttemptAfterGaveUp gates a reconnect triggered by a foreground/network-regained
+// event after the hook already gave up: it must wait out a cooldown so those events can't
+// immediately restart a full storm. A null lastGaveUpAt means we haven't given up — allow it.
+export function shouldAttemptAfterGaveUp(
+  lastGaveUpAt: number | null,
+  now: number,
+  cooldownMs: number = WS_RECONNECT.gaveUpCooldownMs,
+): boolean {
+  if (lastGaveUpAt === null) return true;
+  return now - lastGaveUpAt >= cooldownMs;
+}
+
+// shouldSampleDisconnect decides whether to LOG a given disconnect. The log fired once per
+// close, which flooded Sentry Logs during a storm (50 in one 20-minute session). Keep the
+// first `keepFirst` (so the onset is visible) and then every `everyNth`, so a persistent
+// storm stays observable without drowning the timeline. count is 1-based per session.
+export function shouldSampleDisconnect(
+  count: number,
+  keepFirst = 3,
+  everyNth = 10,
+): boolean {
+  if (count <= keepFirst) return true;
+  return count % everyNth === 0;
 }
 
 // ShouldReconnectParams: the state that decides whether to try reconnecting.

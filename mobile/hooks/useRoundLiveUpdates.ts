@@ -25,6 +25,9 @@ import {
   shouldReconnect,
   parseLiveMessage,
   isStaleConnection,
+  connectionWasStable,
+  shouldAttemptAfterGaveUp,
+  shouldSampleDisconnect,
   WS_IDLE_MS,
 } from "@/utils/liveUpdates";
 import { reportWsLifecycle, reportWsError } from "@/utils/sentry";
@@ -41,12 +44,18 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
   getTokenRef.current = getToken;
 
   const socketRef = useRef<WebSocket | null>(null);
-  const attemptRef = useRef(0); // reconnect attempts since the last successful open
+  const attemptRef = useRef(0); // reconnect attempts since the last STABLE open
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageAtRef = useRef(Date.now());
   const unmountedRef = useRef(false);
   const gaveUpRef = useRef(false);
+  // openedAtRef stamps each onopen so onclose can tell a real (stable) connection from a
+  // flap. lastGaveUpAtRef drives the post-give-up cooldown. disconnectCountRef samples the
+  // disconnect log so a storm doesn't flood Sentry (50 in one 20-min session on 7/3).
+  const openedAtRef = useRef(0);
+  const lastGaveUpAtRef = useRef<number | null>(null);
+  const disconnectCountRef = useRef(0);
 
   useEffect(() => {
     if (!roundId) return;
@@ -54,6 +63,9 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
     unmountedRef.current = false;
     gaveUpRef.current = false;
     attemptRef.current = 0;
+    openedAtRef.current = 0;
+    lastGaveUpAtRef.current = null;
+    disconnectCountRef.current = 0;
 
     const clearReconnectTimer = () => {
       if (reconnectTimerRef.current) {
@@ -90,6 +102,7 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       ) {
         if (!unmountedRef.current && !gaveUpRef.current) {
           gaveUpRef.current = true;
+          lastGaveUpAtRef.current = Date.now(); // start the cooldown before any restart
           reportWsLifecycle("gave_up", { roundId, attempt: attemptRef.current });
         }
         return;
@@ -135,7 +148,11 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       socketRef.current = socket;
 
       socket.onopen = () => {
-        attemptRef.current = 0;
+        // Do NOT reset attemptRef here: a socket that opens then immediately closes (the
+        // web/Safari flap) would otherwise pin the counter at 0 forever and never reach the
+        // give-up cap — an unbounded reconnect storm. attemptRef resets only when a
+        // connection proves STABLE (held ≥ minStableMs), decided in onclose below.
+        openedAtRef.current = Date.now();
         gaveUpRef.current = false;
         lastMessageAtRef.current = Date.now();
         reportWsLifecycle("connected", { roundId });
@@ -160,11 +177,23 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       socket.onclose = (event) => {
         if (socketRef.current === socket) socketRef.current = null;
         if (unmountedRef.current) return;
-        reportWsLifecycle("disconnected", {
-          roundId,
-          code: event?.code,
-          reason: event?.reason,
-        });
+        // A connection that held long enough was a real success: reset the attempt counter,
+        // clear the give-up cooldown, and start a fresh disconnect-log epoch. A flap leaves
+        // them alone so the counter climbs toward the cap (bounding the storm).
+        const openMs = Date.now() - openedAtRef.current;
+        if (connectionWasStable(openMs)) {
+          attemptRef.current = 0;
+          lastGaveUpAtRef.current = null;
+          disconnectCountRef.current = 0;
+        }
+        disconnectCountRef.current += 1;
+        if (shouldSampleDisconnect(disconnectCountRef.current)) {
+          reportWsLifecycle("disconnected", {
+            roundId,
+            code: event?.code,
+            reason: event?.reason,
+          });
+        }
         scheduleReconnect();
       };
     };
@@ -183,6 +212,9 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
     // and let onopen's catch-up invalidate pull any missed scores.
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active" && !socketRef.current && !unmountedRef.current) {
+        // After giving up, a foreground event must wait out the cooldown before restarting —
+        // otherwise app-switching on web/Safari re-triggers the whole reconnect storm.
+        if (!shouldAttemptAfterGaveUp(lastGaveUpAtRef.current, Date.now())) return;
         attemptRef.current = 0;
         gaveUpRef.current = false;
         void connect();
@@ -195,6 +227,8 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
     const netInfoUnsub = NetInfo.addEventListener((state) => {
       if (unmountedRef.current) return;
       if (state.isConnected && !socketRef.current) {
+        // Same cooldown gate as foreground: a network-regained blip must not restart a storm.
+        if (!shouldAttemptAfterGaveUp(lastGaveUpAtRef.current, Date.now())) return;
         attemptRef.current = 0;
         gaveUpRef.current = false;
         void connect();

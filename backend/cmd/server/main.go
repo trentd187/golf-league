@@ -15,7 +15,6 @@ import (
 
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
 	"github.com/trentd187/golf-league/internal/config"
@@ -104,7 +103,9 @@ func main() {
 	// of crashing the server process. Must be registered first so it wraps everything.
 	app.Use(fiberrecover.New())
 
-	app.Use(cors.New())
+	// Explicit CORS allow-list (incl. Idempotency-Key + Sentry tracing headers) so the web
+	// build's preflight can't silently strip them. See middleware/cors.go.
+	app.Use(middleware.CORS())
 
 	// sentryfiber installs a per-request Sentry Hub on c.Context() so handlers can
 	// call sentryfiber.GetHubFromContext(c) and capture exceptions, set tags, or

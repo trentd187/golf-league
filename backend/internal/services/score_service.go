@@ -595,6 +595,15 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 	}
 
 	if round.RequiresHandicap && rp.CourseHandicap == nil {
+		// A player couldn't save scores because the round requires a handicap they haven't
+		// set — a real UX block that was invisible (the 422 is a client error, not an Issue).
+		// A warn log with a stable facet makes handicap friction chartable/alertable without
+		// polluting Issues. Note the score/hole-stats asymmetry: hole-stats have no such gate.
+		slog.WarnContext(ctx, "score save blocked: handicap required but unset",
+			"event_type_label", "score.handicap_blocked",
+			"round_id", roundID.String(),
+			"round_player_id", roundPlayerID.String(),
+		)
 		return 0, ErrHandicapRequired
 	}
 

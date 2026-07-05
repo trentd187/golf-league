@@ -76,6 +76,7 @@ Business events are emitted at the **service commit site** via `slog.InfoContext
 | `round.status_changed` | `RoundService.Update` | a patch transitions status (start / end / **reactivate**) — carries `old_status`, `new_status`, `actor_user_id`, `event_id` |
 | `score.saved` | `ScoreService.UpsertScores` | a score upsert commits — carries `round_player_id`, `count` |
 | `score.hole_stats_saved` | `ScoreService.UpsertHoleStats` | a hole-stats upsert commits — carries `round_player_id`, `count` |
+| `score.handicap_blocked` | `ScoreService.UpsertScores` (**warn**) | a score save is rejected (422) because the round requires a handicap the player hasn't set — the previously-invisible UX block. Hole-stats have no such gate (asymmetry), so a player can save stats but not scores. |
 | `event.status_changed` | `handlers/events.go` (handler-level, pre-existing) | an event's status changes |
 
 The absence of `round.status_changed` and the two `score.*` events is exactly what left the 7/1 stat-save and 7/2 end→reactivate incidents with no server-side trail.

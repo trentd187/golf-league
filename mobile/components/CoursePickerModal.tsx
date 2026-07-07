@@ -28,6 +28,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
+import { savePost } from "@/utils/savePost";
 import ModalHeader from "@/components/ModalHeader";
 
 // ─── Exported types ────────────────────────────────────────────────────────────
@@ -291,20 +292,14 @@ export default function CoursePickerModal({
     setImportingId(external.external_id);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses/import-external`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ external_id: external.external_id }),
+      // savePost: import-external is durable-idempotency wrapped (backend), so a phantom
+      // (commit + lost ack) retry replays the imported course instead of duplicating it.
+      const imported = await savePost<CourseDetailResponse>({
+        url: `${API_URL}/api/v1/courses/import-external`,
+        token: token ?? "",
+        body: { external_id: external.external_id },
+        label: "course-import",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        Alert.alert("Import failed", (body as { error?: string }).error ?? "Could not import course.");
-        return;
-      }
-      const imported: CourseDetailResponse = await res.json();
       onSelect({
         id: imported.id,
         name: imported.name,
@@ -314,8 +309,8 @@ export default function CoursePickerModal({
         has_holes: imported.has_holes ?? false,
         tees: imported.tees ?? [],
       });
-    } catch {
-      Alert.alert("Import failed", "Check your connection and try again.");
+    } catch (err) {
+      Alert.alert("Import failed", err instanceof Error ? err.message : "Check your connection and try again.");
     } finally {
       setImportingId(null);
     }

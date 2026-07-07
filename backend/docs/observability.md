@@ -63,6 +63,57 @@ The `event_type_label` attr is a convention left over from the Loki era — it g
 
 Every handler records a server fault's root cause in `c.Locals("error_detail")` via its `write<Domain>Error` helper. [`internal/middleware/errorlog.go`](../internal/middleware/errorlog.go) is the **single consumer** of that value: registered right after `sentryfiber`, it inspects the final status after `c.Next()` and, for any 5xx, emits `slog.ErrorContext(..., "event_type_label", "http.error", ...)` — which lands as both a Sentry Issue and a searchable `level:error` / `event_type_label:http.error` log. Before it existed the legacy metrics middleware that read `error_detail` had been removed in the Sentry migration and not replaced, so non-panic 5xx faults produced **no** Issue and **no** log (only uncaught *panics* reached Sentry, via `fiberrecover`/`sentryfiber`). 4xx are expected client errors and are deliberately not logged. Keep `error_detail` populated for every 5xx in the `write*Error` helpers.
 
+## Access + slow-request logging (`middleware.RequestLogger`)
+
+[`internal/middleware/requestlog.go`](../internal/middleware/requestlog.go) logs one access line per request (`event_type_label:http.request`) with method, path, status, `latency_ms`, and `user_id`, to stdout (Railway deploy logs) **and** Sentry Logs. Healthy 2xx log at Info; **4xx/5xx and any request at/over the 2s slow threshold escalate to Warn** with `slow:true`. It exists because Railway's proxy `http` log stream was empty during the 7/3 502 incident, leaving no record of in-flight or slow requests while the backend went unresponsive (metrics showed the process alive but idle). It complements `ErrorLogger` (which still opens the Issue for 5xx) — this adds the latency + access trail as a searchable Log. A true hang never returns from `c.Next()` and so can't be logged here; that gap is closed by request timeouts + the `/health` DB ping.
+
+## Business events (service-layer emit)
+
+Business events are emitted at the **service commit site** via `slog.InfoContext(ctx, …)` — the handler passes `c.UserContext()`, so the per-request hub rides along. Emitting there (not the handler) keeps them covered by Tier 2 service tests and out of the handler coverage set. Stable facets:
+
+| `event_type_label` | Emitted by | Fires when |
+|---|---|---|
+| `round.status_changed` | `RoundService.Update` | a patch transitions status (start / end / **reactivate**) — carries `old_status`, `new_status`, `actor_user_id`, `event_id` |
+| `score.saved` | `ScoreService.UpsertScores` | a score upsert commits — carries `round_player_id`, `count` |
+| `score.hole_stats_saved` | `ScoreService.UpsertHoleStats` | a hole-stats upsert commits — carries `round_player_id`, `count` |
+| `score.handicap_blocked` | `ScoreService.UpsertScores` (**warn**) | a score save is rejected (422) because the round requires a handicap the player hasn't set — the previously-invisible UX block. Hole-stats have no such gate (asymmetry), so a player can save stats but not scores. |
+| `event.status_changed` | `handlers/events.go` (handler-level, pre-existing) | an event's status changes |
+
+The absence of `round.status_changed` and the two `score.*` events is exactly what left the 7/1 stat-save and 7/2 end→reactivate incidents with no server-side trail.
+
+## Backend availability — DB pool, request timeout, `/health` (the 7/3 502 hardening)
+
+The 7/3 incident was a ~10-minute window of proxy `502`s while Railway metrics showed the
+process alive and idle (low CPU/mem) — a wedged backend, not a crash. Root cause: the DB
+connection pool was **unconfigured**, so Go defaulted to UNLIMITED open connections with no
+lifetime; under a live round the backend could exceed Railway Postgres's connection cap and
+park every goroutine waiting for a connection. Four changes bound, recover, and expose it:
+
+- **Bounded, recycled pool** — [`internal/database/database.go`](../internal/database/database.go)
+  `Connect(dsn, PoolConfig)` applies `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/
+  `SetConnMaxIdleTime` (defaults 20 / 10 / 5m / 5m; env `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`,
+  `DB_CONN_MAX_LIFETIME_SEC`, `DB_CONN_MAX_IDLE_TIME_SEC`). The lifetime recycles a
+  Railway-proxy-dropped connection instead of handing it to a request that then hangs on it.
+- **Per-request timeout** — [`internal/middleware/requesttimeout.go`](../internal/middleware/requesttimeout.go)
+  on the `/api/v1` group (env `REQUEST_TIMEOUT_SEC`, default 30) bounds `c.UserContext()` so a
+  hung query aborts with `context.DeadlineExceeded` → a service error → a **logged 5xx that
+  reaches Sentry**, not a silent 502. The live-score WebSocket is registered on `app` (outside
+  the group), so its long-lived connection is exempt.
+- **DB-aware `/health`** — [`internal/handlers/health.go`](../internal/handlers/health.go) pings
+  the DB (2s timeout) and returns `503` + logs `event_type_label:health.db_unreachable` (an
+  Issue-level event) on failure. Previously `/health` ignored the DB and returned `200` while
+  every real request 502'd, so Railway kept routing into the stuck backend. **Alert on the
+  `health.db_unreachable` facet, and add a Sentry uptime monitor against the `/health` URL,** so
+  the next DB/pool outage pages instead of surfacing via user reports.
+- **`IdleTimeout: 60s`** on the Fiber server closes idle keep-alive sockets. `ReadTimeout`/
+  `WriteTimeout` are deliberately unset — `WriteTimeout` would break the long-lived WebSocket.
+
+The WebSocket **hub + connection pumps** ([`internal/websocket/`](../internal/websocket/)) were
+audited and left unchanged: the hub snapshots targets under RLock then sends non-blocking (a slow
+client is evicted, never blocking others), the broadcast buffer drops-and-logs when full, and each
+connection carries read/write deadlines, a ping/pong + app-level heartbeat, coordinated goroutine
+shutdown, and `sentry.Recover()`. It was not a contributor to the 502s.
+
 ## Idempotency-Key replay detection (`middleware.IdempotencyReplayLog`)
 
 The mobile client sends a stable `Idempotency-Key` per logical write, reused across its internal retries (`mobile/utils/saveWithRetry.ts` + `utils/idempotency.ts`). [`internal/middleware/idempotency.go`](../internal/middleware/idempotency.go) has **two** stores for the two failure modes:

@@ -13,7 +13,6 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import { showAlert } from "@/utils/alerts";
@@ -86,15 +85,18 @@ export default function BestBallTeamAssignmentModal({
   const saveMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-      // 1. Remove the group's current teams (cascades team_members).
+      // 1. Remove the group's current teams (cascades team_members). savePut(DELETE) is
+      // 404-tolerant, so a phantom delete (commit + lost ack) converges on retry.
       for (const tm of groupTeams) {
-        const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/teams/${tm.id}`, {
+        await savePut({
+          url: `${API_URL}/api/v1/rounds/${roundId}/teams/${tm.id}`,
+          token: token ?? "",
           method: "DELETE",
-          headers,
+          body: undefined,
+          label: "team-delete",
+          retry: FOREGROUND_SAVE,
         });
-        if (!res.ok && res.status !== 404) throw new Error("Failed to clear existing teams");
       }
 
       // 2. Create + populate each non-empty team slot.

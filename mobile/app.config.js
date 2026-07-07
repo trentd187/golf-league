@@ -67,6 +67,19 @@ module.exports = {
       eas: {
         projectId: "3c7a6021-c836-48de-8b1b-6681f03d76a3",
       },
+      // Build identity, read at runtime by utils/sentry.ts (resolveBuildTags) and attached
+      // to every Sentry event as build_commit / app_variant tags so a crash can be pinned
+      // to the exact build. app.config.js is evaluated on the build machine, where the git
+      // SHA is exposed under different names depending on the builder: EAS native builds
+      // set EAS_BUILD_GIT_COMMIT_HASH, the Railway web build sets RAILWAY_GIT_COMMIT_SHA,
+      // and GitHub CI sets GITHUB_SHA. Null locally (Expo Go / Metro dev), which is fine —
+      // the tag is simply omitted.
+      commitSha:
+        process.env.EAS_BUILD_GIT_COMMIT_HASH ||
+        process.env.RAILWAY_GIT_COMMIT_SHA ||
+        process.env.GITHUB_SHA ||
+        null,
+      appVariant: process.env.APP_VARIANT || null,
     },
   },
 };

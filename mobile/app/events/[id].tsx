@@ -39,6 +39,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import { savePost } from "@/utils/savePost";
+import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 
 // DateInput: auto-formats typed input to MM-DD-YY and shows a native calendar picker.
 // apiToDisplay/displayToApi handle YYYY-MM-DD ↔ MM-DD-YY conversion.
@@ -285,19 +286,16 @@ export default function EventDetailScreen() {
       is_public?: boolean;
     }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
+      // savePut(PATCH): idempotent event edit — retry + stable key + surfaced API error.
+      await savePut({
+        url: `${API_URL}/api/v1/events/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+        body: data,
+        label: "event-edit",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id] });
@@ -373,16 +371,16 @@ export default function EventDetailScreen() {
   const endEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
+      // savePut(PATCH): ending an event is idempotent (status→completed converges).
+      await savePut({
+        url: `${API_URL}/api/v1/events/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "completed" }),
+        body: { status: "completed" },
+        label: "event-status",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id] });
@@ -396,14 +394,16 @@ export default function EventDetailScreen() {
   const deleteEventMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
+      // savePut(DELETE): idempotent delete with 404-as-success on retry (phantom-delete safe).
+      await savePut({
+        url: `${API_URL}/api/v1/events/${id}`,
+        token: token ?? "",
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        body: undefined,
+        label: "event-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["events"] });
@@ -418,15 +418,17 @@ export default function EventDetailScreen() {
   const handleJoinRequestMutation = useMutation({
     mutationFn: async ({ userId, approve }: { userId: string; approve: boolean }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/join-requests/${userId}`, {
+      // savePut(PATCH): approving/denying a join request is idempotent (same decision
+      // re-applied converges); retry + stable key + surfaced API error.
+      await savePut({
+        url: `${API_URL}/api/v1/events/${id}/join-requests/${userId}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ approve }),
+        body: { approve },
+        label: "join-request",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id] });
@@ -441,15 +443,17 @@ export default function EventDetailScreen() {
   const updateMemberRoleMutation = useMutation({
     mutationFn: async ({ userId, role }: { userId: string; role: "organizer" | "player" }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/members/${userId}/role`, {
+      // savePut(PATCH): setting a member's role is idempotent (same role re-applied converges);
+      // retry + stable key + surfaced API error (e.g. the last-organizer guard's message).
+      await savePut({
+        url: `${API_URL}/api/v1/events/${id}/members/${userId}/role`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ role }),
+        body: { role },
+        label: "member-role",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["event", id] });

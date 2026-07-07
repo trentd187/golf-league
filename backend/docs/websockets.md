@@ -17,12 +17,22 @@ score PUT ──▶ ScoreService save ──▶ hub.BroadcastToRound(roundId, {"
                                         │
             client WS  ◀───────────────┘   (one message per round, no score data)
                 │
-                └─▶ queryClient.invalidateQueries(["scorecard", roundId])  ──▶ refetch
+                ├─▶ queryClient.invalidateQueries(["scorecard", roundId])  ──▶ refetch
+                │
+                └─▶ scorecard screen 3-way-merges the fresh snapshot into local edit
+                    state  (utils/scorecard.ts threeWayMerge*)  ──▶ peers' scores appear
 ```
 
 The message carries **no** score data — just "something changed" — so the client reuses its
 existing scorecard query. That keeps the server payload trivial and the client a one-line
 invalidate rather than a second data path.
+
+The scorecard holds scores/stats in **local** React state (the editable TextInputs), so the
+refetch alone isn't enough — the screen must fold the fresh server snapshot back into that
+local state. It does a **3-way merge** (`threeWayMergeScores`/`Stats`/`Handicaps` in
+[mobile/utils/scorecard.ts](../../mobile/utils/scorecard.ts)) against the last synced server
+snapshot: peers' cells flow in, while this device's unsaved in-flight edits are preserved until
+the server echoes them back. Without this, other players' scores only appeared on exit/re-entry.
 
 ## Backend
 
@@ -44,6 +54,12 @@ invalidate rather than a second data path.
   `wsPingInterval` (30s); each pong extends a `wsPongWait` (45s) read deadline, so a half-open
   socket (phone vanished with no close frame) is reaped within 45s instead of leaking. Every
   write is bounded by `wsWriteWait` (10s).
+- **App-level heartbeat** (`wsHeartbeat`): on the same 30s tick the server also sends a TEXT
+  frame `{"type":"ping"}`. This is *separate* from the control ping for a reason — browsers/RN
+  auto-pong control frames at the protocol level, so those never surface to the client's
+  `onmessage`. The text frame does, which resets the client's idle watchdog (below). Without it,
+  the watchdog saw the multi-minute gaps between scoring events as "silence" and churned through
+  reconnects on healthy sockets. The client treats the `ping` type as a no-op.
 - **Coordinated shutdown:** a `done` channel ties the reader and writer goroutines together so
   neither leaks; whichever exits first stops the other. Both carry `defer sentry.Recover()` —
   gofiber runs the connection handler outside Fiber's recover middleware, so a panic here would
@@ -73,13 +89,29 @@ invalidate rather than a second data path.
 `utils/liveUpdates.ts` (pure + unit-tested, since `hooks/` is coverage-excluded):
 
 - **Reconnect** with capped exponential **Full Jitter** (`nextReconnectDelay`, shared rationale
-  with the save retry path), giving up after `WS_RECONNECT.maxAttempts` (8) → `ws.gave_up` Issue,
-  then leaning on the 60s poll.
+  with the save retry path), giving up after `WS_RECONNECT.maxAttempts` (8) → `ws.gave_up` warning
+  log (not an Issue — the poll is the floor, so the user loses nothing), then leaning on the 60s poll.
+- **Reconnect-storm guards** (added after a 7/3 web/Safari session logged 50 disconnects in 20
+  minutes — a socket that opened then immediately closed, worsened by a briefly-unreachable
+  backend). Three pure gates bound it:
+  - **Floor** (`WS_RECONNECT.floorMs` 1s): Full Jitter alone is `random(0, ceiling)` with no lower
+    bound, so early attempts could fire back-to-back; the floor guarantees minimum spacing.
+  - **Stability gate** (`connectionWasStable`, `minStableMs` 10s): `onopen` no longer resets the
+    attempt counter — a flap that opens then closes within 10s would otherwise pin it at attempt 0
+    forever and never reach the give-up cap. The counter resets only when a connection actually
+    held (checked in `onclose`), so a flapping socket climbs to `gave_up` and stops.
+  - **Give-up cooldown** (`shouldAttemptAfterGaveUp`, `gaveUpCooldownMs` 60s): after giving up, a
+    foreground (AppState) or network-regained (NetInfo) event must wait out the cooldown before
+    restarting, so app-switching can't re-trigger the whole storm.
+  - **Log sampling** (`shouldSampleDisconnect`): the `ws.disconnected` log keeps the first 3 of a
+    storm then every 10th, so a persistent flap stays visible without flooding Sentry Logs.
 - **Catch-up:** every successful (re)connect invalidates `["scorecard", roundId]` so anything
   missed while disconnected is pulled immediately.
 - **Watchdog** (`isStaleConnection`, `WS_IDLE_MS` 60s): a socket silent past the idle window is
-  recycled even without an error/close event (the half-open cellular case; the server pings every
-  30s, so silence is abnormal).
+  recycled even without an error/close event (the half-open cellular case). "Silence" means no
+  *data* frame — and because the server's control pings don't reach `onmessage`, the watchdog
+  keys off the app-level `{"type":"ping"}` heartbeat (every 30s). A genuinely dead link misses two
+  heartbeats and is recycled; a healthy idle socket is no longer falsely churned.
 - **AppState:** reconnect on foreground (mobile OSes suspend sockets in the background).
 - **NetInfo:** reconnect when connectivity returns; drop the socket + pending retry when it's lost
   (don't hammer a dead radio).
@@ -91,7 +123,7 @@ invalidate rather than a second data path.
 | `wsPingInterval` | server | 30s | Proactively probe the link; well under any idle proxy timeout. |
 | `wsPongWait` | server | 45s | Read deadline; > ping interval so one dropped pong isn't fatal, but reaps a dead phone fast. |
 | `wsWriteWait` | server | 10s | Bound a single stuck write. |
-| `WS_RECONNECT` | mobile | base 1s, cap 30s, Full Jitter, maxAttempts 8 | Recover quickly, back off, then give up to the poll. |
+| `WS_RECONNECT` | mobile | base 1s, cap 30s, floor 1s, Full Jitter, maxAttempts 8, minStable 10s, gaveUpCooldown 60s | Recover quickly, back off with a floor so a flap can't storm, give up after 8, then hold off 60s before a foreground/network event restarts. |
 | `WS_IDLE_MS` | mobile | 60s | No traffic ⇒ assume half-open and recycle. |
 
 ## Observability matrix
@@ -106,7 +138,7 @@ Every state transition emits a signal. If a transition isn't here, it isn't done
 | Client disconnected | backend | `ws.disconnected` info log + `reason` (client_close / pong_timeout / read_error) |
 | Disconnected | mobile | `ws.disconnected` warn log (code + reason) |
 | Reconnect attempt | mobile | `ws.reconnect_attempt` breadcrumb (attempt, delayMs) |
-| Reconnects exhausted | mobile | `ws.gave_up` **Issue** (`error_source:ws`, `ws_state:gave_up`) → poll fallback |
+| Reconnects exhausted | mobile | `ws.gave_up` **warn log** (`event:ws.gave_up`, `error_source:ws`, `ws_state:gave_up`) → poll fallback (not an Issue — user loses nothing) |
 | Slow consumer evicted | backend | `ws.send_dropped` warn log |
 | Hub broadcast buffer full | backend | `ws.broadcast_dropped` warn log |
 | Hub goroutine panic | backend | `ws.hub_panic` **Issue** via `sentry.Recover()` + auto-restart |

@@ -9,6 +9,9 @@ import {
   shouldReconnect,
   parseLiveMessage,
   isStaleConnection,
+  connectionWasStable,
+  shouldAttemptAfterGaveUp,
+  shouldSampleDisconnect,
   WS_RECONNECT,
   WS_IDLE_MS,
 } from "@/utils/liveUpdates";
@@ -73,12 +76,11 @@ describe("buildWsUrl", () => {
 });
 
 describe("nextReconnectDelay", () => {
-  it("grows the ceiling exponentially and stays within the cap (rng=1 → ceiling-1)", () => {
-    // With rng → 1, fullJitterDelay returns floor(1 * ceiling) clamped below the ceiling.
-    const d0 = nextReconnectDelay(0, () => 0.999999);
+  it("grows the ceiling exponentially and stays within the cap (rng≈1 → near ceiling)", () => {
+    // At attempt 3 the ceiling (8000) far exceeds the floor, so jitter is visible and grows.
     const d3 = nextReconnectDelay(3, () => 0.999999);
-    expect(d0).toBeLessThan(WS_RECONNECT.baseMs);
-    expect(d3).toBeGreaterThan(d0);
+    const d1 = nextReconnectDelay(1, () => 0.999999);
+    expect(d3).toBeGreaterThan(d1);
     expect(d3).toBeLessThanOrEqual(WS_RECONNECT.capMs);
   });
 
@@ -88,8 +90,52 @@ describe("nextReconnectDelay", () => {
     );
   });
 
-  it("returns 0 when rng is 0", () => {
-    expect(nextReconnectDelay(5, () => 0)).toBe(0);
+  it("floors at floorMs even when rng is 0 (no back-to-back reconnect storm)", () => {
+    // Pure full jitter would return 0 here; the floor keeps a minimum spacing.
+    expect(nextReconnectDelay(5, () => 0)).toBe(WS_RECONNECT.floorMs);
+    expect(nextReconnectDelay(0, () => 0)).toBe(WS_RECONNECT.floorMs);
+  });
+});
+
+describe("connectionWasStable", () => {
+  it("is false for a brief open (a flap that must not reset the attempt counter)", () => {
+    expect(connectionWasStable(500)).toBe(false);
+    expect(connectionWasStable(WS_RECONNECT.minStableMs - 1)).toBe(false);
+  });
+
+  it("is true once the connection held at least minStableMs", () => {
+    expect(connectionWasStable(WS_RECONNECT.minStableMs)).toBe(true);
+    expect(connectionWasStable(60_000)).toBe(true);
+  });
+});
+
+describe("shouldAttemptAfterGaveUp", () => {
+  it("allows an attempt when we have not given up (null)", () => {
+    expect(shouldAttemptAfterGaveUp(null, 1_000_000)).toBe(true);
+  });
+
+  it("blocks a restart within the cooldown after giving up", () => {
+    const gaveUpAt = 1_000_000;
+    expect(shouldAttemptAfterGaveUp(gaveUpAt, gaveUpAt + 5_000)).toBe(false);
+  });
+
+  it("allows a restart once the cooldown has elapsed", () => {
+    const gaveUpAt = 1_000_000;
+    expect(shouldAttemptAfterGaveUp(gaveUpAt, gaveUpAt + WS_RECONNECT.gaveUpCooldownMs)).toBe(true);
+  });
+});
+
+describe("shouldSampleDisconnect", () => {
+  it("keeps the first few disconnects so the storm's onset is visible", () => {
+    expect(shouldSampleDisconnect(1)).toBe(true);
+    expect(shouldSampleDisconnect(3)).toBe(true);
+  });
+
+  it("drops the mid-storm floods but keeps every Nth", () => {
+    expect(shouldSampleDisconnect(4)).toBe(false);
+    expect(shouldSampleDisconnect(9)).toBe(false);
+    expect(shouldSampleDisconnect(10)).toBe(true); // every 10th
+    expect(shouldSampleDisconnect(20)).toBe(true);
   });
 });
 
@@ -139,6 +185,10 @@ describe("parseLiveMessage", () => {
     expect(
       parseLiveMessage('{"type":"scores_updated","round_id":"r9"}'),
     ).toEqual({ type: "scores_updated", roundId: "r9" });
+  });
+
+  it("decodes the server's app-level heartbeat as a ping no-op", () => {
+    expect(parseLiveMessage('{"type":"ping"}')).toEqual({ type: "ping" });
   });
 
   it("returns unknown for an unrecognized type", () => {

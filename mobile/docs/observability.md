@@ -50,12 +50,20 @@ Scorecard saves (scores, hole-stats, course handicap) do **not** go through TanS
 
 When a transport failure is *reconciled* (read-back confirms the write landed — the phantom-save deeper fix in [network-saves.md](network-saves.md)), `savePut` instead calls `reportSaveReconciled`: an **info** message tagged `error_source:save`, `save_outcome:reconciled`. That's the client-side phantom-save counter — chart it against `reportSaveFailure` (genuinely unrecovered) to see whether last-mile loss is worsening.
 
+## Scorecard re-sync guard (`scorecard.merge_skipped`)
+
+The scorecard merges each fresh server snapshot into local state with a 3-way merge ([utils/scorecard.ts](../utils/scorecard.ts)). If a refetch or a thin WS push returns a **degraded** snapshot (collapsed to zero scores/stats while local still holds data — a failed/partial fetch), feeding it to the merge would treat every unchanged cell as a peer deletion and blank the screen — the 7/2 "stats disappeared after reactivate" incident (Incident B). The screen's re-sync effect ([app/scorecard/[roundId].tsx](../app/scorecard/[roundId].tsx)) guards this with `incomingSnapshotIsDegraded` and, when it skips a degraded half, calls `reportScorecardMergeSkipped` — a **warning log** `event:scorecard.merge_skipped` carrying `scores_degraded` / `stats_degraded` / local cell counts. The user loses nothing (the guard keeps last-good local + base), so it's a Log, not an Issue; **alert on the `scorecard.merge_skipped` facet** to catch a backend/WS path returning empty payloads. Every re-sync also drops an `addScorecardLoadBreadcrumb` (`category:scorecard`) with the snapshot's player/score/stat counts — a cheap trail (not a per-poll Log) that shows on any event when a payload shrank toward empty.
+
 ## Live-score WebSocket
 
 The round live-update WebSocket reports its lifecycle through `reportWsLifecycle` /
 `reportWsError` ([utils/sentry.ts](../utils/sentry.ts)): `ws.connected` / `ws.reconnect_attempt`
-breadcrumbs, a `ws.disconnected` warning log, and a `ws.gave_up` Issue (`error_source:ws`) only
-when reconnects are exhausted and the screen falls back to the 60s poll. The hook
+breadcrumbs, a `ws.disconnected` warning log, and a `ws.gave_up` warning **log**
+(`event:ws.gave_up`, `error_source:ws`) when reconnects are exhausted and the screen falls back
+to the 60s poll. `gave_up` is deliberately a log, **not** an Issue — the 60s poll is the floor so
+the user loses nothing, and it was pure noise on web before the `wss://` mixed-content fix; alert
+on the `ws.gave_up` log facet rather than the Issues stream. Only `reportWsError` (an unexpected
+socket error) opens an Issue. The hook
 ([hooks/useRoundLiveUpdates.ts](../hooks/useRoundLiveUpdates.ts)) and pure helpers
 ([utils/liveUpdates.ts](../utils/liveUpdates.ts)) plus the full cross-stack matrix are documented
 in [backend/docs/websockets.md](../../backend/docs/websockets.md).
@@ -87,17 +95,28 @@ Runtime (inlined into the JS bundle by Expo, so `EXPO_PUBLIC_` prefix required):
 | Var | Notes |
 |---|---|
 | `EXPO_PUBLIC_SENTRY_DSN` | Project DSN. **Unset → SDK disabled**; the app runs identically with no events sent (local dev / CI / Jest). |
-| `EXPO_PUBLIC_SENTRY_ENVIRONMENT` | `development` / `preview` / `production`. Falls back to `__DEV__` when unset. Set per EAS profile to match `APP_VARIANT`. |
+| `EXPO_PUBLIC_SENTRY_ENVIRONMENT` | `development` / `preview` / `production`. Set per EAS profile in `eas.json` (and as a Railway web-service build var) to match `APP_VARIANT`. Falls back to `__DEV__` only when unset — which previously mis-tagged preview builds as `production`. |
+| `EXPO_PUBLIC_SENTRY_RELEASE` | **Web only.** The git SHA the web bundle was built from, set in `Dockerfile.web` from `RAILWAY_GIT_COMMIT_SHA`. Passed to `Sentry.init({ release })` so browser events match the source maps uploaded by that build. Leave unset on native — the SDK auto-derives the release from the native version, and overriding it would break native source-map matching. |
 
-Build-time only (source-map upload during EAS builds — never bundled into the app). The `@sentry/react-native` config plugin reads these as a fallback since no values are committed in `app.config.js`:
+Build-time only (source-map upload — never bundled into the app). On **native** EAS builds the `@sentry/react-native` config plugin reads these (no values committed in `app.config.js`); on **web** the `Dockerfile.web` upload step reads the same three from Railway web-service build variables:
 
 | Var | Notes |
 |---|---|
 | `SENTRY_ORG` | Sentry org slug. |
 | `SENTRY_PROJECT` | Sentry project slug. |
-| `SENTRY_AUTH_TOKEN` | Source-map upload token. Provide via **EAS Secrets**, never commit. |
+| `SENTRY_AUTH_TOKEN` | Source-map upload token. Provide via **EAS Secrets** (native) / **Railway build variables** (web), never commit. Web upload is skipped when this is empty. |
+
+> **Gotcha — `.npmrc` must be copied before `pnpm install` in `Dockerfile.web`.** The upload step runs `node node_modules/@sentry/cli/bin/sentry-cli sourcemaps …`. That resolves only under the **hoisted** layout (`node-linker=hoisted`), which comes from `.npmrc`. If `.npmrc` is copied only by `COPY . .` *after* install, pnpm installs symlinked and buries the transitive `@sentry/cli` (and its `@sentry/cli-linux-x64` binary) under `.pnpm/`, so the upload fails (`sentry-cli: not found`, exit 127) the moment `SENTRY_AUTH_TOKEN` is set. We invoke the shim with `node` directly, not `npx --yes @sentry/cli` — npx re-resolves the scoped package and exec's a bare `sentry-cli` off PATH.
 
 See [.env.example](../.env.example) for the runtime placeholders.
+
+## Build identification (releases, dist, and tags)
+
+Every Sentry event must be pinnable to the exact build that produced it — otherwise a crash from preview build 5 is indistinguishable from build 8.
+
+- **Native `release` / `dist`** — auto-derived by the SDK from the native version (`com.…@<version>+<buildNumber>`). `eas.json` uses `appVersionSource: "remote"` with `autoIncrement: true` on the **preview** and **production** profiles, so EAS bumps `buildNumber`/`versionCode` every build → a distinct `release`/`dist` per build **and** a fresh source-map bucket (without autoIncrement, every build reused `…@1.0.0+1`, so each build's maps overwrote the previous build's and symbolicated old crashes against wrong lines). Do **not** set `release` in `Sentry.init` on native — it would override this.
+- **Web `release`** — there is no native version, so `Dockerfile.web` sets `EXPO_PUBLIC_SENTRY_RELEASE` from `RAILWAY_GIT_COMMIT_SHA` and uploads the web source maps under that release. The export **must** pass `expo export --source-maps` — otherwise only the minified `.js` ships and sentry-cli warns "no sourcemap found" (uploads the bundle but can't symbolicate). Metro's `getSentryExpoConfig` bakes matching debug ids into both the `.js` and `.js.map`, so Sentry pairs them by debug id. After upload, the `.map` files are deleted from `dist` (`find dist -name '*.map' -delete`) so we don't serve readable source to browsers — Sentry keeps its copy.
+- **`build_commit` / `app_variant` tags** — `app.config.js` bakes the build's git SHA (`EAS_BUILD_GIT_COMMIT_HASH` / `RAILWAY_GIT_COMMIT_SHA` / `GITHUB_SHA`) and `APP_VARIANT` into `expoConfig.extra`; `initSentry` reads them via `resolveBuildTags` and `Sentry.setTag`s every event with `build_commit` + `app_variant`. Filter Issues by `build_commit:<sha>` to scope to one build, or `app_variant:preview` to a channel. Both are omitted in local dev / Expo Go (no build SHA), which is expected.
 
 ## Sampling
 

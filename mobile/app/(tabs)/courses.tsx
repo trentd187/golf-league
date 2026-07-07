@@ -21,7 +21,7 @@ import { useMe } from "@/hooks/useMe";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { savePost } from "@/utils/savePost";
 import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
 import type { CourseSummary } from "@/types/courses";
@@ -77,24 +77,19 @@ export default function CoursesScreen() {
   const createMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/courses`, {
-        method:  "POST",
-        headers: {
-          Authorization:  `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      // savePost: course create is durable-idempotency wrapped (backend), so a cellular
+      // phantom (commit + lost ack) retry replays the original row instead of duplicating it.
+      return savePost<{ id: string }>({
+        url: `${API_URL}/api/v1/courses`,
+        token: token ?? "",
+        body: {
           name:       newName.trim(),
           city:       newCity.trim() || undefined,
           state:      newState.trim() || undefined,
           hole_count: newHoleCount,
-        }),
+        },
+        label: "course",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? "Failed to create course");
-      }
-      return res.json() as Promise<{ id: string }>;
     },
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ["courses"] });

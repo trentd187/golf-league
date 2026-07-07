@@ -64,7 +64,10 @@ export interface SaveReconciledReport {
 // behaviour; report/reportReconciled/breadcrumb are the concrete (injected) telemetry;
 // the rest are injectable collaborators whose production defaults are applied below.
 export interface RunSaveOptions<T> {
-  method: "PUT" | "POST" | "PATCH"; // PATCH reuses the idempotent (savePut) path
+  // PATCH and DELETE reuse the idempotent (savePut) path. DELETE is idempotent: a 404 on a
+  // retry means the row is already gone (a phantom delete whose ack was lost, or a
+  // double-tap) — the desired end state — so it is treated as success, not an error.
+  method: "PUT" | "POST" | "PATCH" | "DELETE";
   url: string;
   token: string;
   body: unknown;
@@ -153,7 +156,11 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
           },
           body: JSON.stringify(opts.body),
         });
-        if (!res.ok) {
+        // A DELETE that 404s already reached its goal state (the row is gone), so accept it
+        // as success — this makes a phantom delete (commit + lost ack, retried) converge
+        // instead of surfacing a false "not found" on the retry.
+        const ok = res.ok || (opts.method === "DELETE" && res.status === 404);
+        if (!ok) {
           httpStatus = res.status;
           const msg = opts.parseErrorMessage ? await opts.parseErrorMessage(res) : undefined;
           throw new Error(msg ?? `${opts.errorPrefix} ${res.status}`);

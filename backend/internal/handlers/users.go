@@ -212,6 +212,23 @@ func GetUserRounds(svc *services.UserService) fiber.Handler {
 	}
 }
 
+// maxUserScorecards caps the ?last= window. High enough for a member's full All-Time
+// history, bounded so a garbage or abusive value can't assemble an unbounded set of
+// scorecards (each with several preloads) in one request.
+const maxUserScorecards = 200
+
+// clampUserScorecardsLast bounds the parsed ?last= value into [1, maxUserScorecards].
+// Pure + unit-tested so the batch limit is locked in without a DB round-trip.
+func clampUserScorecardsLast(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > maxUserScorecards {
+		return maxUserScorecards
+	}
+	return n
+}
+
 // GetUserScorecards returns a handler for GET /api/v1/users/:userId/scorecards?last=N.
 // It batches the target user's last-N completed-round scorecards into one response so the
 // stats screen no longer fans out one /rounds/:id/scorecard request per round (the
@@ -231,12 +248,10 @@ func GetUserScorecards(scoreSvc *services.ScoreService) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
 		}
 
-		// last bounds the batch to the same 20-round window GetUserRounds returns; clamp so a
-		// garbage value can't request an unbounded set.
-		last := c.QueryInt("last", 20)
-		if last < 1 || last > 20 {
-			last = 20
-		}
+		// last bounds the batch. Default 20 (the profile screen's last-20 window); the stats
+		// screen passes an explicit ?last= up to maxUserScorecards so its All-Time / per-year
+		// filters aggregate every completed round instead of silently truncating at 20.
+		last := clampUserScorecardsLast(c.QueryInt("last", 20))
 
 		cards, err := scoreSvc.GetUserScorecards(c.UserContext(), targetID, callerID, callerRole, last)
 		if err != nil {

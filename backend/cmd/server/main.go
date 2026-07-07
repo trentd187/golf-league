@@ -15,7 +15,6 @@ import (
 
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
 	"github.com/trentd187/golf-league/internal/config"
@@ -40,9 +39,19 @@ func main() {
 	defer sentryShutdown()
 	slog.SetDefault(logger)
 
-	db, err := database.Connect(cfg.DatabaseURL)
+	db, err := database.Connect(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+	})
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
+	}
+	// sqlDB is the pooled *sql.DB behind GORM — used by the /health readiness ping.
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal("Failed to access database handle:", err)
 	}
 
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
@@ -82,13 +91,21 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
+		// IdleTimeout closes idle keep-alive connections so a churn of half-open sockets
+		// (the cellular case) doesn't accumulate. ReadTimeout/WriteTimeout are intentionally
+		// left unset: WriteTimeout would break the long-lived live-score WebSocket, and the
+		// meaningful bound on slow work is the per-request context deadline (RequestTimeout
+		// on the /api/v1 group), which turns a hung DB query into a fast, logged 5xx.
+		IdleTimeout: 60 * time.Second,
 	})
 
 	// fiberrecover catches any panics in middleware or handlers and returns 500 instead
 	// of crashing the server process. Must be registered first so it wraps everything.
 	app.Use(fiberrecover.New())
 
-	app.Use(cors.New())
+	// Explicit CORS allow-list (incl. Idempotency-Key + Sentry tracing headers) so the web
+	// build's preflight can't silently strip them. See middleware/cors.go.
+	app.Use(middleware.CORS())
 
 	// sentryfiber installs a per-request Sentry Hub on c.Context() so handlers can
 	// call sentryfiber.GetHubFromContext(c) and capture exceptions, set tags, or
@@ -107,12 +124,22 @@ func main() {
 	// follow sentryfiber so the per-request hub is on c.UserContext().
 	app.Use(middleware.ErrorLogger())
 
-	// GET /health — liveness check for Railway and load balancers; no auth, no DB.
-	app.Get("/health", handlers.HealthCheck)
+	// RequestLogger emits a per-request access line (method, path, status, latency, caller)
+	// to stdout (Railway deploy logs) and Sentry Logs, escalating 4xx/5xx and slow requests
+	// to Warn. It closes the "empty http log stream" gap that left the 7/3 502 window
+	// undiagnosable. 2s is the slow threshold — above the 99th percentile of normal handlers.
+	app.Use(middleware.RequestLogger(2 * time.Second))
 
-	// All routes under /api/v1 require a valid Supabase JWT.
+	// GET /health — readiness probe for Railway and load balancers: no auth, but it pings the
+	// DB so a wedged connection pool surfaces as a 503 instead of a false 200 (the 7/3 mode).
+	app.Get("/health", handlers.HealthCheck(sqlDB))
+
+	// All routes under /api/v1 require a valid Supabase JWT. RequestTimeout runs first so
+	// every handler's context carries a deadline — a hung DB query fails fast into a logged
+	// 5xx instead of a silent 502. The live-score WebSocket is registered on `app` (below),
+	// outside this group, so its long-lived connection is exempt from the deadline.
 	// app.Group applies the middleware to every route registered on the returned group.
-	api := app.Group("/api/v1", middleware.Auth(cfg, db))
+	api := app.Group("/api/v1", middleware.RequestTimeout(cfg.RequestTimeout), middleware.Auth(cfg, db))
 
 	// durableIdempotency makes the non-idempotent POST creates it wraps safe to retry on
 	// a flaky cellular link: a repeat bearing the same Idempotency-Key replays the
@@ -144,7 +171,10 @@ func main() {
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
 	api.Post("/events/:id/rounds", durableIdempotency, handlers.ScheduleEventRound(roundService))
 
-	api.Post("/events/:id/request-join", handlers.RequestJoinEvent(eventService))
+	// request-join is a non-idempotent create (RequestJoin returns ErrMemberAlreadyExists on a
+	// duplicate), so it needs durableIdempotency for the client's savePost retry to replay the
+	// original 2xx instead of surfacing "already a member" after a cellular phantom.
+	api.Post("/events/:id/request-join", durableIdempotency, handlers.RequestJoinEvent(eventService))
 	api.Get("/events/:id/join-requests", handlers.GetJoinRequests(eventService))
 	api.Patch("/events/:id/join-requests/:userId", handlers.HandleJoinRequest(eventService))
 
@@ -184,12 +214,14 @@ func main() {
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))
-	api.Post("/courses", middleware.RequireRole("admin"), handlers.CreateCourse(courseService))
+	// Course create is a non-idempotent insert; durableIdempotency (after the admin gate)
+	// lets savePost retry a cellular phantom without creating a duplicate course.
+	api.Post("/courses", middleware.RequireRole("admin"), durableIdempotency, handlers.CreateCourse(courseService))
 	api.Get("/courses/:courseId", handlers.GetCourse(courseService))
 	api.Patch("/courses/:courseId", middleware.RequireRole("admin"), handlers.UpdateCourse(courseService))
 	api.Delete("/courses/:courseId", middleware.RequireRole("admin"), handlers.DeleteCourse(courseService))
 
-	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), handlers.CreateTee(courseService))
+	api.Post("/courses/:courseId/tees", middleware.RequireRole("admin"), durableIdempotency, handlers.CreateTee(courseService))
 	api.Patch("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.UpdateTee(courseService))
 	api.Delete("/courses/:courseId/tees/:teeId", middleware.RequireRole("admin"), handlers.DeleteTee(courseService))
 
@@ -198,7 +230,7 @@ func main() {
 
 	// External course import — search returns results without writing; import/refresh write to DB
 	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(courseService))
-	api.Post("/courses/import-external", middleware.RequireRole("admin"), handlers.ImportExternalCourse(courseService))
+	api.Post("/courses/import-external", middleware.RequireRole("admin"), durableIdempotency, handlers.ImportExternalCourse(courseService))
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(courseService))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber
@@ -214,7 +246,10 @@ func main() {
 	// screen feeds these to the client-side stat math instead of fanning out one
 	// /rounds/:id/scorecard per round (removes the FRONTEND-2 N+1).
 	api.Get("/users/:userId/scorecards", handlers.GetUserScorecards(scoreService))
-	api.Post("/users/:userId/follow", handlers.FollowUser(userService))
+	// Follow is a non-idempotent create (FollowUser returns ErrAlreadyFollowing on a duplicate);
+	// durableIdempotency lets the client's savePost retry replay the original 2xx. Unfollow
+	// (DELETE) is already idempotent, so it routes through savePut(DELETE) unwrapped.
+	api.Post("/users/:userId/follow", durableIdempotency, handlers.FollowUser(userService))
 	api.Delete("/users/:userId/follow", handlers.UnfollowUser(userService))
 	api.Get("/users", handlers.SearchUsers(userService))
 

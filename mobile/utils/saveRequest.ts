@@ -65,10 +65,12 @@ export interface SavePutOptions {
   token: string;
   body: unknown;
   label: string; // "scores" | "hole-stats" | "handicap" | "round-status" | "team-members"
-  // method defaults to PUT. PATCH routes the same idempotent path (e.g. starting a round
-  // is PATCH /rounds/:id {status:"active"} — setting the same status twice converges, so
-  // it's safe to retry exactly like a PUT). Not for POST creates — those use savePost.
-  method?: "PUT" | "PATCH";
+  // method defaults to PUT. PATCH and DELETE route the same idempotent path: PATCH (e.g.
+  // starting a round is PATCH /rounds/:id {status:"active"} — setting the same status twice
+  // converges) and DELETE (deleting twice converges to "gone"; the core treats a 404 on a
+  // retry as success) are both safe to retry with a stable Idempotency-Key. DELETE calls
+  // pass body: undefined. Not for POST creates — those use savePost.
+  method?: "PUT" | "PATCH" | "DELETE";
   retry?: RetryProfile;
   // reconcile, when provided, is invoked only after every retry has failed. It
   // should read authoritative server state and resolve true when the write is
@@ -77,6 +79,12 @@ export interface SavePutOptions {
   // write genuinely did not land and the error surfaces as before. See
   // utils/saveReconcile.ts and mobile/docs/network-saves.md.
   reconcile?: () => Promise<boolean>;
+  // parseErrorMessage, when provided, extracts a human message from a non-2xx response (the
+  // API's { error } body) so a user-facing idempotent mutation (edit / delete / status
+  // change) surfaces the real reason ("scheduled_date required") instead of a generic
+  // "Save failed: HTTP 400". Pass readApiErrorMessage for the common { error } shape.
+  // Background scorecard saves omit it (their failures are telemetry, not alerts).
+  parseErrorMessage?: (res: Response) => Promise<string | undefined>;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
   genKey?: () => string; // mints the Idempotency-Key; default is a v4 UUID
@@ -105,6 +113,7 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
     profile: opts.retry ?? BACKGROUND_SAVE,
     errorPrefix: "Save failed: HTTP",
     parse: async () => undefined,
+    parseErrorMessage: opts.parseErrorMessage,
     reconcile: opts.reconcile
       ? async () => ((await opts.reconcile!()) ? { value: undefined } : null)
       : undefined,
@@ -118,4 +127,17 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
     rng: opts.rng,
     now: opts.now,
   });
+}
+
+// readApiErrorMessage pulls the API's { error } string from a non-2xx response, or undefined
+// when the body isn't JSON or carries no error (savePut then falls back to its generic
+// "Save failed: HTTP <status>"). Pass it as savePut's parseErrorMessage on user-facing
+// idempotent mutations so the alert shows the backend's real reason.
+export async function readApiErrorMessage(res: Response): Promise<string | undefined> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    return body.error;
+  } catch {
+    return undefined;
+  }
 }

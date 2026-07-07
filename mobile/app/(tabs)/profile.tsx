@@ -20,6 +20,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useMe } from "@/hooks/useMe";
 import { supabase } from "@/utils/supabase";
 import { apiFetch } from "@/utils/api";
+import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import { API_URL } from "@/constants/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -108,13 +109,16 @@ export default function ProfileScreen() {
   const settingsMutation = useMutation({
     mutationFn: async (next: ScorecardSettings) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
+      // savePut(PATCH): the settings upsert is idempotent, so retry with a stable
+      // Idempotency-Key is safe; the toggle is optimistic so a generic error is fine.
+      await savePut({
+        url: `${API_URL}/api/v1/users/me/scorecard-settings`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: next,
+        label: "scorecard-settings",
+        retry: FOREGROUND_SAVE,
       });
-      if (!res.ok) throw new Error("Failed to save scorecard settings");
-      return res.json() as Promise<ScorecardSettings>;
     },
     // Optimistically update the cache so the toggle feels instant.
     onSuccess: (_, next) => {

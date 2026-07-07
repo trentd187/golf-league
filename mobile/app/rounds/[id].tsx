@@ -49,7 +49,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
 import { savePost } from "@/utils/savePost";
-import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import { roundStatusReconciled } from "@/utils/roundReconcile";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
 import { useTheme } from "@/hooks/useTheme";
@@ -309,17 +309,18 @@ export default function RoundDetailScreen() {
   const removePlayerMutation = useMutation({
     mutationFn: async ({ groupId, userId }: { groupId: string; userId: string }) => {
       const token = await getToken();
-      const res = await fetch(
-        `${API_URL}/api/v1/rounds/${id}/groups/${groupId}/members/${userId}`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
+      // savePut(DELETE): idempotent player removal (404-as-success on retry). Was a raw fetch()
+      // — the guest-aware removal that also deletes the orphan guest user row, so a phantom
+      // (commit + lost ack) retry must not surface a false error.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}/groups/${groupId}/members/${userId}`,
+        token: token ?? "",
+        method: "DELETE",
+        body: undefined,
+        label: "group-member-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -341,19 +342,17 @@ export default function RoundDetailScreen() {
       course_name?: string;
     }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+      // savePut(PATCH): editing a round is idempotent, so retry with a stable Idempotency-Key
+      // is safe; parseErrorMessage surfaces the API's validation reason to the alert.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+        body: data,
+        label: "round-edit",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -390,16 +389,16 @@ export default function RoundDetailScreen() {
   const updateGroupMutation = useMutation({
     mutationFn: async ({ groupId, name, teeTime }: { groupId: string; name: string; teeTime: string }) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+      // savePut(PATCH): idempotent group edit — retry + stable key + surfaced API error.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}/groups/${groupId}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() || null, tee_time: teeTime.trim() || null }),
+        body: { name: name.trim() || null, tee_time: teeTime.trim() || null },
+        label: "group-edit",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -413,14 +412,17 @@ export default function RoundDetailScreen() {
   const deleteGroupMutation = useMutation({
     mutationFn: async (groupId: string) => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/groups/${groupId}`, {
+      // savePut(DELETE): idempotent delete — the core treats a 404 on a retry as success, so
+      // a phantom delete (commit + lost ack) converges instead of surfacing a false error.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}/groups/${groupId}`,
+        token: token ?? "",
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        body: undefined,
+        label: "group-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -433,14 +435,16 @@ export default function RoundDetailScreen() {
   const deleteRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+      // savePut(DELETE): idempotent delete with 404-as-success on retry (phantom-delete safe).
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        body: undefined,
+        label: "round-delete",
+        retry: FOREGROUND_SAVE,
+        parseErrorMessage: readApiErrorMessage,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
     },
     onSuccess: () => {
       if (round?.event_id) {
@@ -458,16 +462,26 @@ export default function RoundDetailScreen() {
   const endRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+      // savePut(PATCH): ending a round is idempotent (status→completed twice converges), so a
+      // cellular phantom (PATCH commits, ack lost) is safe to retry with a stable
+      // Idempotency-Key. If every retry fails on transport, reconcile reads the round back —
+      // an already-"completed" status suppresses the false "couldn't end round" error. This
+      // replaces the raw apiFetch that had no retry, no reconcile, and no save telemetry.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "completed" }),
+        body: { status: "completed" },
+        label: "round-status",
+        retry: FOREGROUND_SAVE,
+        reconcile: async () => {
+          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return false;
+          return roundStatusReconciled(await res.json(), "completed");
+        },
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });
@@ -495,16 +509,24 @@ export default function RoundDetailScreen() {
   const reactivateRoundMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+      // savePut(PATCH): reactivating is idempotent (status→active twice converges) — same
+      // retry + stable-key + read-back reconcile hardening as end/start. Was a raw apiFetch
+      // with no retry/telemetry; this is the mutation the 7/2 incident ran.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "active" }),
+        body: { status: "active" },
+        label: "round-status",
+        retry: FOREGROUND_SAVE,
+        reconcile: async () => {
+          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return false;
+          return roundStatusReconciled(await res.json(), "active");
+        },
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed: ${res.status}`);
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round", id] });

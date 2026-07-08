@@ -52,6 +52,12 @@ export interface SavePostOptions<T> {
   // callers omit it: the backend response replay already recovers the id on any surviving
   // ack, so reconcile is a last-resort fallback for when every attempt's ack is lost.
   reconcile?: () => Promise<T | null>;
+  // recoverUrl builds the GET /idempotency/:key URL from this create's Idempotency-Key.
+  // When set, a transport-exhausted create asks the backend to REPLAY the committed create
+  // response for that exact key (create-side phantom recovery) — deterministic, no fuzzy
+  // matching, works for any create. Callers that need the id to navigate (round/event
+  // create) pass it; a fire-and-forget create can omit it. See backend GET /idempotency/:key.
+  recoverUrl?: (idempotencyKey: string) => string;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
   genKey?: () => string; // mints the Idempotency-Key; default is a v4 UUID
@@ -103,6 +109,22 @@ export async function savePost<T = unknown>(opts: SavePostOptions<T>): Promise<T
       ? async () => {
           const recovered = await opts.reconcile!();
           return recovered === null || recovered === undefined ? null : { value: recovered };
+        }
+      : undefined,
+    // Deterministic create-side recovery: on transport exhaustion, GET /idempotency/:key
+    // and replay the committed create body. A 404 (not committed / expired / foreign) or a
+    // parse failure returns null so the caller's normal error path still runs.
+    recoverByKey: opts.recoverUrl
+      ? async (key) => {
+          const res = await (opts.fetchImpl ?? fetch)(opts.recoverUrl!(key), {
+            headers: { Authorization: `Bearer ${opts.token}` },
+          });
+          if (!res.ok) return null;
+          try {
+            return { value: (await res.json()) as T };
+          } catch {
+            return null;
+          }
         }
       : undefined,
     report: opts.report ?? reportCreateFailure,

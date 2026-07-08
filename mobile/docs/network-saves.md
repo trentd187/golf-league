@@ -171,9 +171,24 @@ resolves void.
 Differences from `savePut`: `CREATE_SAVE` profile (3 attempts, 4 s cap, 12 s timeout —
 creates are foreground); a `parseErrorMessage` hook surfaces the API's `{ error }` text on
 a non-2xx instead of a bare status; telemetry is `error_source:create` (`create_endpoint`,
-`create_kind`, `create_outcome:reconciled`) so creates filter apart from saves. A
-`reconcile` callback exists for the rare case where *every* attempt's ack is lost, but the
-pilot ships without one and relies on the backend replay.
+`create_kind`, `create_outcome:reconciled`) so creates filter apart from saves.
+
+### Create-side phantom recovery — `recoverUrl` / `GET /idempotency/:key`
+
+The backend replay only helps when *some* attempt's ack survives. On a badly degraded cell
+link **every** attempt in the 3-try/~36 s budget can lose its ack while the row commits — the
+7/7 "network error, but the round was created" report. The dedupe still prevents a duplicate,
+but `savePost` throws and the screen alerts even though the row exists.
+
+`savePost` closes this with an optional **`recoverUrl(idempotencyKey) => string`**. On
+*transport* exhaustion (never an HTTP non-2xx — that's a real rejection), `saveWithRetry`
+calls the built-in `recoverByKey` with the stable key it already holds; `recoverByKey` does a
+`GET /api/v1/idempotency/:key`, which **replays the committed create response for that exact
+key** (deterministic, no fuzzy matching, works for every create type). A 200 resolves the new
+row (so the screen navigates and `reportCreateReconciled` fires); a 404 (not committed /
+expired / foreign) falls through to the normal failure path. Round-create passes
+`recoverUrl: (key) => `${API_URL}/api/v1/idempotency/${key}``; backend handler is
+`handlers.LookupIdempotentResponse` over `DurableIdempotencyStore.Lookup`.
 
 **Coverage:** every non-idempotent create is wired — `POST /events`, `POST /rounds`,
 `POST /events/:id/rounds`, `POST /events/:id/members`, `POST /rounds/:id/groups`,

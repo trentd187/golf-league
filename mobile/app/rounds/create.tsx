@@ -71,11 +71,17 @@ export default function CreateRoundScreen() {
       // savePost: stable Idempotency-Key + timeout + jittered-backoff retry. Safe to
       // retry because the backend durable idempotency store replays the original response
       // instead of creating a second round on a cellular phantom (commit + lost ack).
+      // recoverUrl closes the last gap: if EVERY attempt's ack is lost (the round commits
+      // but the 3-attempt budget exhausts before any response survives — the 7/7 "network
+      // error but it created" report), savePost GETs /idempotency/:key to replay the
+      // committed response and resolve the new round's id, so we navigate instead of
+      // alerting. See mobile/utils/savePost.ts + backend GET /idempotency/:key.
       return savePost<{ id: string }>({
         url: `${API_URL}/api/v1/rounds`,
         token: token ?? "",
         body: payload,
         label: "round",
+        recoverUrl: (key) => `${API_URL}/api/v1/idempotency/${key}`,
       });
     },
     onSuccess: (data) => {

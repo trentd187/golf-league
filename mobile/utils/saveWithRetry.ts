@@ -88,6 +88,13 @@ export interface RunSaveOptions<T> {
   // null when it did not. A throw or null falls through to the normal failure path; its
   // own failure must never mask the original error.
   reconcile?: () => Promise<{ value: T } | null>;
+  // recoverByKey is the create-side counterpart of reconcile: on transport exhaustion it
+  // receives the stable Idempotency-Key this write used, so a caller can ask the backend to
+  // REPLAY the committed create response for that exact key (GET /idempotency/:key). Unlike
+  // reconcile (read-back by resource) it's deterministic and works for any create type. Runs
+  // only on a transport failure, after reconcile if both are set. Same contract: { value } on
+  // recovery, null otherwise; a throw is swallowed. See savePost.ts.
+  recoverByKey?: (idempotencyKey: string) => Promise<{ value: T } | null>;
   // Telemetry (the adapter injects PUT- or create-flavoured reporters):
   report: (error: unknown, ctx: SaveFailureReport) => void;
   reportReconciled: (ctx: SaveReconciledReport) => void;
@@ -175,24 +182,42 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
 
     // Phantom-write recovery: an idempotent write (or a deduped create) can commit
     // server-side while the last-mile cellular hop drops the ack, exhausting every
-    // retry. Only a lost RESPONSE is recoverable, so reconcile only transport failures
-    // (no httpStatus) — a real HTTP non-2xx means the server rejected the write and must
-    // surface. A reconcile that throws or returns null falls through to the failure path.
-    if (opts.reconcile && httpStatus === undefined) {
-      try {
-        const recovered = await opts.reconcile();
-        if (recovered !== null) {
-          opts.reportReconciled({
-            label: opts.label,
-            attempts,
-            elapsedMs: now() - startedAt,
-            connectionType: conn.connectionType,
-            cellularGeneration: conn.cellularGeneration,
-          });
-          return recovered.value;
+    // retry. Only a lost RESPONSE is recoverable, so recovery runs only on transport
+    // failures (no httpStatus) — a real HTTP non-2xx means the server rejected the write
+    // and must surface. Try read-back reconcile first, then the deterministic
+    // recover-by-key (creates). Each is best-effort: a throw or null falls through.
+    if (httpStatus === undefined) {
+      const reportRecovered = () =>
+        opts.reportReconciled({
+          label: opts.label,
+          attempts,
+          elapsedMs: now() - startedAt,
+          connectionType: conn.connectionType,
+          cellularGeneration: conn.cellularGeneration,
+        });
+
+      if (opts.reconcile) {
+        try {
+          const recovered = await opts.reconcile();
+          if (recovered !== null) {
+            reportRecovered();
+            return recovered.value;
+          }
+        } catch {
+          // Reconciliation is best-effort; fall through.
         }
-      } catch {
-        // Reconciliation is best-effort; fall through to the real failure path.
+      }
+
+      if (opts.recoverByKey) {
+        try {
+          const recovered = await opts.recoverByKey(idempotencyKey);
+          if (recovered !== null) {
+            reportRecovered();
+            return recovered.value;
+          }
+        } catch {
+          // Recovery is best-effort; fall through to the real failure path.
+        }
       }
     }
 

@@ -149,9 +149,16 @@ func main() {
 	// in-memory replayLog, which only turns a retry-on-an-already-committed save into a
 	// phantom-save signal (no second row is possible). Both are constructed here so they're
 	// in scope for the round routes that follow.
-	durableIdempotency := middleware.Idempotency(middleware.NewDurableIdempotencyStore(db))
+	durableStore := middleware.NewDurableIdempotencyStore(db)
+	durableIdempotency := middleware.Idempotency(durableStore)
 	idempotencyStore := middleware.NewIdempotencyStore()
 	replayLog := middleware.IdempotencyReplayLog(idempotencyStore)
+
+	// Create-side phantom recovery: when a POST create commits but every ack is lost on
+	// cellular, the client exhausts its retry budget and can't learn the new row's id.
+	// This lets it recover deterministically by replaying the stored response for the SAME
+	// Idempotency-Key it already holds — works for every create type. See savePost.ts.
+	api.Get("/idempotency/:key", handlers.LookupIdempotentResponse(durableStore))
 
 	// Event routes — any authenticated user can create events (they become the organizer).
 	// /events/public must be registered before /events/:id so Fiber matches it literally.

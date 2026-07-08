@@ -284,6 +284,65 @@ describe("savePost — per-attempt timeout", () => {
   });
 });
 
+describe("savePost — recover-by-key (create-side phantom recovery)", () => {
+  // The recovery GET is distinguished from the create POSTs by having no `method`.
+  it("replays the committed create via GET /idempotency/:key when every ack was lost", async () => {
+    const recovered = { id: "round-recovered" };
+    const fetchImpl = jest.fn((_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
+      if (init?.method === "POST") return Promise.reject(new Error("Network request failed"));
+      // recovery GET
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recovered) });
+    });
+    const reportReconciled = jest.fn();
+    const opts = baseOpts({
+      fetchImpl,
+      genKey: () => "key-abc",
+      recoverUrl: (key: string) => `http://localhost:8080/api/v1/idempotency/${key}`,
+      reportReconciled,
+    });
+
+    await expect(savePost(opts)).resolves.toEqual(recovered); // caller navigates, no alert
+
+    // 3 POST attempts, then 1 recovery GET with the SAME key + bearer auth.
+    expect(fetchImpl).toHaveBeenCalledTimes(CREATE_SAVE.maxAttempts + 1);
+    const [recUrl, recInit] = fetchImpl.mock.calls[CREATE_SAVE.maxAttempts];
+    expect(recUrl).toBe("http://localhost:8080/api/v1/idempotency/key-abc");
+    expect(recInit?.headers?.Authorization).toBe("Bearer jwt-123");
+    expect(opts.report).not.toHaveBeenCalled();
+    expect(reportReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "round", attempts: CREATE_SAVE.maxAttempts }),
+    );
+  });
+
+  it("reports + rethrows when the key lookup 404s (create never committed)", async () => {
+    const fetchImpl = jest.fn((_url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") return Promise.reject(new Error("Network request failed"));
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+    const opts = baseOpts({
+      fetchImpl,
+      recoverUrl: (key: string) => `http://localhost:8080/api/v1/idempotency/${key}`,
+    });
+
+    await expect(savePost(opts)).rejects.toThrow("Network request failed");
+    expect(opts.report).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT attempt key recovery on an HTTP non-2xx (server rejected the create)", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 422, json: () => Promise.resolve({}) });
+    const opts = baseOpts({
+      fetchImpl,
+      retry: { maxAttempts: 1, baseMs: 1, capMs: 1, timeoutMs: 5 },
+      recoverUrl: (key: string) => `http://localhost:8080/api/v1/idempotency/${key}`,
+    });
+
+    await expect(savePost(opts)).rejects.toThrow("HTTP 422");
+    // Only the POST — no recovery GET, since a 422 means the create was rejected, not lost.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(opts.report).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("savePost — default NetInfo adapter", () => {
   // Omits the injected netInfoFetch so the production default runs through the shared
   // connection-snapshot module, adapting NetInfo.fetch() to the reported shape.

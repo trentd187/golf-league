@@ -35,6 +35,7 @@ import {
   addStatFocusBreadcrumb,
   reportScorecardMergeSkipped,
   addScorecardLoadBreadcrumb,
+  addScorecardRefetchBreadcrumb,
   initSentry,
 } from "@/utils/sentry";
 
@@ -659,6 +660,33 @@ describe("addScorecardLoadBreadcrumb", () => {
         data: { roundId: "r1", players: 4, scoreCells: 40, statCells: 18 },
       }),
     );
+  });
+});
+
+describe("addScorecardRefetchBreadcrumb", () => {
+  it("records a source-tagged breadcrumb and a sampled scorecard.refetch log", () => {
+    // First call for this source → sampled log fires (n <= 3).
+    addScorecardRefetchBreadcrumb("ws_open", "r1");
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "scorecard",
+        level: "info",
+        data: { source: "ws_open", roundId: "r1" },
+      }),
+    );
+    expect(Sentry.logger.info).toHaveBeenCalledWith(
+      "scorecard refetch",
+      expect.objectContaining({ event: "scorecard.refetch", source: "ws_open", roundId: "r1" }),
+    );
+  });
+
+  it("samples the log — a burst breadcrumbs every time but does not log every time", () => {
+    (Sentry.addBreadcrumb as jest.Mock).mockClear();
+    (Sentry.logger.info as jest.Mock).mockClear();
+    // "hole_change" is unused above, so counts start at 0: calls 1-3 log, 4-24 do not.
+    for (let i = 0; i < 10; i++) addScorecardRefetchBreadcrumb("hole_change", "r1");
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledTimes(10); // breadcrumb every time
+    expect((Sentry.logger.info as jest.Mock).mock.calls.length).toBeLessThan(10); // log is sampled
   });
 });
 

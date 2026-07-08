@@ -35,6 +35,14 @@ export const WS_RECONNECT = {
 // no error/close event fired.
 export const WS_IDLE_MS = 60_000;
 
+// WS_CATCHUP_MIN_MS throttles the onopen catch-up refetch. A cellular socket that reconnects
+// ~1×/s (the 7/7 storm) would otherwise invalidate the scorecard query every second, and each
+// refetch fires the 3-way merge's setState → the huge scorecard reflows mid-tap and cancels
+// pill presses. A flap that reconnects inside this window can't have missed a peer update the
+// 60s poll won't also catch, so we skip the catch-up. A real reconnect after a longer gap
+// still syncs instantly.
+export const WS_CATCHUP_MIN_MS = 10_000;
+
 // buildWsUrl converts the HTTP API base into a ws(s):// subscription URL for one round.
 // The JWT rides in ?token= because a browser can't set an Authorization header on a WS
 // upgrade. https→wss and http→ws; an already-ws(s) base is passed through.
@@ -108,6 +116,37 @@ export function shouldAttemptAfterGaveUp(
 ): boolean {
   if (lastGaveUpAt === null) return true;
   return now - lastGaveUpAt >= cooldownMs;
+}
+
+// shouldResetAttemptsOnReconnect decides whether an EXTERNAL reconnect trigger (network
+// regained / app foregrounded) may reset the attempt counter to 0. It may do so ONLY when
+// recovering from a give-up past the cooldown. This is the fix for the unbounded 7/7 storm:
+// the old handlers reset attemptRef=0 on every NetInfo `isConnected` event, and a flaky
+// cellular radio fires those constantly — so the counter never climbed to maxAttempts, the
+// give-up cap never engaged (`ws.gave_up` fired 0× despite 50 disconnects/min), and the
+// reconnect loop ran forever. Mid-climb (not yet given up) an external trigger must NOT
+// reset the counter — the onclose→scheduleReconnect loop already owns reconnection and must
+// be allowed to reach the cap.
+export function shouldResetAttemptsOnReconnect(
+  gaveUp: boolean,
+  lastGaveUpAt: number | null,
+  now: number,
+  cooldownMs: number = WS_RECONNECT.gaveUpCooldownMs,
+): boolean {
+  return gaveUp && shouldAttemptAfterGaveUp(lastGaveUpAt, now, cooldownMs);
+}
+
+// shouldCatchUpOnReconnect throttles the onopen catch-up refetch to at most once per
+// WS_CATCHUP_MIN_MS. lastCatchUpAt is when we last invalidated the scorecard for a WS
+// reconnect (null = never). Returns true on the first connect (nothing to throttle) and
+// after the window elapses; false for a rapid flap (which the 60s poll already covers).
+export function shouldCatchUpOnReconnect(
+  lastCatchUpAt: number | null,
+  now: number,
+  minMs: number = WS_CATCHUP_MIN_MS,
+): boolean {
+  if (lastCatchUpAt === null) return true;
+  return now - lastCatchUpAt >= minMs;
 }
 
 // shouldSampleDisconnect decides whether to LOG a given disconnect. The log fired once per

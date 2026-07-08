@@ -103,10 +103,22 @@ the server echoes them back. Without this, other players' scores only appeared o
   - **Give-up cooldown** (`shouldAttemptAfterGaveUp`, `gaveUpCooldownMs` 60s): after giving up, a
     foreground (AppState) or network-regained (NetInfo) event must wait out the cooldown before
     restarting, so app-switching can't re-trigger the whole storm.
+  - **Attempt-reset coordination** (`shouldResetAttemptsOnReconnect`) — *the 7/7 fix.* The stability
+    gate above only guards `onopen`; the AppState/NetInfo handlers separately reset the counter to 0
+    and reconnected on **every** event. A flaky cellular radio fires NetInfo `isConnected` constantly,
+    so the counter never climbed to the cap — `ws.gave_up` fired **0×** across a 50-disconnects/min
+    storm, and the reconnect loop ran unbounded (Sentry-confirmed). Now an external trigger may reset
+    the counter **only** when recovering from a give-up past the cooldown; mid-climb it must not reset
+    (the `onclose`→`scheduleReconnect` loop owns reconnection and must be allowed to reach the cap).
+    So the socket now genuinely gives up → `ws.gave_up` → 60s cooldown → 60s poll.
   - **Log sampling** (`shouldSampleDisconnect`): the `ws.disconnected` log keeps the first 3 of a
     storm then every 10th, so a persistent flap stays visible without flooding Sentry Logs.
-- **Catch-up:** every successful (re)connect invalidates `["scorecard", roundId]` so anything
-  missed while disconnected is pulled immediately.
+- **Catch-up (throttled):** a successful (re)connect invalidates `["scorecard", roundId]` to pull
+  anything missed — but gated by `shouldCatchUpOnReconnect` (`WS_CATCHUP_MIN_MS` 10s). A flap that
+  reconnects ~1×/s would otherwise refetch every second, and each refetch's 3-way merge reflows the
+  huge scorecard mid-tap and **cancels pill presses** (the 7/7 FIR/GIR bug); the 60s poll covers
+  anything skipped in between. Refetch sites emit a source-tagged `scorecard.refetch` breadcrumb/log
+  (`ws_open` | `ws_message` | `poll` | `hole_change` | `manual`).
 - **Watchdog** (`isStaleConnection`, `WS_IDLE_MS` 60s): a socket silent past the idle window is
   recycled even without an error/close event (the half-open cellular case). "Silence" means no
   *data* frame — and because the server's control pings don't reach `onmessage`, the watchdog
@@ -125,6 +137,7 @@ the server echoes them back. Without this, other players' scores only appeared o
 | `wsWriteWait` | server | 10s | Bound a single stuck write. |
 | `WS_RECONNECT` | mobile | base 1s, cap 30s, floor 1s, Full Jitter, maxAttempts 8, minStable 10s, gaveUpCooldown 60s | Recover quickly, back off with a floor so a flap can't storm, give up after 8, then hold off 60s before a foreground/network event restarts. |
 | `WS_IDLE_MS` | mobile | 60s | No traffic ⇒ assume half-open and recycle. |
+| `WS_CATCHUP_MIN_MS` | mobile | 10s | Throttle the onopen catch-up refetch so a flap can't refetch the scorecard ~1×/s and cancel pill taps. |
 
 ## Observability matrix
 
@@ -134,11 +147,13 @@ Every state transition emits a signal. If a transition isn't here, it isn't done
 | Event | Where | Sentry signal |
 |---|---|---|
 | Upgrade auth rejected | backend | `ws.auth_failed` warn log (+ 401/426) |
+| Upgrade missing (not a WS handshake) | backend | `ws.upgrade_missing` info log (+ 426) — reveals a proxy/carrier stripping `Upgrade` headers (7/7: client stormed while the backend logged no `ws.connected`) |
 | Client connected | backend + mobile | `ws.connected` info log (round_id, user_id, conn_count) / breadcrumb |
 | Client disconnected | backend | `ws.disconnected` info log + `reason` (client_close / pong_timeout / read_error) |
-| Disconnected | mobile | `ws.disconnected` warn log (code + reason) |
+| Disconnected | mobile | `ws.disconnected` warn log (code + reason), sampled |
 | Reconnect attempt | mobile | `ws.reconnect_attempt` breadcrumb (attempt, delayMs) |
-| Reconnects exhausted | mobile | `ws.gave_up` **warn log** (`event:ws.gave_up`, `error_source:ws`, `ws_state:gave_up`) → poll fallback (not an Issue — user loses nothing) |
+| Reconnects exhausted | mobile | `ws.gave_up` **warn log** (`event:ws.gave_up`, `error_source:ws`, `ws_state:gave_up`, **`code`+`reason`** of the last close → network 1006 vs auth 1008/4xxx) → poll fallback (not an Issue — user loses nothing) |
+| Scorecard refetch | mobile | `scorecard.refetch` breadcrumb + sampled log with `source` (ws_open / ws_message / poll / hole_change / manual) |
 | Slow consumer evicted | backend | `ws.send_dropped` warn log |
 | Hub broadcast buffer full | backend | `ws.broadcast_dropped` warn log |
 | Hub goroutine panic | backend | `ws.hub_panic` **Issue** via `sentry.Recover()` + auto-restart |

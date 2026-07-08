@@ -25,7 +25,7 @@ import {
   shouldReconnect,
   parseLiveMessage,
   isStaleConnection,
-  connectionWasStable,
+  shouldResetAttemptsAfterClose,
   shouldResetAttemptsOnReconnect,
   shouldCatchUpOnReconnect,
   shouldSampleDisconnect,
@@ -143,6 +143,12 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
 
       closeSocket();
 
+      // Clear the open stamp BEFORE this attempt: onopen sets it to a real time, but if the
+      // wss handshake never completes (the 7/8 cellular case) onopen never runs and onclose
+      // must see the 0 sentinel — not a prior stable socket's open time — so it correctly
+      // treats the failure as a flap and lets the attempt counter climb toward the give-up cap.
+      openedAtRef.current = 0;
+
       let socket: WebSocket;
       try {
         // On web the socket scheme must follow the page protocol, not API_URL: a browser
@@ -204,11 +210,14 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
         // Remember the close code/reason so a later give_up can report the failure mode.
         lastCloseCodeRef.current = event?.code;
         lastCloseReasonRef.current = event?.reason;
-        // A connection that held long enough was a real success: reset the attempt counter,
-        // clear the give-up cooldown, and start a fresh disconnect-log epoch. A flap leaves
-        // them alone so the counter climbs toward the cap (bounding the storm).
-        const openMs = Date.now() - openedAtRef.current;
-        if (connectionWasStable(openMs)) {
+        // A connection that actually opened AND held long enough was a real success: reset
+        // the attempt counter, clear the give-up cooldown, and start a fresh disconnect-log
+        // epoch. A flap — or a handshake that never opened (openedAt still 0) — leaves them
+        // alone so the counter climbs toward the cap (bounding the storm). The openedAt guard
+        // lives in shouldResetAttemptsAfterClose: without it, a never-opened socket's
+        // `now - 0` reads as a huge stable openMs and resets the counter every failed
+        // handshake — the 7/8 unbounded-storm bug (421 disconnects, 0 opens, 0 give-ups).
+        if (shouldResetAttemptsAfterClose(openedAtRef.current, Date.now())) {
           attemptRef.current = 0;
           lastGaveUpAtRef.current = null;
           disconnectCountRef.current = 0;

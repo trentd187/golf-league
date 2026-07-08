@@ -136,6 +136,25 @@ export function shouldResetAttemptsOnReconnect(
   return gaveUp && shouldAttemptAfterGaveUp(lastGaveUpAt, now, cooldownMs);
 }
 
+// shouldResetAttemptsAfterClose decides whether a socket's onclose should reset the
+// reconnect-attempt counter to 0. It resets ONLY when THIS socket actually opened
+// (openedAt > 0) and then held at least minStableMs. The openedAt <= 0 guard is the 7/8
+// cellular fix: when the wss handshake never completes, onopen never runs and openedAt keeps
+// its 0 sentinel — so `now - 0` is an epoch-sized "openMs" that connectionWasStable would
+// wrongly treat as a long stable connection, resetting the counter on EVERY failed handshake.
+// That pinned attemptRef at 0, so maxAttempts (→ ws.gave_up → 60s-poll fallback) was never
+// reached and the reconnect loop ran unbounded (one session: 421 disconnects, 0 opens, 0
+// give-ups). The caller must clear openedAt to 0 before each connect so a failed attempt reads
+// the sentinel rather than a prior stable socket's open time.
+export function shouldResetAttemptsAfterClose(
+  openedAt: number,
+  now: number,
+  minStableMs: number = WS_RECONNECT.minStableMs,
+): boolean {
+  if (openedAt <= 0) return false; // handshake never opened → a failure, not a stable success
+  return connectionWasStable(now - openedAt, minStableMs);
+}
+
 // shouldCatchUpOnReconnect throttles the onopen catch-up refetch to at most once per
 // WS_CATCHUP_MIN_MS. lastCatchUpAt is when we last invalidated the scorecard for a WS
 // reconnect (null = never). Returns true on the first connect (nothing to throttle) and

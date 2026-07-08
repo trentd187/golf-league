@@ -55,6 +55,7 @@ import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { apiGet } from "@/utils/apiGet";
 import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb, addScorecardRefetchBreadcrumb } from "@/utils/sentry";
 import {
   extractServerScores,
@@ -393,10 +394,13 @@ export default function ScorecardScreen() {
             // exactly these scores. The PUT is an idempotent upsert, so a successful
             // commit with a dropped response is indistinguishable from this read.
             reconcile: async () => {
-              const res = await fetch(
-                `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
-                { headers: { Authorization: `Bearer ${token ?? ""}` } },
-              );
+              // apiGet, not a bare fetch: the read-back must survive the same degraded
+              // cellular that just failed the PUT, or it can't confirm the phantom write and
+              // surfaces a false failure. Timeout + retry over transport errors.
+              const res = await apiGet({
+                url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+                token: token ?? "",
+              });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;
               return scoresReconciled(entries, extractServerScores(fresh, roundPlayerId));
@@ -473,10 +477,13 @@ export default function ScorecardScreen() {
             // so a committed write with a dropped ack is indistinguishable from this
             // read — without it, a cellular ack loss shows a false "Stats failed to save".
             reconcile: async () => {
-              const res = await fetch(
-                `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
-                { headers: { Authorization: `Bearer ${token ?? ""}` } },
-              );
+              // apiGet, not a bare fetch: the read-back must survive the same degraded
+              // cellular that just failed the PUT, or it can't confirm the phantom write and
+              // surfaces a false "Stats failed to save". Timeout + retry over transport errors.
+              const res = await apiGet({
+                url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+                token: token ?? "",
+              });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;
               return holeStatReconciled(

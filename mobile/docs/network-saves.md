@@ -132,6 +132,17 @@ phantom save via `reportSaveReconciled` — a `save_outcome:reconciled` **struct
 **counter**. A `reconcile` that returns false or throws falls through to the normal
 `reportSaveFailure` + rethrow; its own failure never masks the original error.
 
+> **The read-back must itself be resilient — never a bare `fetch()`.** The reconcile GET runs
+> on the *same* degraded cellular that just exhausted the write's retries, so a single
+> unprotected `fetch()` usually fails too and the phantom can't be confirmed — a false
+> "failed to save"/"Stats failed to save" even though the data is safe (Sentry 7/8: 11
+> read-backs confirmed, but the one that also lost the GET surfaced the false error). Both
+> scorecard reconciles therefore read through **[`apiGet`](../utils/apiGet.ts)** (the read
+> counterpart to `savePut`/`savePost`): a per-attempt `AbortController` timeout + Full-Jitter
+> retry over transport failures (`RECONCILE_GET` profile), returning the `Response` for any
+> HTTP status (a non-2xx is returned, not retried — it won't heal). Any authenticated read
+> that must survive a flaky link should use `apiGet`, not a raw `fetch()`.
+
 Server side, the `Idempotency-Key` lets the backend log `score.idempotent_replay` when a retry
 lands on an already-committed save (`backend/internal/middleware/idempotency.go`) — the
 server-side half of the same counter. To chart phantom saves: `save_outcome:reconciled` (client,

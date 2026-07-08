@@ -48,11 +48,13 @@ jsonpath "$.id" isString
 
 # ── Step 3: Recover by key — the committed create replays with the SAME id ────────
 # This is the phantom-recovery path: had every POST ack been lost, the client would GET
-# this to learn the id instead of surfacing "could not create".
+# this to learn the id instead of surfacing "could not create". The replay preserves the
+# ORIGINAL response status verbatim — a create is 201, so the lookup replays 201 (the
+# client's recoverByKey accepts any 2xx). Not 200.
 GET {{QA_BASE_URL}}/api/v1/idempotency/{{idem_key}}
 Authorization: Bearer {{access_token}}
 
-HTTP 200
+HTTP 201
 [Asserts]
 header "Idempotent-Replay" == "true"
 jsonpath "$.id" == "{{event_id}}"

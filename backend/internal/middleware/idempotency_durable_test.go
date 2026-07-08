@@ -295,3 +295,85 @@ func TestIdempotencyMiddleware_ReplayPreservesId(t *testing.T) {
 	assert.Equal(t, jsonField(t, first, "id"), jsonField(t, second, "id"),
 		"the replay returns the same new-row id the client needs to navigate")
 }
+
+// ─── Lookup (create-side phantom recovery — GET /idempotency/:key) ───────────────
+
+func TestDurableStore_LookupReturnsCommittedResponse(t *testing.T) {
+	store := middleware.NewDurableIdempotencyStore(testutil.NewTestDB(t))
+	ctx := context.Background()
+	uid := uuid.New()
+
+	_, claimed, err := store.Claim(ctx, "k1", uid, "POST", "/rounds", "h1")
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, store.Store(ctx, "k1", http.StatusCreated, `{"id":"r1"}`))
+
+	rec, found, err := store.Lookup(ctx, "k1", uid)
+	require.NoError(t, err)
+	require.True(t, found, "a committed create is recoverable by its key")
+	require.NotNil(t, rec.ResponseStatus)
+	assert.Equal(t, http.StatusCreated, *rec.ResponseStatus)
+	require.NotNil(t, rec.ResponseBody)
+	assert.Equal(t, `{"id":"r1"}`, *rec.ResponseBody)
+}
+
+func TestDurableStore_LookupMissingKeyNotFound(t *testing.T) {
+	store := middleware.NewDurableIdempotencyStore(testutil.NewTestDB(t))
+	rec, found, err := store.Lookup(context.Background(), "nope", uuid.New())
+	require.NoError(t, err)
+	assert.False(t, found)
+	assert.Nil(t, rec)
+}
+
+func TestDurableStore_LookupForeignUserNotFound(t *testing.T) {
+	store := middleware.NewDurableIdempotencyStore(testutil.NewTestDB(t))
+	ctx := context.Background()
+	owner := uuid.New()
+
+	_, claimed, err := store.Claim(ctx, "k1", owner, "POST", "/rounds", "h1")
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, store.Store(ctx, "k1", http.StatusCreated, `{"id":"r1"}`))
+
+	// A different caller must not recover another user's create.
+	rec, found, err := store.Lookup(ctx, "k1", uuid.New())
+	require.NoError(t, err)
+	assert.False(t, found)
+	assert.Nil(t, rec)
+}
+
+func TestDurableStore_LookupInFlightNotFound(t *testing.T) {
+	store := middleware.NewDurableIdempotencyStore(testutil.NewTestDB(t))
+	ctx := context.Background()
+	uid := uuid.New()
+
+	// Claimed but not yet Stored → no committed response to replay.
+	_, claimed, err := store.Claim(ctx, "k1", uid, "POST", "/rounds", "h1")
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	rec, found, err := store.Lookup(ctx, "k1", uid)
+	require.NoError(t, err)
+	assert.False(t, found, "an in-flight create has no response to replay yet")
+	assert.Nil(t, rec)
+}
+
+func TestDurableStore_LookupExpiredNotFound(t *testing.T) {
+	store := middleware.NewDurableIdempotencyStore(testutil.NewTestDB(t))
+	clock := time.Unix(1_700_000_000, 0)
+	store.SetDurableClockForTest(func() time.Time { return clock })
+	ctx := context.Background()
+	uid := uuid.New()
+
+	_, claimed, err := store.Claim(ctx, "k1", uid, "POST", "/rounds", "h1")
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, store.Store(ctx, "k1", http.StatusCreated, `{"id":"r1"}`))
+
+	// Past the 24h TTL the stored response is no longer replayable.
+	clock = clock.Add(25 * time.Hour)
+	rec, found, err := store.Lookup(ctx, "k1", uid)
+	require.NoError(t, err)
+	assert.False(t, found)
+	assert.Nil(t, rec)
+}

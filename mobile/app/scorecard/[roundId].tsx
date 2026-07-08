@@ -43,7 +43,8 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiFetch } from "@/utils/api";
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
+import { girScoreFromPutts, girKey, firKey, girHitDerivations, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
+import { AdvancedStatPillRow } from "@/components/AdvancedStatPillRow";
 import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericStatField } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
@@ -54,7 +55,7 @@ import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
-import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb } from "@/utils/sentry";
+import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb, addScorecardRefetchBreadcrumb } from "@/utils/sentry";
 import {
   extractServerScores,
   scoresReconciled,
@@ -89,6 +90,11 @@ const FIR_OPTIONS: { key: string; label: string; icon: IoniconsName | null }[] =
   { key: "miss:long",  label: "Long",  icon: "arrow-up"      },
 ];
 
+// Tee-shot-club pills reuse the same AdvancedStatPillRow as FIR/GIR — text-only (no icon),
+// key === label === the club value. Module-level so the array identity is stable (memo).
+const TEE_SHOT_CLUB_OPTIONS: { key: string; label: string; icon: IoniconsName | null }[] =
+  TEE_SHOT_CLUBS.map((club) => ({ key: club, label: club, icon: null }));
+
 // NUMERIC_STAT_META maps each numeric stat key to its display label and unit.
 // Module-level so it isn't recreated on every render.
 const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string | null }> = {
@@ -112,25 +118,6 @@ function handicapStrokes(courseHandicap: number, strokeIndex: number, holeCount:
   return base + (strokeIndex <= remainder ? 1 : 0);
 }
 
-// girKey converts a HoleStatEntry's GIR fields into the compound key used by
-// GIR_OPTIONS so the correct button can be highlighted.
-function girKey(entry: HoleStatEntry | undefined): string | null {
-  if (!entry?.gir) return null;
-  if (entry.gir === "hit") return "hit";
-  if (entry.gir === "na")  return "na";
-  if (entry.gir === "miss" && entry.gir_miss_direction) return `miss:${entry.gir_miss_direction}`;
-  return null;
-}
-
-// firKey converts a HoleStatEntry's FIR fields into the compound key used by
-// FIR_OPTIONS so the correct button can be highlighted.
-function firKey(entry: HoleStatEntry | undefined): string | null {
-  if (entry?.fir === null || entry?.fir === undefined) return null;
-  if (entry.fir === true) return "hit";
-  if (entry.fir_miss_direction) return `miss:${entry.fir_miss_direction}`;
-  return null;
-}
-
 // emptyHoleStat is the default state for a hole with no stats entered yet.
 const emptyHoleStat: HoleStatEntry = {
   gir: null, gir_miss_direction: null,
@@ -139,6 +126,12 @@ const emptyHoleStat: HoleStatEntry = {
   putts: "", first_putt_distance: "", putt_distance_made: "", approach_yds: "",
   tee_shot_club: null, tee_shot_distance: "",
 };
+
+// STAT_TAP_DEBOUNCE_MS coalesces rapid pill taps on one hole into a single PUT. Taps
+// update local state instantly (the UI stays responsive); only the network save waits.
+// Formerly 0 (fire-per-tap), which on cellular kept many slow saves in flight, and each
+// resolution flipped statsSaveError → re-render churn that helped cancel the next tap.
+const STAT_TAP_DEBOUNCE_MS = 250;
 
 // scoreColor returns a NativeWind class string for a score relative to par.
 // Used in both Basic and Advanced views to keep color logic in one place.
@@ -359,8 +352,9 @@ export default function ScorecardScreen() {
       holeChangeIsMount.current = false;
       return;
     }
+    addScorecardRefetchBreadcrumb("hole_change", roundId);
     refetch();
-  }, [currentHole, refetch]);
+  }, [currentHole, refetch, roundId]);
 
 
   // ── Auto-save ───────────────────────────────────────────────────────────────
@@ -501,6 +495,26 @@ export default function ScorecardScreen() {
     },
     [roundId, getToken]
   );
+
+  // ── Pill-tap dispatchers (memoization bridge) ────────────────────────────────
+  // The FIR/GIR/OB/club tap handlers are defined inside the current-hole render (they
+  // close over the selected player + hole), so their identity changes every render. The
+  // memoized AdvancedStatPillRow must receive STABLE callbacks or it re-renders anyway —
+  // re-exposing the mid-tap gesture cancellation this whole change fixes. Bridge the two:
+  // a ref holds the latest handlers (refreshed during render, below) and these useCallback
+  // dispatchers keep a constant identity while always invoking the current closure.
+  const pillHandlersRef = useRef<{
+    fir: (key: string) => void;
+    gir: (key: string) => void;
+    ob: (field: "fir_ob" | "gir_ob") => void;
+    club: (club: TeeShotClub) => void;
+  }>({ fir: () => {}, gir: () => {}, ob: () => {}, club: () => {} });
+
+  const onSelectFir   = useCallback((key: string) => pillHandlersRef.current.fir(key), []);
+  const onSelectGir   = useCallback((key: string) => pillHandlersRef.current.gir(key), []);
+  const onSelectClub  = useCallback((key: string) => pillHandlersRef.current.club(key as TeeShotClub), []);
+  const onToggleFirOb = useCallback(() => pillHandlersRef.current.ob("fir_ob"), []);
+  const onToggleGirOb = useCallback(() => pillHandlersRef.current.ob("gir_ob"), []);
 
   // ── Focus helpers ────────────────────────────────────────────────────────────
 
@@ -910,7 +924,7 @@ export default function ScorecardScreen() {
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
-            onRefresh={refetch}
+            onRefresh={() => { addScorecardRefetchBreadcrumb("manual", roundId); refetch(); }}
             tintColor={t.colors.tabBarActive}
           />
         }
@@ -1391,30 +1405,28 @@ export default function ScorecardScreen() {
                   else if (key === "na")            { gir = "na"; }
                   else if (key.startsWith("miss:")) { gir = "miss"; dir = key.slice(5); }
                 }
-                if (gir === "hit" && holeData.par) {
-                  const puttsNum = parseInt(holeStat.putts, 10);
-                  if (!isNaN(puttsNum) && puttsNum >= 0 && val === "") {
-                    // Putts already set, score blank → derive score from GIR regulation formula.
-                    const autoScore = String(girScoreFromPutts(holeData.par, puttsNum));
+                // Auto-fills when GIR becomes "hit" (pure — see utils/scorecard.ts).
+                // Left undefined when no putts hint applies; spreading undefined is a no-op.
+                let autoPuttsField: Partial<HoleStatEntry> | undefined;
+                if (gir === "hit") {
+                  const d = girHitDerivations(holeData.par, holeStat.putts, val, gross);
+                  if (d.autoScore !== null) {
                     setScores((prev) => ({
                       ...prev,
-                      [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: autoScore },
+                      [rpId]: { ...(prev[rpId] ?? {}), [holeData.hole_number]: d.autoScore as string },
                     }));
                     autoSavePlayer(rpId);
                   }
+                  if (d.autoPutts !== null) autoPuttsField = { putts: d.autoPutts };
                 }
-                const hintPutts = gir === "hit" && holeStat.putts === "" && holeData.par != null && !isNaN(gross)
-                  ? girPuttsHint(holeData.par, gross)
-                  : null;
-                const autoPutts = hintPutts != null ? { putts: hintPutts } : {};
                 setStats((prev) => ({
                   ...prev,
                   [rpId]: {
                     ...(prev[rpId] ?? {}),
-                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), gir, gir_miss_direction: dir, ...autoPutts },
+                    [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), gir, gir_miss_direction: dir, ...autoPuttsField },
                   },
                 }));
-                autoSaveStats(rpId, currentHole, 0);
+                autoSaveStats(rpId, currentHole, STAT_TAP_DEBOUNCE_MS);
               };
 
               // handleFIRTap toggles FIR. Tapping the active option clears it.
@@ -1433,7 +1445,7 @@ export default function ScorecardScreen() {
                     [currentHole]: { ...(prev[rpId]?.[currentHole] ?? emptyHoleStat), fir, fir_miss_direction: dir },
                   },
                 }));
-                autoSaveStats(rpId, currentHole, 0);
+                autoSaveStats(rpId, currentHole, STAT_TAP_DEBOUNCE_MS);
               };
 
               // handleOBTap toggles the additive OB flag for the tee shot (fir_ob) or
@@ -1451,7 +1463,7 @@ export default function ScorecardScreen() {
                     },
                   };
                 });
-                autoSaveStats(rpId, currentHole, 0);
+                autoSaveStats(rpId, currentHole, STAT_TAP_DEBOUNCE_MS);
               };
 
               // handleTeeShotClubTap toggles the selected tee shot club.
@@ -1468,7 +1480,17 @@ export default function ScorecardScreen() {
                     },
                   },
                 }));
-                autoSaveStats(rpId, currentHole, 0);
+                autoSaveStats(rpId, currentHole, STAT_TAP_DEBOUNCE_MS);
+              };
+
+              // Refresh the memoization bridge with this render's handlers so the stable
+              // dispatchers (onSelectFir/onSelectGir/onSelectClub/onToggle*Ob) invoke the
+              // current closure. Assigned during render, before the pills below read them.
+              pillHandlersRef.current = {
+                fir: handleFIRTap,
+                gir: handleGIRTap,
+                ob: handleOBTap,
+                club: handleTeeShotClubTap,
               };
 
               // Build ordered list of enabled numeric stats for keyboard focus chaining.
@@ -1606,117 +1628,53 @@ export default function ScorecardScreen() {
                   {settings.stat_order.map((statKey) => {
                     switch (statKey) {
                       case "fir":
+                        // Memoized pill row: isolates the touch subtree so an unrelated
+                        // parent re-render (WS-reconnect refetch → 3-way merge) can't cancel
+                        // an in-flight tap. onSelect/onToggleOb are stable dispatchers.
                         return settings.fir_enabled ? (
-                          <View key="fir" className={`px-4 py-3 gap-2 border-b ${t.divider} ${holeData.par === 3 ? "opacity-40" : ""}`}>
-                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                              Fairway in Regulation{holeData.par === 3 ? " (N/A — par 3)" : ""}
-                            </Text>
-                            <View className="flex-row flex-wrap gap-2">
-                              {FIR_OPTIONS.map(({ key, label, icon }) => {
-                                const active = currentFir === key;
-                                return (
-                                  <TouchableOpacity
-                                    key={key}
-                                    onPress={() => { if (holeData.par !== 3 && canEditSelected) handleFIRTap(key); }}
-                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${!canEditSelected ? "opacity-50" : ""}`}
-                                    activeOpacity={holeData.par === 3 || !canEditSelected ? 1 : 0.7}
-                                  >
-                                    {icon && (
-                                      <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
-                                    )}
-                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{label}</Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                              {/* OB is additive — selectable alongside a directional pill (left AND OB). */}
-                              {settings.ob_enabled && (
-                                <>
-                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
-                                  <TouchableOpacity
-                                    onPress={() => { if (holeData.par !== 3 && canEditSelected) handleOBTap("fir_ob"); }}
-                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                      holeStat.fir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
-                                    } ${!canEditSelected ? "opacity-50" : ""}`}
-                                    activeOpacity={holeData.par === 3 || !canEditSelected ? 1 : 0.7}
-                                  >
-                                    <Text className={`text-xs font-semibold ${holeStat.fir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
-                                  </TouchableOpacity>
-                                </>
-                              )}
-                            </View>
-                          </View>
+                          <AdvancedStatPillRow
+                            key="fir"
+                            t={t}
+                            label="Fairway in Regulation"
+                            sectionDisabled={holeData.par === 3}
+                            disabledSuffix=" (N/A — par 3)"
+                            options={FIR_OPTIONS}
+                            activeKey={currentFir}
+                            canEdit={canEditSelected}
+                            onSelect={onSelectFir}
+                            showOb={settings.ob_enabled}
+                            obActive={holeStat.fir_ob === true}
+                            onToggleOb={onToggleFirOb}
+                          />
                         ) : null;
 
                       case "gir":
                         return settings.gir_enabled ? (
-                          <View key="gir" className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
-                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                              Green in Regulation
-                            </Text>
-                            <View className="flex-row flex-wrap gap-2">
-                              {GIR_OPTIONS.map(({ key, label, icon }) => {
-                                const active = currentGir === key;
-                                return (
-                                  <TouchableOpacity
-                                    key={key}
-                                    onPress={() => { if (canEditSelected) handleGIRTap(key); }}
-                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${!canEditSelected ? "opacity-50" : ""}`}
-                                    activeOpacity={!canEditSelected ? 1 : 0.7}
-                                  >
-                                    {icon && (
-                                      <Ionicons name={icon} size={12} color={active ? "white" : t.colors.tabBarActive} />
-                                    )}
-                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{label}</Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                              {/* OB is additive — selectable alongside a directional/N-A pill. */}
-                              {settings.ob_enabled && (
-                                <>
-                                  <View className={`w-px self-stretch border-l ${t.border} mx-1`} />
-                                  <TouchableOpacity
-                                    onPress={() => { if (canEditSelected) handleOBTap("gir_ob"); }}
-                                    className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${
-                                      holeStat.gir_ob === true ? "bg-red-600 border-red-600" : `${t.surface} ${t.border}`
-                                    } ${!canEditSelected ? "opacity-50" : ""}`}
-                                    activeOpacity={!canEditSelected ? 1 : 0.7}
-                                  >
-                                    <Text className={`text-xs font-semibold ${holeStat.gir_ob === true ? "text-white" : t.textSecondary}`}>OB</Text>
-                                  </TouchableOpacity>
-                                </>
-                              )}
-                            </View>
-                          </View>
+                          <AdvancedStatPillRow
+                            key="gir"
+                            t={t}
+                            label="Green in Regulation"
+                            options={GIR_OPTIONS}
+                            activeKey={currentGir}
+                            canEdit={canEditSelected}
+                            onSelect={onSelectGir}
+                            showOb={settings.ob_enabled}
+                            obActive={holeStat.gir_ob === true}
+                            onToggleOb={onToggleGirOb}
+                          />
                         ) : null;
 
                       case "tee_shot_club":
                         return settings.tee_shot_club_enabled ? (
-                          <View key="tee_shot_club" className={`px-4 py-3 gap-2 border-b ${t.divider}`}>
-                            <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                              Tee Shot Club
-                            </Text>
-                            <View className="flex-row flex-wrap gap-2">
-                              {TEE_SHOT_CLUBS.map((club) => {
-                                const active = holeStat.tee_shot_club === club;
-                                return (
-                                  <TouchableOpacity
-                                    key={club}
-                                    onPress={() => { if (canEditSelected) handleTeeShotClubTap(club); }}
-                                    className={`px-3 py-1.5 rounded-full border ${
-                                      active ? "bg-green-700 border-green-700" : `${t.surface} ${t.border}`
-                                    } ${!canEditSelected ? "opacity-50" : ""}`}
-                                    activeOpacity={!canEditSelected ? 1 : 0.7}
-                                  >
-                                    <Text className={`text-xs font-semibold ${active ? "text-white" : t.textSecondary}`}>{club}</Text>
-                                  </TouchableOpacity>
-                                );
-                              })}
-                            </View>
-                          </View>
+                          <AdvancedStatPillRow
+                            key="tee_shot_club"
+                            t={t}
+                            label="Tee Shot Club"
+                            options={TEE_SHOT_CLUB_OPTIONS}
+                            activeKey={holeStat.tee_shot_club}
+                            canEdit={canEditSelected}
+                            onSelect={onSelectClub}
+                          />
                         ) : null;
 
                       case "putts":

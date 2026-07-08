@@ -213,7 +213,15 @@ func MakeWSAuthHandler(keyfn jwt.Keyfunc) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Reject anything that isn't an actual WS upgrade so this route can't be hit
 		// as a plain GET (which would hang waiting for an upgrade that never comes).
+		// Log it: on 7/7 clients logged a WS storm while the backend logged NO ws.connected
+		// or ws.auth_failed — the sockets never became upgrades. If a proxy/carrier strips
+		// the Upgrade headers, every attempt lands here and 426s; this makes that visible
+		// (ws.upgrade_missing) instead of silent. Info, not Warn — bots/health checks also
+		// hit non-upgrade, so it belongs in searchable Logs, not the Issues stream.
 		if !gofiberws.IsWebSocketUpgrade(c) {
+			slog.InfoContext(c.UserContext(), "WebSocket route hit without an Upgrade — not a websocket handshake",
+				"event_type_label", "ws.upgrade_missing",
+				"path", c.Path())
 			return c.SendStatus(fiber.StatusUpgradeRequired) // 426
 		}
 

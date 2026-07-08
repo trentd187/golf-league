@@ -428,6 +428,35 @@ export function addScorecardLoadBreadcrumb(ctx: {
   });
 }
 
+// ScorecardRefetchSource attributes WHY the scorecard query refetched. The backend's
+// http.request access log counts GET /scorecard but can't tell a WS-reconnect catch-up
+// from a poll or a hole change — this source tag can, so a refetch storm (the 7/7 cellular
+// pill-cancellation cause) is attributable client-side.
+export type ScorecardRefetchSource = "ws_open" | "ws_message" | "hole_change" | "manual" | "poll";
+
+// refetchSampleCounts samples the searchable log per source so a storm stays visible in
+// Logs without flooding it (breadcrumbs alone don't surface in a Logs search). Module-level
+// — a lifetime running count is fine for `count % everyNth` sampling.
+const refetchSampleCounts = new Map<ScorecardRefetchSource, number>();
+
+// addScorecardRefetchBreadcrumb records one scorecard refetch with its source. Always a
+// breadcrumb (cheap, rides along on any later event); additionally a SAMPLED Log (first 3
+// per source, then every 25th) so a burst is searchable as scorecard.refetch without the
+// per-event flood the WS disconnect log once caused.
+export function addScorecardRefetchBreadcrumb(source: ScorecardRefetchSource, roundId: string): void {
+  Sentry.addBreadcrumb({
+    category: "scorecard",
+    level: "info",
+    message: `scorecard refetch (${source})`,
+    data: { source, roundId },
+  });
+  const n = (refetchSampleCounts.get(source) ?? 0) + 1;
+  refetchSampleCounts.set(source, n);
+  if (n <= 3 || n % 25 === 0) {
+    Sentry.logger.info("scorecard refetch", { event: "scorecard.refetch", source, roundId, count: n });
+  }
+}
+
 // ─── Live-update WebSocket reporting ────────────────────────────────────────────
 
 // WsLifecycleContext carries the per-event detail for the live-score WebSocket. The
@@ -487,6 +516,12 @@ export function reportWsLifecycle(
           ws_state: "gave_up",
           roundId: ctx.roundId,
           attempts: ctx.attempt,
+          // The last close code/reason disambiguates WHY the socket kept dropping —
+          // 1006 (abnormal/network, e.g. a carrier dropping the wss upgrade) vs
+          // 1008/4xxx (policy/auth). The 7/7 storm gave up 0× (the never-give-up bug);
+          // once it fires we want to know which failure mode it is.
+          code: ctx.code,
+          reason: ctx.reason,
         },
       );
       break;

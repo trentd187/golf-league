@@ -26,11 +26,12 @@ import {
   parseLiveMessage,
   isStaleConnection,
   connectionWasStable,
-  shouldAttemptAfterGaveUp,
+  shouldResetAttemptsOnReconnect,
+  shouldCatchUpOnReconnect,
   shouldSampleDisconnect,
   WS_IDLE_MS,
 } from "@/utils/liveUpdates";
-import { reportWsLifecycle, reportWsError } from "@/utils/sentry";
+import { reportWsLifecycle, reportWsError, addScorecardRefetchBreadcrumb } from "@/utils/sentry";
 
 // useRoundLiveUpdates opens a live-score subscription for `roundId` while the calling
 // screen is mounted. Pass undefined to disable (e.g. before the id is known).
@@ -53,9 +54,16 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
   // openedAtRef stamps each onopen so onclose can tell a real (stable) connection from a
   // flap. lastGaveUpAtRef drives the post-give-up cooldown. disconnectCountRef samples the
   // disconnect log so a storm doesn't flood Sentry (50 in one 20-min session on 7/3).
+  // lastCatchUpAtRef throttles the onopen catch-up refetch so a flapping socket can't
+  // invalidate the scorecard ~1×/s (the 7/7 pill-cancellation storm).
   const openedAtRef = useRef(0);
   const lastGaveUpAtRef = useRef<number | null>(null);
   const disconnectCountRef = useRef(0);
+  const lastCatchUpAtRef = useRef<number | null>(null);
+  // The most recent close code/reason, so the gave_up log can report WHY the socket kept
+  // dropping (1006 network vs 1008/4xxx auth) — the diagnostic missing on 7/7.
+  const lastCloseCodeRef = useRef<number | undefined>(undefined);
+  const lastCloseReasonRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!roundId) return;
@@ -66,6 +74,7 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
     openedAtRef.current = 0;
     lastGaveUpAtRef.current = null;
     disconnectCountRef.current = 0;
+    lastCatchUpAtRef.current = null;
 
     const clearReconnectTimer = () => {
       if (reconnectTimerRef.current) {
@@ -103,7 +112,12 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
         if (!unmountedRef.current && !gaveUpRef.current) {
           gaveUpRef.current = true;
           lastGaveUpAtRef.current = Date.now(); // start the cooldown before any restart
-          reportWsLifecycle("gave_up", { roundId, attempt: attemptRef.current });
+          reportWsLifecycle("gave_up", {
+            roundId,
+            attempt: attemptRef.current,
+            code: lastCloseCodeRef.current,
+            reason: lastCloseReasonRef.current,
+          });
         }
         return;
       }
@@ -152,18 +166,28 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
         // web/Safari flap) would otherwise pin the counter at 0 forever and never reach the
         // give-up cap — an unbounded reconnect storm. attemptRef resets only when a
         // connection proves STABLE (held ≥ minStableMs), decided in onclose below.
-        openedAtRef.current = Date.now();
+        const now = Date.now();
+        openedAtRef.current = now;
         gaveUpRef.current = false;
-        lastMessageAtRef.current = Date.now();
+        lastMessageAtRef.current = now;
         reportWsLifecycle("connected", { roundId });
-        // Catch-up: pull anything missed while we were disconnected.
-        void queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
+        // Catch-up: pull anything missed while we were disconnected — but THROTTLED. A
+        // cellular flap that reconnects ~1×/s would otherwise invalidate the scorecard
+        // every second, and each refetch's 3-way merge reflows the screen mid-tap and
+        // cancels pill presses (the 7/7 bug). shouldCatchUpOnReconnect caps this to once
+        // per WS_CATCHUP_MIN_MS; the 60s poll covers anything skipped in between.
+        if (shouldCatchUpOnReconnect(lastCatchUpAtRef.current, now)) {
+          lastCatchUpAtRef.current = now;
+          addScorecardRefetchBreadcrumb("ws_open", roundId);
+          void queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
+        }
       };
 
       socket.onmessage = (event) => {
         lastMessageAtRef.current = Date.now();
         const raw = typeof event.data === "string" ? event.data : "";
         if (parseLiveMessage(raw).type === "scores_updated") {
+          addScorecardRefetchBreadcrumb("ws_message", roundId);
           void queryClient.invalidateQueries({ queryKey: ["scorecard", roundId] });
           void queryClient.invalidateQueries({ queryKey: ["round", roundId] });
         }
@@ -177,6 +201,9 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       socket.onclose = (event) => {
         if (socketRef.current === socket) socketRef.current = null;
         if (unmountedRef.current) return;
+        // Remember the close code/reason so a later give_up can report the failure mode.
+        lastCloseCodeRef.current = event?.code;
+        lastCloseReasonRef.current = event?.reason;
         // A connection that held long enough was a real success: reset the attempt counter,
         // clear the give-up cooldown, and start a fresh disconnect-log epoch. A flap leaves
         // them alone so the counter climbs toward the cap (bounding the storm).
@@ -208,17 +235,35 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
       }
     }, WS_IDLE_MS);
 
-    // Foreground: mobile OSes suspend sockets in the background, so reconnect on resume
-    // and let onopen's catch-up invalidate pull any missed scores.
-    const onAppStateChange = (state: AppStateStatus) => {
-      if (state === "active" && !socketRef.current && !unmountedRef.current) {
-        // After giving up, a foreground event must wait out the cooldown before restarting —
-        // otherwise app-switching on web/Safari re-triggers the whole reconnect storm.
-        if (!shouldAttemptAfterGaveUp(lastGaveUpAtRef.current, Date.now())) return;
+    // onExternalReconnect handles a network-regained or app-foregrounded event. Critically
+    // it must NOT reset the attempt counter while mid-climb — only when recovering from a
+    // give-up past the cooldown. The old handlers reset attemptRef=0 on every such event, and
+    // a flaky cellular radio fires NetInfo `isConnected` constantly, so the counter never
+    // reached maxAttempts, `ws.gave_up` never fired, and the storm was unbounded (the 7/7
+    // incident: 50 disconnects/min, 0 give-ups). Mid-climb the onclose→scheduleReconnect
+    // loop already owns reconnection and must be allowed to climb to the cap.
+    const onExternalReconnect = () => {
+      if (unmountedRef.current || socketRef.current) return;
+      const now = Date.now();
+      if (shouldResetAttemptsOnReconnect(gaveUpRef.current, lastGaveUpAtRef.current, now)) {
+        // Recovering from give-up after the cooldown → a clean fresh start.
         attemptRef.current = 0;
         gaveUpRef.current = false;
+        lastGaveUpAtRef.current = null;
+        void connect();
+      } else if (gaveUpRef.current) {
+        // Gave up but still inside the cooldown — stay on the 60s poll, don't restart a storm.
+        return;
+      } else if (!reconnectTimerRef.current) {
+        // Mid-climb with nothing scheduled (a wedged state): kick one reconnect WITHOUT
+        // resetting the counter, so the give-up cap can still be reached.
         void connect();
       }
+    };
+
+    // Foreground: mobile OSes suspend sockets in the background, so reconnect on resume.
+    const onAppStateChange = (state: AppStateStatus) => {
+      if (state === "active") onExternalReconnect();
     };
     const appStateSub = AppState.addEventListener("change", onAppStateChange);
 
@@ -226,13 +271,9 @@ export function useRoundLiveUpdates(roundId: string | undefined): void {
     // the socket + pending retry when it's lost.
     const netInfoUnsub = NetInfo.addEventListener((state) => {
       if (unmountedRef.current) return;
-      if (state.isConnected && !socketRef.current) {
-        // Same cooldown gate as foreground: a network-regained blip must not restart a storm.
-        if (!shouldAttemptAfterGaveUp(lastGaveUpAtRef.current, Date.now())) return;
-        attemptRef.current = 0;
-        gaveUpRef.current = false;
-        void connect();
-      } else if (!state.isConnected) {
+      if (state.isConnected) {
+        onExternalReconnect();
+      } else {
         clearReconnectTimer();
         closeSocket();
       }

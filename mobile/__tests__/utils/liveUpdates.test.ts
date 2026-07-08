@@ -11,9 +11,12 @@ import {
   isStaleConnection,
   connectionWasStable,
   shouldAttemptAfterGaveUp,
+  shouldResetAttemptsOnReconnect,
+  shouldCatchUpOnReconnect,
   shouldSampleDisconnect,
   WS_RECONNECT,
   WS_IDLE_MS,
+  WS_CATCHUP_MIN_MS,
 } from "@/utils/liveUpdates";
 
 describe("buildWsUrl", () => {
@@ -213,5 +216,46 @@ describe("isStaleConnection", () => {
 
   it("accepts a custom idle window", () => {
     expect(isStaleConnection(0, 500, 400)).toBe(true);
+  });
+});
+
+describe("shouldResetAttemptsOnReconnect", () => {
+  it("is false while mid-climb (not yet given up) — the fix for the 7/7 unbounded storm", () => {
+    // A flaky radio fires this constantly; if it reset the counter the give-up cap would
+    // never engage. Not given up → never reset, regardless of timestamps.
+    expect(shouldResetAttemptsOnReconnect(false, null, 1_000_000)).toBe(false);
+    expect(shouldResetAttemptsOnReconnect(false, 500_000, 1_000_000)).toBe(false);
+  });
+
+  it("is false when given up but still inside the cooldown", () => {
+    const gaveUpAt = 1_000_000;
+    expect(shouldResetAttemptsOnReconnect(true, gaveUpAt, gaveUpAt + 5_000)).toBe(false);
+  });
+
+  it("is true only when recovering from a give-up past the cooldown", () => {
+    const gaveUpAt = 1_000_000;
+    expect(shouldResetAttemptsOnReconnect(true, gaveUpAt, gaveUpAt + WS_RECONNECT.gaveUpCooldownMs)).toBe(true);
+  });
+});
+
+describe("shouldCatchUpOnReconnect", () => {
+  it("catches up on the first connect (nothing to throttle)", () => {
+    expect(shouldCatchUpOnReconnect(null, 1_000_000)).toBe(true);
+  });
+
+  it("skips a rapid flap inside the throttle window (the pill-cancellation storm)", () => {
+    const last = 1_000_000;
+    expect(shouldCatchUpOnReconnect(last, last + 1_000)).toBe(false);
+    expect(shouldCatchUpOnReconnect(last, last + WS_CATCHUP_MIN_MS - 1)).toBe(false);
+  });
+
+  it("catches up again once the window has elapsed", () => {
+    const last = 1_000_000;
+    expect(shouldCatchUpOnReconnect(last, last + WS_CATCHUP_MIN_MS)).toBe(true);
+  });
+
+  it("accepts a custom window", () => {
+    expect(shouldCatchUpOnReconnect(0, 500, 400)).toBe(true);
+    expect(shouldCatchUpOnReconnect(0, 300, 400)).toBe(false);
   });
 });

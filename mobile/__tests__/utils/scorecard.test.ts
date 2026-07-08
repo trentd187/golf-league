@@ -1,7 +1,7 @@
 // __tests__/utils/scorecard.test.ts
 // Unit tests for the pure scorecard auto-fill helpers in utils/scorecard.ts.
 
-import { girScoreFromPutts, girPuttsHint, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, holeStatEntryEquals, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
+import { girScoreFromPutts, girPuttsHint, girKey, firKey, girHitDerivations, puttDistanceMirror, holeRangeTotal, moveStatUp, moveStatDown, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, holeStatEntryEquals, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
 import type { HoleStatEntry } from "@/utils/scorecard";
 import type { ScorecardPlayer } from "@/types/scorecard";
 
@@ -424,5 +424,77 @@ describe("threeWayMergeStats degraded-incoming hazard", () => {
     expect(threeWayMergeStats(saved, saved, { rp1: {} })).toEqual({ rp1: {} });
     // The guard catches precisely this case:
     expect(incomingSnapshotIsDegraded(countStatCells(saved), countStatCells({ rp1: {} }))).toBe(true);
+  });
+});
+
+// ─── girKey ───────────────────────────────────────────────────────────────────
+
+describe("girKey", () => {
+  it("returns null for an unset or undefined entry", () => {
+    expect(girKey(undefined)).toBeNull();
+    expect(girKey(entry())).toBeNull();
+  });
+
+  it("maps hit and na to their bare keys", () => {
+    expect(girKey(entry({ gir: "hit" }))).toBe("hit");
+    expect(girKey(entry({ gir: "na" }))).toBe("na");
+  });
+
+  it("builds the compound miss key from the direction", () => {
+    expect(girKey(entry({ gir: "miss", gir_miss_direction: "left" }))).toBe("miss:left");
+    expect(girKey(entry({ gir: "miss", gir_miss_direction: "long" }))).toBe("miss:long");
+  });
+
+  it("returns null for a miss with no direction", () => {
+    expect(girKey(entry({ gir: "miss", gir_miss_direction: null }))).toBeNull();
+  });
+});
+
+// ─── firKey ───────────────────────────────────────────────────────────────────
+
+describe("firKey", () => {
+  it("returns null when fir is unset (distinct from a directional miss)", () => {
+    expect(firKey(undefined)).toBeNull();
+    expect(firKey(entry({ fir: null }))).toBeNull();
+  });
+
+  it("maps a hit fairway to hit", () => {
+    expect(firKey(entry({ fir: true }))).toBe("hit");
+  });
+
+  it("builds the compound miss key from the direction when fir is false", () => {
+    expect(firKey(entry({ fir: false, fir_miss_direction: "right" }))).toBe("miss:right");
+  });
+
+  it("returns null for a false fir with no direction", () => {
+    expect(firKey(entry({ fir: false, fir_miss_direction: null }))).toBeNull();
+  });
+});
+
+// ─── girHitDerivations ────────────────────────────────────────────────────────
+
+describe("girHitDerivations", () => {
+  it("derives the score from putts when the score field is blank", () => {
+    // par 4, 2 putts → score = par - 2 + putts = 4.
+    expect(girHitDerivations(4, "2", "", NaN)).toEqual({ autoScore: "4", autoPutts: null });
+  });
+
+  it("does not derive a score when one is already entered (and no putts hint when putts is set)", () => {
+    expect(girHitDerivations(4, "2", "5", 5)).toEqual({ autoScore: null, autoPutts: null });
+  });
+
+  it("seeds a putts hint from a known gross when putts is blank (birdie → 1, par → 2)", () => {
+    expect(girHitDerivations(4, "", "3", 3)).toEqual({ autoScore: null, autoPutts: "1" });
+    expect(girHitDerivations(4, "", "4", 4)).toEqual({ autoScore: null, autoPutts: "2" });
+  });
+
+  it("yields no derivation on a null or zero par", () => {
+    expect(girHitDerivations(null, "2", "", 3)).toEqual({ autoScore: null, autoPutts: null });
+    expect(girHitDerivations(0, "2", "", 3)).toEqual({ autoScore: null, autoPutts: null });
+  });
+
+  it("gives no putts hint for a bogey or better-than-birdie gross", () => {
+    expect(girHitDerivations(4, "", "5", 5)).toEqual({ autoScore: null, autoPutts: null }); // bogey
+    expect(girHitDerivations(4, "", "2", 2)).toEqual({ autoScore: null, autoPutts: null }); // eagle
   });
 });

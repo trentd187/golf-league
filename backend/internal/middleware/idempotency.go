@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -218,6 +219,34 @@ func (s *DurableIdempotencyStore) Store(ctx context.Context, key string, status 
 // processed fresh rather than waiting on (or replaying) a failed attempt.
 func (s *DurableIdempotencyStore) Release(ctx context.Context, key string) error {
 	return s.db.WithContext(ctx).Where("key = ?", key).Delete(&models.IdempotencyKey{}).Error
+}
+
+// Lookup returns the stored response for a committed create keyed by `key` and owned by
+// `userID` — so a client that lost every ack (a cellular phantom create) can recover the
+// created row by its Idempotency-Key instead of re-POSTing. Returns (record, true, nil)
+// only for a live, own, already-committed record; (nil, false, nil) when the key is
+// absent, expired, owned by another user, or still in flight (no response yet). It never
+// mutates state (unlike Claim, which reclaims expired rows) — a pure read for GET.
+func (s *DurableIdempotencyStore) Lookup(
+	ctx context.Context, key string, userID uuid.UUID,
+) (*IdempotencyRecord, bool, error) {
+	var existing models.IdempotencyKey
+	if err := s.db.WithContext(ctx).Where("key = ?", key).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	// Expired, foreign, or still-in-flight (no committed response) → nothing to replay.
+	if s.now().After(existing.ExpiresAt) || existing.UserID != userID || existing.ResponseStatus == nil {
+		return nil, false, nil
+	}
+	return &IdempotencyRecord{
+		UserID:         existing.UserID,
+		RequestHash:    existing.RequestHash,
+		ResponseStatus: existing.ResponseStatus,
+		ResponseBody:   existing.ResponseBody,
+	}, true, nil
 }
 
 // maybeCleanup deletes expired rows at most once per cleanupInterval. Throttled so a

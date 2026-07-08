@@ -144,6 +144,57 @@ export type NumericStatField = "putts" | "first_putt_distance" | "putt_distance_
 // LocalStats maps round_player_id → hole_number → HoleStatEntry.
 export type LocalStats = Record<string, Record<number, HoleStatEntry>>;
 
+// girKey converts a HoleStatEntry's GIR fields into the compound option key used by the
+// GIR pills so the active button can be highlighted. Pure so the memoized
+// AdvancedStatPillRow (and its test) don't need to render the whole scorecard.
+export function girKey(entry: HoleStatEntry | undefined): string | null {
+  if (!entry?.gir) return null;
+  if (entry.gir === "hit") return "hit";
+  if (entry.gir === "na")  return "na";
+  if (entry.gir === "miss" && entry.gir_miss_direction) return `miss:${entry.gir_miss_direction}`;
+  return null;
+}
+
+// firKey converts a HoleStatEntry's FIR fields into the compound option key used by the
+// FIR pills. null when FIR is unset — distinct from false, which is a directional miss.
+export function firKey(entry: HoleStatEntry | undefined): string | null {
+  if (entry?.fir === null || entry?.fir === undefined) return null;
+  if (entry.fir === true) return "hit";
+  if (entry.fir_miss_direction) return `miss:${entry.fir_miss_direction}`;
+  return null;
+}
+
+// GirHitDerivations are the optional auto-fills applied when GIR is tapped "hit":
+//   - autoScore: derive the gross from putts (score = par-2+putts) when putts is set and
+//     the score field is still blank.
+//   - autoPutts: seed a putts hint from a known gross (birdie→1, par→2) when putts is blank.
+// Either may be null (no derivation). Extracted from the scorecard's handleGIRTap so the
+// arithmetic is unit-tested without rendering. A null/0 par yields no derivation.
+export interface GirHitDerivations {
+  autoScore: string | null;
+  autoPutts: string | null;
+}
+
+export function girHitDerivations(
+  par: number | null | undefined,
+  puttsStr: string,
+  scoreVal: string,
+  gross: number,
+): GirHitDerivations {
+  let autoScore: string | null = null;
+  let autoPutts: string | null = null;
+  if (par) {
+    const puttsNum = parseInt(puttsStr, 10);
+    if (!isNaN(puttsNum) && puttsNum >= 0 && scoreVal === "") {
+      autoScore = String(girScoreFromPutts(par, puttsNum));
+    }
+    if (puttsStr === "" && !isNaN(gross)) {
+      autoPutts = girPuttsHint(par, gross);
+    }
+  }
+  return { autoScore, autoPutts };
+}
+
 // initScores builds the initial LocalScores state from existing server scores.
 export function initScores(players: ScorecardPlayer[]): LocalScores {
   const out: LocalScores = {};

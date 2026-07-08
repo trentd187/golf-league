@@ -96,10 +96,19 @@ the server echoes them back. Without this, other players' scores only appeared o
   backend). Three pure gates bound it:
   - **Floor** (`WS_RECONNECT.floorMs` 1s): Full Jitter alone is `random(0, ceiling)` with no lower
     bound, so early attempts could fire back-to-back; the floor guarantees minimum spacing.
-  - **Stability gate** (`connectionWasStable`, `minStableMs` 10s): `onopen` no longer resets the
-    attempt counter — a flap that opens then closes within 10s would otherwise pin it at attempt 0
-    forever and never reach the give-up cap. The counter resets only when a connection actually
-    held (checked in `onclose`), so a flapping socket climbs to `gave_up` and stops.
+  - **Stability gate** (`shouldResetAttemptsAfterClose` → `connectionWasStable`, `minStableMs` 10s):
+    `onopen` no longer resets the attempt counter — a flap that opens then closes within 10s would
+    otherwise pin it at attempt 0 forever and never reach the give-up cap. The counter resets only
+    when a connection actually held (checked in `onclose`), so a flapping socket climbs to `gave_up`
+    and stops. **7/8 refinement (the cellular unbounded-storm fix):** the reset check must guard the
+    `openedAt` sentinel. `openedAt` is stamped only in `onopen`, so when the `wss` handshake never
+    completes (cellular — the socket never opens at all) `onclose` saw `now - 0`, an epoch-sized
+    "openMs" that `connectionWasStable` wrongly treated as a long stable connection and reset the
+    counter on **every** failed handshake. Sentry-confirmed: one session logged **421 disconnects, 0
+    opens, 0 give-ups**. `shouldResetAttemptsAfterClose` returns false when `openedAt <= 0`, and the
+    hook clears `openedAt = 0` before **each** connect (so a failed attempt can't read a prior stable
+    socket's open time) — now a never-opening cellular socket climbs to `maxAttempts` → `ws.gave_up`
+    → 60s poll instead of looping forever.
   - **Give-up cooldown** (`shouldAttemptAfterGaveUp`, `gaveUpCooldownMs` 60s): after giving up, a
     foreground (AppState) or network-regained (NetInfo) event must wait out the cooldown before
     restarting, so app-switching can't re-trigger the whole storm.

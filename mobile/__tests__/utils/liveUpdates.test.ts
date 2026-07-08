@@ -10,6 +10,7 @@ import {
   parseLiveMessage,
   isStaleConnection,
   connectionWasStable,
+  shouldResetAttemptsAfterClose,
   shouldAttemptAfterGaveUp,
   shouldResetAttemptsOnReconnect,
   shouldCatchUpOnReconnect,
@@ -109,6 +110,38 @@ describe("connectionWasStable", () => {
   it("is true once the connection held at least minStableMs", () => {
     expect(connectionWasStable(WS_RECONNECT.minStableMs)).toBe(true);
     expect(connectionWasStable(60_000)).toBe(true);
+  });
+});
+
+describe("shouldResetAttemptsAfterClose", () => {
+  it("does NOT reset when the socket never opened (openedAt=0) — the 7/8 cellular storm fix", () => {
+    // The exact bug: onopen never fired, so openedAt kept its 0 sentinel. `now - 0` is an
+    // epoch-sized openMs that the old connectionWasStable(openMs) treated as stable, resetting
+    // the counter on every failed handshake so the give-up cap was never reached.
+    const now = 1_780_000_000_000; // a realistic large epoch-ms "now"
+    expect(shouldResetAttemptsAfterClose(0, now)).toBe(false);
+    expect(shouldResetAttemptsAfterClose(-1, now)).toBe(false);
+  });
+
+  it("does NOT reset for a brief real open (a flap under minStableMs)", () => {
+    const opened = 1_000_000;
+    expect(shouldResetAttemptsAfterClose(opened, opened + 500)).toBe(false);
+    expect(
+      shouldResetAttemptsAfterClose(opened, opened + WS_RECONNECT.minStableMs - 1),
+    ).toBe(false);
+  });
+
+  it("resets only when a real open held at least minStableMs", () => {
+    const opened = 1_000_000;
+    expect(
+      shouldResetAttemptsAfterClose(opened, opened + WS_RECONNECT.minStableMs),
+    ).toBe(true);
+    expect(shouldResetAttemptsAfterClose(opened, opened + 60_000)).toBe(true);
+  });
+
+  it("accepts a custom minStableMs", () => {
+    expect(shouldResetAttemptsAfterClose(1_000, 1_300, 400)).toBe(false);
+    expect(shouldResetAttemptsAfterClose(1_000, 1_500, 400)).toBe(true);
   });
 });
 

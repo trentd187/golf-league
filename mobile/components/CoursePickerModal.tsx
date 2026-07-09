@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { savePost } from "@/utils/savePost";
+import { apiGet } from "@/utils/apiGet";
 import ModalHeader from "@/components/ModalHeader";
 
 // ─── Exported types ────────────────────────────────────────────────────────────
@@ -147,7 +148,8 @@ export default function CoursePickerModal({
     // On open: load all courses alphabetically so the list is immediately browsable.
     setAllCoursesLoading(true);
     getToken().then((token) =>
-      fetch(`${API_URL}/api/v1/courses`, { headers: { Authorization: `Bearer ${token}` } })
+      // apiGet, not a bare fetch: the initial course list survives a flaky cellular link.
+      apiGet({ url: `${API_URL}/api/v1/courses`, token: token ?? "" })
         .then((res) => (res.ok ? res.json() : []))
         .then((data: LocalCourseSummary[]) => {
           const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name));
@@ -191,7 +193,8 @@ export default function CoursePickerModal({
         if (query.trim())        params.set("name",     query.trim());
         if (locationQuery.trim()) params.set("location", locationQuery.trim());
         let url = `${API_URL}/api/v1/courses?${params.toString()}`;
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        // apiGet, not a bare fetch: the debounced local search retries transport failures.
+        const res = await apiGet({ url, token: token ?? "" });
         if (res.ok) {
           const data: LocalCourseSummary[] = await res.json();
           const sorted = Array.isArray(data)
@@ -255,8 +258,10 @@ export default function CoursePickerModal({
   // fetchCourseDetail: called after selecting a local result to get tees.
   const fetchCourseDetail = async (courseId: string): Promise<PickedCourse | null> => {
     const token = await getToken();
-    const res = await fetch(`${API_URL}/api/v1/courses/${courseId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    // apiGet, not a bare fetch: fetching tees before scheduling must survive a cellular blip.
+    const res = await apiGet({
+      url: `${API_URL}/api/v1/courses/${courseId}`,
+      token: token ?? "",
     });
     if (!res.ok) return null;
     const data: CourseDetailResponse = await res.json();

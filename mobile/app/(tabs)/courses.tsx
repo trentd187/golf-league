@@ -22,6 +22,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { savePost } from "@/utils/savePost";
+import { apiGet } from "@/utils/apiGet";
 import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
 import type { CourseSummary } from "@/types/courses";
@@ -52,7 +53,9 @@ export default function CoursesScreen() {
     let url = `${API_URL}/api/v1/courses`;
     const q = searchQuery.trim();
     if (q) url += `?q=${encodeURIComponent(q)}`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    // apiGet, not a bare fetch: the course list load gets a per-attempt timeout + retry
+    // over transport failures so a cellular blip doesn't surface a spurious load error.
+    const res = await apiGet({ url, token: token ?? "" });
     if (!res.ok) throw new Error("Failed to load courses");
     return res.json();
   }, [searchQuery, getToken]);

@@ -132,6 +132,22 @@ func main() {
 	// DB so a wedged connection pool surfaces as a 503 instead of a false 200 (the 7/3 mode).
 	app.Get("/health", handlers.HealthCheck(sqlDB))
 
+	// Retired live-score WebSocket — a tombstone answering 410 Gone. Builds already on
+	// players' phones still dial it; a definitive 410 lets their reconnect loop reach its
+	// give-up cap once and settle on the 60s poll instead of storming. See handlers/sunset.go.
+	//
+	// MUST be registered BEFORE the /api/v1 group below. app.Group mounts its middleware on
+	// the "/api/v1" PREFIX, so it runs for every request under that path — including routes
+	// added to `app` afterwards. Registered after the group, this handler is shadowed by
+	// middleware.Auth and an old client (which sends its JWT as ?token=, never as an
+	// Authorization header) gets a 401 instead of the 410, and ws.sunset_hit never fires.
+	// Verified against the live develop deploy. The old WSAuth was registered in exactly that
+	// shadowed position — which is very likely why the backend logged zero ws.connected and
+	// zero ws.upgrade_missing throughout the incidents, while clients logged hundreds of
+	// disconnects. Fiber matches the stack in registration order, so declaring it here means
+	// this route wins and terminates before any group middleware is reached.
+	app.Get("/api/v1/ws/rounds/:roundId", handlers.WSSunset())
+
 	// All routes under /api/v1 require a valid Supabase JWT. RequestTimeout runs first so
 	// every handler's context carries a deadline — a hung DB query fails fast into a logged
 	// 5xx instead of a silent 502.
@@ -210,13 +226,6 @@ func main() {
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
-
-	// Retired live-score WebSocket, kept only as a tombstone. Builds already on players'
-	// phones still dial it; a definitive 410 lets their reconnect loop give up once and
-	// settle on the 60s poll instead of storming. No auth — the point is a cheap, certain
-	// rejection. Registered on `app` (not `api`) to match the old path exactly. Delete this
-	// route and handlers.WSSunset once ws.sunset_hit goes quiet. See handlers/sunset.go.
-	app.Get("/api/v1/ws/rounds/:roundId", handlers.WSSunset())
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))

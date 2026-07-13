@@ -46,8 +46,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useUser } from "@/hooks/useUser";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { API_URL, LIVE_POLL_MS } from "@/constants/api";
+import { apiGet, apiGetJson, RECONCILE_GET } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import { roundStatusReconciled } from "@/utils/roundReconcile";
@@ -173,13 +173,17 @@ export default function RoundDetailScreen() {
     queryKey: ["round", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<RoundDetail>({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
+        label: "round",
       });
-      if (!res.ok) throw new Error(`Failed to fetch round: ${res.status}`);
-      return res.json();
     },
     enabled: !!id,
+    // Poll while focused/foregrounded so a round left open picks up status changes and
+    // new players. Polling is the only live mechanism now — see mobile/docs/live-updates.md.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   // availablePlayersQuery: fetches the pool of users that can be added to the round.
@@ -193,11 +197,11 @@ export default function RoundDetailScreen() {
     queryFn: async () => {
       const token = await getToken();
       if (round!.event_id) {
-        const res = await apiFetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
-          headers: { Authorization: `Bearer ${token}` },
+        const members = await apiGetJson<EventMember[]>({
+          url: `${API_URL}/api/v1/events/${round!.event_id}/members`,
+          token: token ?? "",
+          label: "event_members",
         });
-        if (!res.ok) throw new Error("Failed to fetch event members");
-        const members: EventMember[] = await res.json();
         return members.map((m) => ({
           id: m.user_id,
           display_name: m.display_name,
@@ -206,11 +210,13 @@ export default function RoundDetailScreen() {
         }));
       } else {
         // Eventless round — use the following list.
-        const res = await apiFetch(`${API_URL}/api/v1/users/following`, {
-          headers: { Authorization: `Bearer ${token}` },
+        const following = await apiGetJson<
+          { id: string; display_name: string; avatar_url?: string | null }[]
+        >({
+          url: `${API_URL}/api/v1/users/following`,
+          token: token ?? "",
+          label: "users_following",
         });
-        if (!res.ok) throw new Error("Failed to fetch following list");
-        const following: Array<{ id: string; display_name: string; avatar_url?: string | null }> = await res.json();
         return following.map((u) => ({
           id: u.id,
           display_name: u.display_name,
@@ -234,13 +240,16 @@ export default function RoundDetailScreen() {
     queryKey: ["scorecard", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/scorecard`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<Scorecard>({
+        url: `${API_URL}/api/v1/rounds/${id}/scorecard`,
+        token: token ?? "",
+        label: "scorecard",
       });
-      if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-      return res.json();
     },
     enabled: !!id && activeTab !== "groups",
+    // The leaderboard/stats tabs are where a player watches the group's scores come in.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   // isVegasRound / isBestBallRound gate their respective result tabs and team UI.
@@ -256,11 +265,13 @@ export default function RoundDetailScreen() {
     queryKey: ["round-teams", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/teams`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const data = await apiGetJson<
+        { id: string; name: string; members: { round_player_id: string }[] }[]
+      >({
+        url: `${API_URL}/api/v1/rounds/${id}/teams`,
+        token: token ?? "",
+        label: "round_teams",
       });
-      if (!res.ok) throw new Error(`Failed to fetch teams: ${res.status}`);
-      const data = (await res.json()) as { id: string; name: string; members: { round_player_id: string }[] }[];
       return data.map((tm) => ({
         id: tm.id,
         name: tm.name,
@@ -475,8 +486,15 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read: the read-back runs on the SAME degraded link that just
+          // exhausted the write's retries, so without its own timeout + retry budget it
+          // usually fails too — reporting a false "couldn't end round" for a round the
+          // server already completed. (Same bug ff78640 fixed on the scorecard.)
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           return roundStatusReconciled(await res.json(), "completed");
@@ -520,8 +538,12 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read — see the end-round reconcile above.
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           return roundStatusReconciled(await res.json(), "active");
@@ -566,8 +588,12 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read — see the end-round reconcile above.
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           const fresh = await res.json();

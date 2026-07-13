@@ -6,12 +6,10 @@ package middleware
 import (
 	"errors"
 	"log"
-	"log/slog"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
-	gofiberws "github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 
@@ -55,10 +53,8 @@ func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
 }
 
 // validateToken parses and cryptographically verifies a Supabase JWT, returning its
-// claims. Shared by the header-based Auth middleware and the query-param WSAuth path
-// (browsers cannot set an Authorization header on a WebSocket upgrade, so the token
-// rides in ?token=). Any failure — bad signature/kid, expiry, malformed claims, or a
-// missing subject — collapses to errInvalidToken (all are 401s to the caller).
+// claims. Any failure — bad signature/kid, expiry, malformed claims, or a missing
+// subject — collapses to errInvalidToken (all are 401s to the caller).
 func validateToken(tokenStr string, keyfn jwt.Keyfunc) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
 	if err != nil || !token.Valid {
@@ -196,60 +192,4 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		return c.Next()
 	}
-}
-
-// WSAuth returns a pre-upgrade middleware for the WebSocket route. WebSockets can't
-// carry an Authorization header from a browser, so the JWT rides in the ?token= query
-// param instead. This validates the token (no DB lookup — a live-score subscription is
-// read-only, so any authenticated user may watch) and stores the auth subject in Locals
-// for the connection handler. The JWKS keyfunc is fetched once at startup.
-func WSAuth(cfg *config.Config) fiber.Handler {
-	return MakeWSAuthHandler(newJWKSKeyfunc(cfg))
-}
-
-// MakeWSAuthHandler is the testable core of WSAuth. Exported so tests can supply a
-// keyfunc (or nil for the pre-parse paths that reject before JWT parsing).
-func MakeWSAuthHandler(keyfn jwt.Keyfunc) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Reject anything that isn't an actual WS upgrade so this route can't be hit
-		// as a plain GET (which would hang waiting for an upgrade that never comes).
-		// Log it: on 7/7 clients logged a WS storm while the backend logged NO ws.connected
-		// or ws.auth_failed — the sockets never became upgrades. If a proxy/carrier strips
-		// the Upgrade headers, every attempt lands here and 426s; this makes that visible
-		// (ws.upgrade_missing) instead of silent. Info, not Warn — bots/health checks also
-		// hit non-upgrade, so it belongs in searchable Logs, not the Issues stream.
-		if !gofiberws.IsWebSocketUpgrade(c) {
-			slog.InfoContext(c.UserContext(), "WebSocket route hit without an Upgrade — not a websocket handshake",
-				"event_type_label", "ws.upgrade_missing",
-				"path", c.Path())
-			return c.SendStatus(fiber.StatusUpgradeRequired) // 426
-		}
-
-		tokenStr := c.Query("token")
-		if tokenStr == "" {
-			logWSAuthFailed(c, "missing token")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing token"})
-		}
-
-		claims, err := validateToken(tokenStr, keyfn)
-		if err != nil {
-			logWSAuthFailed(c, "invalid token")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid token"})
-		}
-
-		// Subject is the Supabase user UUID — sufficient identity for a read-only
-		// subscription and for the connection-lifecycle logs.
-		c.Locals("userID", claims.Subject)
-		return c.Next()
-	}
-}
-
-// logWSAuthFailed records a rejected WebSocket upgrade. It's the first row of the WS
-// observability matrix — a spike here means clients can't subscribe (expired tokens,
-// a bad WS_URL, or an attack).
-func logWSAuthFailed(c *fiber.Ctx, reason string) {
-	slog.WarnContext(c.UserContext(), "WebSocket auth rejected",
-		"event_type_label", "ws.auth_failed",
-		"reason", reason,
-		"path", c.Path())
 }

@@ -30,8 +30,8 @@ jest.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ getToken: jest.fn().mockResolvedValue("test-token") }),
 }));
 
-jest.mock("@/utils/api", () => ({
-  apiFetch: jest.fn(),
+jest.mock("@/utils/apiGet", () => ({
+  apiGetJson: jest.fn(),
 }));
 
 jest.mock("@/constants/api", () => ({

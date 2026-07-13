@@ -10,7 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useUser } from "@/hooks/useUser";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 
 export type MeResponse = {
   id: string;
@@ -28,11 +28,11 @@ export function useMe() {
     queryKey: ["me"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<MeResponse>({
+        url: `${API_URL}/api/v1/me`,
+        token: token ?? "",
+        label: "me",
       });
-      if (!res.ok) throw new Error("Failed to fetch profile");
-      return res.json();
     },
     // Only run when a Supabase session exists.
     enabled: !!user,

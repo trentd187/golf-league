@@ -225,16 +225,20 @@ export default function CoursePickerModal({
     setShowExternal(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses/search-external`, {
+      // A READ-shaped POST: /courses/search-external is a query in everything but HTTP verb
+      // (it creates nothing — importing is a separate call). Routing it through apiGet gives
+      // it the timeout + jittered retry + read telemetry every other read has, and skips the
+      // Idempotency-Key a real create needs. It was the last bare fetch() in the app: an
+      // external course search over a hotel/clubhouse wifi could hang forever with no signal.
+      const res = await apiGet({
+        url: `${API_URL}/api/v1/courses/search-external`,
+        token: token ?? "",
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+        body: {
           search: query.trim(),
           location: locationQuery.trim() || undefined,
-        }),
+        },
+        label: "course_search_external",
       });
       if (res.ok) {
         const data = await res.json();

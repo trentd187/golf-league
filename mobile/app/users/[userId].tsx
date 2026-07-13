@@ -27,7 +27,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { followOrUnfollow } from "@/utils/follow";
 import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
@@ -67,11 +67,11 @@ export default function UserProfileScreen() {
     queryKey: ["user", userId],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserProfile>({
+        url: `${API_URL}/api/v1/users/${userId}`,
+        token: token ?? "",
+        label: "user_profile",
       });
-      if (!res.ok) throw new Error(`Failed to fetch profile: ${res.status}`);
-      return res.json();
     },
     enabled: !!userId,
   });
@@ -82,11 +82,11 @@ export default function UserProfileScreen() {
     queryKey: ["userStats", userId],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/stats`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserHandicapStats>({
+        url: `${API_URL}/api/v1/users/${userId}/stats`,
+        token: token ?? "",
+        label: "user_stats",
       });
-      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
-      return res.json();
     },
     enabled: !!userId,
   });
@@ -95,11 +95,11 @@ export default function UserProfileScreen() {
     queryKey: ["user", userId, "rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserRoundRef[]>({
+        url: `${API_URL}/api/v1/users/${userId}/rounds`,
+        token: token ?? "",
+        label: "user_rounds",
       });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
     },
     // Gated only on userId — /users/:userId/rounds is independent of the profile
     // payload, so this fires in parallel with the profile query instead of waiting
@@ -117,11 +117,11 @@ export default function UserProfileScreen() {
     queryKey: ["userScorecards", userId],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${userId}/scorecards`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<Scorecard[]>({
+        url: `${API_URL}/api/v1/users/${userId}/scorecards`,
+        token: token ?? "",
+        label: "user_scorecards",
       });
-      if (!res.ok) throw new Error(`Failed to fetch scorecards: ${res.status}`);
-      return res.json() as Promise<Scorecard[]>;
     },
     enabled: !!userId,
   });

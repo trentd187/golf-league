@@ -54,8 +54,8 @@ jest.mock("@/hooks/useTheme", () => ({
   }),
 }));
 
-jest.mock("@/utils/api", () => ({
-  apiFetch: jest.fn(),
+jest.mock("@/utils/apiGet", () => ({
+  apiGetJson: jest.fn(),
 }));
 
 jest.mock("@/constants/api", () => ({
@@ -273,8 +273,8 @@ it("renders stat cards when scorecards are loaded", () => {
 // The batched scorecards query (call #4) replaced the per-round fan-out (FRONTEND-2 N+1).
 // These exercise its queryFn directly — the 4 useQuery configs are captured by the mock.
 it("scorecards queryFn fetches the batched endpoint and returns the array", async () => {
-  const apiFetch = require("@/utils/api").apiFetch as jest.Mock;
-  apiFetch.mockResolvedValue({ ok: true, json: async () => [{ round_id: "r1" }] });
+  const apiGetJson = require("@/utils/apiGet").apiGetJson as jest.Mock;
+  apiGetJson.mockResolvedValue([{ round_id: "r1" }]);
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
     .mockReturnValueOnce(mockHcStats)
@@ -285,16 +285,19 @@ it("scorecards queryFn fetches the batched endpoint and returns the array", asyn
   const scorecardsCfg = mockUseQuery.mock.calls[3][0] as { queryFn: () => Promise<unknown> };
   const result = await scorecardsCfg.queryFn();
 
-  expect(apiFetch).toHaveBeenCalledWith(
-    "http://localhost:8080/api/v1/users/test-user-id-123/scorecards",
-    expect.objectContaining({ headers: { Authorization: "Bearer test-token" } }),
-  );
+  expect(apiGetJson).toHaveBeenCalledWith({
+    url: "http://localhost:8080/api/v1/users/test-user-id-123/scorecards",
+    token: "test-token",
+    label: "user_scorecards",
+  });
   expect(result).toEqual([{ round_id: "r1" }]);
 });
 
 it("scorecards queryFn throws on a non-ok response", async () => {
-  const apiFetch = require("@/utils/api").apiFetch as jest.Mock;
-  apiFetch.mockResolvedValue({ ok: false, status: 500 });
+  // apiGetJson throws on a non-2xx (it maps the API's error body to an Error), so the
+  // queryFn surfaces the rejection to React Query rather than returning a bad payload.
+  const apiGetJson = require("@/utils/apiGet").apiGetJson as jest.Mock;
+  apiGetJson.mockRejectedValue(new Error("Request failed: HTTP 500"));
   mockUseQuery
     .mockReturnValueOnce({ data: mockProfile, isLoading: false, isError: false })
     .mockReturnValueOnce(mockHcStats)
@@ -303,7 +306,7 @@ it("scorecards queryFn throws on a non-ok response", async () => {
 
   render(<UserProfileScreen />);
   const scorecardsCfg = mockUseQuery.mock.calls[3][0] as { queryFn: () => Promise<unknown> };
-  await expect(scorecardsCfg.queryFn()).rejects.toThrow("Failed to fetch scorecards: 500");
+  await expect(scorecardsCfg.queryFn()).rejects.toThrow("HTTP 500");
 });
 
 it("calls the follow mutation when the Follow button is pressed", async () => {

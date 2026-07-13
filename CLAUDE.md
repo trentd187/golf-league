@@ -14,7 +14,7 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
 | Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Scorecard saves/creates, retry/backoff, `savePut`/`savePost`, Idempotency-Key dedupe, phantom-write observability | [`mobile/docs/network-saves.md`](mobile/docs/network-saves.md) |
-| Live score updates, WebSocket hub/route, heartbeat/reconnect, `ws.*` observability | [`backend/docs/websockets.md`](backend/docs/websockets.md) |
+| Live score updates, 60s polling, the poll gate, the hardened read path (`apiGetJson`), no-bare-fetch rule | [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md) |
 | Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated
@@ -39,7 +39,7 @@ Edit the relevant existing section rather than appending. Remove outdated info �
 ## Project Overview
 
 **Golf Stuff In Here** — mobile-first golf league and tournament management app.
-- **Backend:** Go + Fiber v2 API server with WebSockets, deployed on Railway (Docker-based)
+- **Backend:** Go + Fiber v2 REST API, deployed on Railway (Docker-based)
 - **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
 - **Auth:** Supabase Auth (Google OAuth + Email OTP; sign-in and sign-up share one screen — Supabase handles both via `signInWithOtp`)
@@ -114,7 +114,6 @@ backend/
 ├── internal/middleware/       # auth.go (JWT) and roles.go (RBAC)
 ├── internal/models/           # All GORM models in models.go
 ├── internal/services/         # Business logic; handlers delegate here (thin HTTP layer)
-├── internal/websocket/        # WebSocket hub
 └── migrations/                # SQL migration files
 ```
 
@@ -213,17 +212,30 @@ Primary brand: **green-700** (`#15803d`). Secondary: gray. Errors: red-600.
 
 **Theme tokens are required for all surfaces, text, and borders.** See [`mobile/docs/themes.md`](mobile/docs/themes.md) for the slot table and JIT constraint.
 
-### API Calls — TanStack Query
+### API Calls — TanStack Query + the hardened primitives
+
+**A bare `fetch()` is an ESLint error** in `app/`, `components/`, and `hooks/`. It has no timeout,
+no retry, and no telemetry — a read stuck on a dead cellular socket hangs forever and shows up in
+Sentry as nothing at all. Reads go through `apiGetJson`; writes through `savePut`/`savePost`.
+Details: [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md).
 
 ```tsx
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { API_URL } from "@/constants/api";
+import { apiGetJson } from "@/utils/apiGet";
 
 const { data } = useQuery({
   queryKey: ["events"],
-  queryFn: () => fetch(`${API_URL}/api/v1/events`).then(r => r.json()),
+  queryFn: async () => apiGetJson<Event[]>({
+    url: `${API_URL}/api/v1/events`,
+    token: (await getToken()) ?? "",
+    label: "events",   // tags the endpoint in Sentry (read_endpoint)
+  }),
 });
 ```
+
+Live views (scorecard, round, event leaderboard) poll on `LIVE_POLL_MS` (60s), focused +
+foregrounded only. **There is no WebSocket** — it was removed; see the doc above.
 
 ### State Management
 

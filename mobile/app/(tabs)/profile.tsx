@@ -19,8 +19,10 @@ import { useUser } from "@/hooks/useUser";
 import { useAuth } from "@/hooks/useAuth";
 import { useMe } from "@/hooks/useMe";
 import { supabase } from "@/utils/supabase";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
+import { withRetry } from "@/utils/withRetry";
+import { reportUploadFailure } from "@/utils/sentry";
 import { API_URL } from "@/constants/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -83,6 +85,12 @@ const STAT_META: Record<string, string> = {
   tee_shot_distance:   "Tee Shot Distance",
 };
 
+// AVATAR_UPLOAD_RETRY is the backoff budget for pushing an avatar to Supabase Storage. Kept
+// modest: the user is watching a spinner, so a long tail is worse than a prompt failure they
+// can retry by tapping again. Safe to retry because the upload is an idempotent upsert to a
+// key derived from the user id.
+const AVATAR_UPLOAD_RETRY = { maxAttempts: 3, baseMs: 500, capMs: 4000 };
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ProfileScreen() {
@@ -97,11 +105,11 @@ export default function ProfileScreen() {
     queryKey: ["scorecardSettings"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<ScorecardSettings>({
+        url: `${API_URL}/api/v1/users/me/scorecard-settings`,
+        token: token ?? "",
+        label: "scorecard_settings",
       });
-      if (!res.ok) throw new Error("Failed to load scorecard settings");
-      return res.json();
     },
     enabled: !!user,
   });
@@ -176,12 +184,37 @@ export default function ProfileScreen() {
   // --- Handlers ---
 
   // uploadAvatarBuffer: shared upload logic used by both the native and web image picker paths.
+  //
+  // The upload is a network call like any other, and until now it was the one write path with
+  // no retry and no telemetry: a dropped connection mid-upload just threw, and the user saw a
+  // generic failure with nothing in Sentry to explain it. withRetry gives it the same
+  // Full-Jitter backoff the save paths use. The upload is idempotent (upsert:true, and the
+  // object key is derived from the user id), so retrying can only ever overwrite the same
+  // object with the same bytes — never duplicate anything.
   const uploadAvatarBuffer = async (arrayBuffer: ArrayBuffer, mimeType: string) => {
     const fileName = `${user!.id}/avatar.jpg`;
-    const { error: uploadError } = await supabase.storage
-      .from("avatars")
-      .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
-    if (uploadError) throw uploadError;
+    let attempts = 0;
+    try {
+      await withRetry(
+        async (attempt) => {
+          attempts = attempt;
+          const { error } = await supabase.storage
+            .from("avatars")
+            .upload(fileName, arrayBuffer, { upsert: true, contentType: mimeType });
+          // Supabase returns the error rather than throwing, so surface it as a throw for
+          // withRetry to see and retry.
+          if (error) throw error;
+        },
+        AVATAR_UPLOAD_RETRY,
+      );
+    } catch (err) {
+      reportUploadFailure(err, {
+        label: "avatar",
+        attempts,
+        bytes: arrayBuffer.byteLength,
+      });
+      throw err;
+    }
 
     const { data: { publicUrl } } = supabase.storage
       .from("avatars")
@@ -270,6 +303,12 @@ export default function ProfileScreen() {
       // fetch bridge fails to serialize Blob binary data for outbound HTTPS requests
       // ("Network request failed"). ArrayBuffer bypasses the Blob bridge entirely and
       // is handled natively by both platforms.
+      //
+      // This is the ONE sanctioned bare fetch() outside utils/: uploadUri is a local
+      // file:// URI from the image picker, so there is no network, no timeout to bound, and
+      // nothing to retry. The actual network hop — pushing these bytes to Supabase Storage —
+      // happens in uploadAvatarBuffer, which does have retry + telemetry.
+      // eslint-disable-next-line no-restricted-syntax
       const fileResponse = await fetch(uploadUri);
       const arrayBuffer = await fileResponse.arrayBuffer();
 

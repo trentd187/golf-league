@@ -99,22 +99,19 @@ park every goroutine waiting for a connection. Four changes bound, recover, and 
 - **Per-request timeout** — [`internal/middleware/requesttimeout.go`](../internal/middleware/requesttimeout.go)
   on the `/api/v1` group (env `REQUEST_TIMEOUT_SEC`, default 30) bounds `c.UserContext()` so a
   hung query aborts with `context.DeadlineExceeded` → a service error → a **logged 5xx that
-  reaches Sentry**, not a silent 502. The live-score WebSocket is registered on `app` (outside
-  the group), so its long-lived connection is exempt.
+  reaches Sentry**, not a silent 502.
 - **DB-aware `/health`** — [`internal/handlers/health.go`](../internal/handlers/health.go) pings
   the DB (2s timeout) and returns `503` + logs `event_type_label:health.db_unreachable` (an
   Issue-level event) on failure. Previously `/health` ignored the DB and returned `200` while
   every real request 502'd, so Railway kept routing into the stuck backend. **Alert on the
   `health.db_unreachable` facet, and add a Sentry uptime monitor against the `/health` URL,** so
   the next DB/pool outage pages instead of surfacing via user reports.
-- **`IdleTimeout: 60s`** on the Fiber server closes idle keep-alive sockets. `ReadTimeout`/
-  `WriteTimeout` are deliberately unset — `WriteTimeout` would break the long-lived WebSocket.
-
-The WebSocket **hub + connection pumps** ([`internal/websocket/`](../internal/websocket/)) were
-audited and left unchanged: the hub snapshots targets under RLock then sends non-blocking (a slow
-client is evicted, never blocking others), the broadcast buffer drops-and-logs when full, and each
-connection carries read/write deadlines, a ping/pong + app-level heartbeat, coordinated goroutine
-shutdown, and `sentry.Recover()`. It was not a contributor to the 502s.
+- **`IdleTimeout: 60s`, `ReadTimeout`/`WriteTimeout: 30s`** on the Fiber server. The Read/Write
+  timeouts bound a client that dribbles a request or stops reading its response — a real risk on
+  the cellular links this app runs on. They were unset for as long as the live-score WebSocket
+  existed (a `WriteTimeout` kills a long-lived connection); **with the socket removed, every
+  request is short and they are safe.** They complement, not replace, the per-request context
+  deadline above.
 
 ## Idempotency-Key replay detection (`middleware.IdempotencyReplayLog`)
 
@@ -124,18 +121,24 @@ The mobile client sends a stable `Idempotency-Key` per logical write, reused acr
 - **`Idempotency`** (durable, backed by the `idempotency_keys` table, migration 000024) on the non-idempotent **POST** create routes. This one **replays the original response** (status + body) on a repeat key instead of re-running the handler, so a cellular phantom create (row committed, ack lost) retried by `savePost` can't create a duplicate — and the first surviving ack still returns the new row's id. It claims the key with `INSERT … ON CONFLICT DO NOTHING` (atomic), stores the response only on 2xx (a non-2xx releases the claim so a genuine failure retries fresh), returns 409 while the original is still in flight or 422 on a key reused with a different body, and logs `event_type_label:create.idempotent_replay` on a replay hit. Pilot scope = `POST /events`, `POST /rounds`, `POST /events/:id/rounds`; remaining creates follow. Durable because it must survive a Railway restart and be shared across replicas, which the in-memory store is not.
 - **`GET /api/v1/idempotency/:key`** (`handlers.LookupIdempotentResponse` over `DurableIdempotencyStore.Lookup`) — the **create-side recovery** read. The middleware above only helps when *some* ack survives; when *every* attempt's ack is lost the row still commits but `savePost` throws (the 7/7 "network error but it created"). This endpoint replays the committed response for the same key the client already holds (own-user, unexpired, committed only — else 404), so `savePost`'s `recoverByKey` recovers the new row's id and the screen navigates instead of alerting. Logs `create.recovered_by_lookup` on a hit.
 
-## WebSocket live-score observability
+## Live-score updates: `ws.sunset_hit`
 
-The live-score WebSocket emits its own `ws.*` events (auth rejections, connect/disconnect with
-reason, slow-consumer/broadcast drops, hub-panic Issues). The full matrix and the supervised-run
-+ heartbeat design live in [websockets.md](websockets.md).
+The live-score WebSocket and its whole `ws.*` matrix were **removed** — it echoed every save back
+to the device that made it (reflowing the scorecard mid-tap and swallowing pill presses) and never
+completed a `wss` handshake on the league's cellular network. Clients poll instead; the rationale
+and the client-side telemetry that replaced it are in
+[`mobile/docs/live-updates.md`](../../mobile/docs/live-updates.md).
+
+One `ws.*` event survives: **`ws.sunset_hit`** ([`internal/handlers/sunset.go`](../internal/handlers/sunset.go)),
+a **sampled** (1-in-50) Info log emitted when a build still on a player's phone dials the retired
+route and gets a `410 Gone`. It is sampled because an old client re-dials up to ~8×/min per open
+scorecard, and it exists to answer exactly one question: **are any old builds still out there?**
+When it goes quiet, delete the route and the handler.
 
 ## Background goroutines
 
 `defer sentry.Recover()` is the one non-negotiable rule for any goroutine — without it a panic
-crashes the process without ever reaching Sentry. The process-level WebSocket hub loop and each
-WS connection goroutine follow exactly this (supervised restart on the hub loop) — see
-[websockets.md](websockets.md).
+crashes the process without ever reaching Sentry.
 
 There are two flavors:
 

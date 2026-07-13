@@ -58,8 +58,8 @@ jest.mock("@/hooks/useTheme", () => ({
   }),
 }));
 
-jest.mock("@/utils/api", () => ({
-  apiFetch: jest.fn(),
+jest.mock("@/utils/apiGet", () => ({
+  apiGetJson: jest.fn(),
 }));
 
 jest.mock("@/constants/api", () => ({

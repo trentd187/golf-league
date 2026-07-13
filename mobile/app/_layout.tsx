@@ -24,7 +24,9 @@ import {
   QueryClient,
   QueryClientProvider,
   focusManager,
+  onlineManager,
 } from "@tanstack/react-query";
+import NetInfo from "@react-native-community/netinfo";
 
 import { useEffect } from "react";
 import { AppState, AppStateStatus, Platform } from "react-native";
@@ -61,6 +63,28 @@ const queryClient = new QueryClient({
     onError: (error, _variables, _context, mutation) =>
       reportMutationError(error, mutation.options.mutationKey),
   }),
+  // Until now there were NO defaults at all, so every query ran on stock TanStack settings.
+  // With polling as the only live-update mechanism, the retry policy is load-bearing, so it
+  // gets stated explicitly.
+  defaultOptions: {
+    queries: {
+      // Retry lives in ONE layer, and that layer is apiGet: it already does 3 attempts with
+      // a per-attempt AbortController timeout and Full-Jitter backoff, and it reports the
+      // failure with an endpoint label and a connection snapshot. Leaving TanStack's own
+      // `retry: 3` on top would multiply that into nine attempts and a multi-minute tail
+      // before a screen could even show an error — worse than useless on a flaky cell link.
+      // It would also retry a 403 or a 404, which never heal.
+      //
+      // The one thing TanStack still owns is refetching when conditions CHANGE (below).
+      retry: false,
+      // A short staleTime collapses the duplicate fetches that fire when several screens
+      // mount the same key at once (e.g. ["me"] on both Profile and Stats).
+      staleTime: 10_000,
+      // Now that onlineManager is wired to NetInfo (below), this actually fires: walking out
+      // of a dead spot repaints the screen instead of leaving the player to pull-to-refresh.
+      refetchOnReconnect: true,
+    },
+  },
 });
 
 // Configure React Query's focus detection for native only.
@@ -77,6 +101,18 @@ if (Platform.OS !== "web") {
     );
     return () => subscription.remove();
   });
+
+  // Teach React Query what "online" actually means on a phone.
+  //
+  // Its default online check leans on browser signals that don't exist in React Native, so
+  // refetchOnReconnect never reliably fired — a player who walked out of a dead spot had to
+  // pull-to-refresh by hand. NetInfo is the real answer, and this is where its subscription
+  // now lives: it used to belong to the live-score WebSocket hook, which is gone. Re-homing
+  // it here means the app still reacts to the network coming back, but it drives a refetch
+  // instead of a socket reconnect storm.
+  onlineManager.setEventListener((setOnline) =>
+    NetInfo.addEventListener((state) => setOnline(!!state.isConnected)),
+  );
 }
 
 function RootLayout() {

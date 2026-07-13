@@ -19,6 +19,7 @@
 // rule; initSentry itself is the only side-effecting entry point.
 
 import * as Sentry from "@sentry/react-native";
+import { isAlreadyReported } from "@/utils/apiError";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 
@@ -143,6 +144,10 @@ export function syncSentryUser(
 // here (rather than inline in the QueryCache handler) so app/_layout.tsx — which
 // is excluded from coverage — carries no logic.
 export function reportQueryError(error: unknown): void {
+  // Reads through apiGet/apiGetJson report themselves, with an endpoint label and a
+  // connection snapshot this handler has no way to reconstruct. Filing again here would
+  // double every read failure in Sentry.
+  if (isAlreadyReported(error)) return;
   if (error instanceof Response) {
     if (error.status >= 500) {
       Sentry.captureException(
@@ -429,10 +434,11 @@ export function addScorecardLoadBreadcrumb(ctx: {
 }
 
 // ScorecardRefetchSource attributes WHY the scorecard query refetched. The backend's
-// http.request access log counts GET /scorecard but can't tell a WS-reconnect catch-up
-// from a poll or a hole change — this source tag can, so a refetch storm (the 7/7 cellular
-// pill-cancellation cause) is attributable client-side.
-export type ScorecardRefetchSource = "ws_open" | "ws_message" | "hole_change" | "manual" | "poll";
+// http.request access log counts GET /scorecard but can't tell a poll from a hole change
+// or a pull-to-refresh — this source tag can, so an unexpected refetch burst stays
+// attributable client-side. ("ws_open"/"ws_message" existed until the live-score socket
+// was removed: its push-driven refetches were the storm that ate FIR/GIR taps.)
+export type ScorecardRefetchSource = "hole_change" | "manual" | "poll";
 
 // refetchSampleCounts samples the searchable log per source so a storm stays visible in
 // Logs without flooding it (breadcrumbs alone don't surface in a Logs search). Module-level
@@ -457,86 +463,126 @@ export function addScorecardRefetchBreadcrumb(source: ScorecardRefetchSource, ro
   }
 }
 
-// ─── Live-update WebSocket reporting ────────────────────────────────────────────
+// ─── Read (GET) reporting ───────────────────────────────────────────────────────
+//
+// The write path has had failure telemetry since the phantom-save work; the read path
+// had NONE — every queryFn was a bare fetch with no timeout, retry, or signal, so a read
+// that hung on a flaky radio was indistinguishable from a frozen app. These mirror the
+// save reporters so a read failure is as diagnosable as a write failure.
 
-// WsLifecycleContext carries the per-event detail for the live-score WebSocket. The
-// socket is an enhancement over the 60s scorecard poll, so these signals exist to tell
-// whether the realtime layer is healthy — and the poll guarantees no regression if not.
-export interface WsLifecycleContext {
-  roundId: string;
-  attempt?: number; // reconnect attempt number (reconnect_attempt / gave_up)
-  delayMs?: number; // scheduled backoff before the next attempt
-  code?: number; // WebSocket close code (disconnected)
-  reason?: string; // close/disconnect reason string
+// ReadFailureContext describes a read that exhausted its retries. connection* come from
+// snapshotConnection() and are read lazily, only on failure.
+export interface ReadFailureContext {
+  label: string; // stable endpoint label, e.g. "scorecard" — becomes read_endpoint
+  attempts: number;
+  elapsedMs: number;
+  httpStatus?: number; // undefined ⇒ transport failure (never got a response)
+  connectionType?: string;
+  cellularGeneration?: string | null;
+  isInternetReachable?: boolean | null;
 }
 
-// reportWsLifecycle routes a WebSocket lifecycle event to the right Sentry channel —
-// the mobile half of the WS observability matrix (backend/docs/websockets.md). Every
-// transition stays out of the Issues stream: healthy ones are breadcrumbs, and the
-// unhealthy "gave_up" (reconnects exhausted → falling back to the poll) is a searchable
-// warning *log* rather than an Issue. The user loses nothing when this fires — the 60s
-// poll is the floor — so it doesn't deserve an Issue; on web it was pure noise (the
-// now-fixed ws:// mixed-content bug), on mobile it's a benign cellular drop. Alert on the
-// `ws.gave_up` log facet instead.
-export function reportWsLifecycle(
-  event: "connected" | "reconnect_attempt" | "disconnected" | "gave_up",
-  ctx: WsLifecycleContext,
-): void {
-  switch (event) {
-    case "connected":
-      Sentry.addBreadcrumb({
-        category: "ws",
-        level: "info",
-        message: `ws connected (round ${ctx.roundId})`,
-        data: { roundId: ctx.roundId },
-      });
-      break;
-    case "reconnect_attempt":
-      Sentry.addBreadcrumb({
-        category: "ws",
-        level: "warning",
-        message: `ws reconnect attempt ${ctx.attempt}`,
-        data: { roundId: ctx.roundId, attempt: ctx.attempt, delayMs: ctx.delayMs },
-      });
-      break;
-    case "disconnected":
-      Sentry.logger.warn("ws disconnected", {
-        event: "ws.disconnected",
-        roundId: ctx.roundId,
-        code: ctx.code,
-        reason: ctx.reason,
-      });
-      break;
-    case "gave_up":
-      Sentry.logger.warn(
-        "WebSocket gave up reconnecting; falling back to the scorecard poll",
-        {
-          event: "ws.gave_up",
-          error_source: "ws",
-          ws_state: "gave_up",
-          roundId: ctx.roundId,
-          attempts: ctx.attempt,
-          // The last close code/reason disambiguates WHY the socket kept dropping —
-          // 1006 (abnormal/network, e.g. a carrier dropping the wss upgrade) vs
-          // 1008/4xxx (policy/auth). The 7/7 storm gave up 0× (the never-give-up bug);
-          // once it fires we want to know which failure mode it is.
-          code: ctx.code,
-          reason: ctx.reason,
-        },
-      );
-      break;
+// readKind classifies a read failure the same way saveKind classifies a write: an HTTP
+// status means the server answered and rejected us; no status means the request never
+// completed a round trip (timeout, radio drop, DNS) — the cellular last-mile mode.
+function readKind(ctx: ReadFailureContext): "http" | "network" {
+  return ctx.httpStatus === undefined ? "network" : "http";
+}
+
+// reportReadFailure records a read that failed after all retries.
+//
+// Routing is deliberately asymmetric: a 5xx is a real backend defect → Sentry Issue. A
+// transport failure or a 4xx is NOT an Issue — on cellular a dropped GET is expected and
+// the query will simply retry or repaint on the next poll, so an Issue per occurrence
+// would recreate exactly the alert flood the WebSocket used to produce. Those land in
+// searchable Logs (event:read.failed) instead; alert on the facet, not the event.
+export function reportReadFailure(error: unknown, ctx: ReadFailureContext): void {
+  const kind = readKind(ctx);
+  const isServerFault = ctx.httpStatus !== undefined && ctx.httpStatus >= 500;
+
+  if (isServerFault && error instanceof Error) {
+    Sentry.captureException(error, {
+      tags: {
+        error_source: "read",
+        read_kind: kind,
+        read_endpoint: ctx.label,
+        connection_type: ctx.connectionType ?? "unknown",
+      },
+      extra: { ...ctx },
+    });
+    return;
   }
+
+  Sentry.logger.warn("read failed after retries", {
+    event: "read.failed",
+    error_source: "read",
+    read_kind: kind,
+    read_endpoint: ctx.label,
+    message: error instanceof Error ? error.message : String(error),
+    ...ctx,
+  });
 }
 
-// reportWsError captures an unexpected WebSocket error (e.g. a message that couldn't be
-// handled) as a Sentry Issue tagged error_source:ws. Non-Error values are ignored so a
-// stray reject doesn't create a useless Issue.
-export function reportWsError(error: unknown, roundId: string): void {
-  if (!(error instanceof Error)) return;
-  Sentry.captureException(error, {
-    tags: { error_source: "ws" },
-    extra: { roundId },
+// addReadBreadcrumb records one failed read attempt before its retry (nextDelayMs null on
+// the final attempt). Breadcrumbs are free until an event fires, and they're what turns a
+// later Issue into a story: "three reads timed out, then the save failed."
+export function addReadBreadcrumb(ctx: {
+  label: string;
+  attempt: number;
+  nextDelayMs: number | null;
+  message: string;
+}): void {
+  Sentry.addBreadcrumb({
+    category: "read",
+    level: ctx.nextDelayMs === null ? "error" : "warning",
+    message: `read ${ctx.label} attempt ${ctx.attempt} failed: ${ctx.message}`,
+    data: ctx,
   });
+}
+
+// ─── Upload reporting ───────────────────────────────────────────────────────────
+
+// reportUploadFailure captures a failed binary upload (avatar → Supabase Storage) as an
+// Issue tagged error_source:upload. Unlike a read, an upload is user-initiated and its
+// failure is immediately visible to them, so it warrants an Issue: if it breaks, someone
+// is staring at a spinner wondering why their photo won't save.
+export function reportUploadFailure(
+  error: unknown,
+  ctx: { label: string; attempts: number; bytes?: number },
+): void {
+  Sentry.captureException(error instanceof Error ? error : new Error(String(error)), {
+    tags: { error_source: "upload", upload_target: ctx.label },
+    extra: { ...ctx },
+  });
+}
+
+// ─── Poll gating ────────────────────────────────────────────────────────────────
+
+// reportPollDeferred records that a polled scorecard snapshot was HELD rather than merged,
+// because the user was mid-interaction (see utils/pollGate.ts). This is the successor to
+// the WS storm signals: it proves the guard is doing its job and bounds how long a peer's
+// score can sit unapplied. Sampled — during active scoring this can fire often, and the
+// whole point of the change is to stop flooding Sentry.
+let pollDeferredCount = 0;
+export function reportPollDeferred(ctx: {
+  roundId: string;
+  inFlightSaves: number;
+  msSinceLastInteraction: number;
+}): void {
+  Sentry.addBreadcrumb({
+    category: "scorecard",
+    level: "info",
+    message: "polled snapshot deferred (user is editing)",
+    data: ctx,
+  });
+  pollDeferredCount += 1;
+  if (pollDeferredCount <= 3 || pollDeferredCount % 25 === 0) {
+    Sentry.logger.info("polled scorecard snapshot deferred while the user was editing", {
+      event: "poll.deferred",
+      count: pollDeferredCount,
+      ...ctx,
+    });
+  }
 }
 
 // SaveBreadcrumbContext describes one failed save attempt (before a retry, or the

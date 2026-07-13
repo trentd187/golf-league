@@ -1,6 +1,6 @@
 # Golf Stuff In Here — Backend
 
-The Go REST API and WebSocket server for the Golf Stuff In Here app.
+The Go REST API for the Golf Stuff In Here app.
 
 ## Tech Stack
 
@@ -10,7 +10,6 @@ The Go REST API and WebSocket server for the Golf Stuff In Here app.
 | [Fiber v2](https://gofiber.io) | HTTP web framework (Express-like) |
 | [GORM](https://gorm.io) | ORM for database access |
 | [golang-migrate](https://github.com/golang-migrate/migrate) | SQL migration runner |
-| [gofiber/websocket](https://github.com/gofiber/websocket) | WebSocket support for live scores |
 | [golang-jwt/jwt](https://github.com/golang-jwt/jwt) | Clerk JWT token validation |
 | [godotenv](https://github.com/joho/godotenv) | Load `.env` files in development |
 | PostgreSQL 16 | Database |
@@ -32,10 +31,8 @@ backend/
 │   ├── middleware/
 │   │   ├── auth.go          # Clerk JWT validation — extracts userID and role from token
 │   │   └── roles.go         # Role-based access control — RequireRole() middleware
-│   ├── models/
-│   │   └── models.go        # GORM struct definitions for every database table
-│   └── websocket/
-│       └── hub.go           # WebSocket hub — broadcasts live score updates to connected clients
+│   └── models/
+│       └── models.go        # GORM struct definitions for every database table
 ├── migrations/
 │   ├── 000001_initial_schema.up.sql    # Creates all tables, enums, and indexes
 │   └── 000001_initial_schema.down.sql  # Drops everything (used to roll back)
@@ -134,9 +131,17 @@ All protected routes use the `Auth` middleware from `internal/middleware/auth.go
 
 Role enforcement is then applied per-route with `RequireRole("admin", "manager")`.
 
-### Real-time WebSockets
+### Live score updates
 
-The WebSocket hub in `internal/websocket/hub.go` broadcasts score updates to all clients watching a specific round. When a score is submitted via the REST API, the handler calls `hub.BroadcastToRound(roundID, data)` and all connected mobile clients receive the update instantly.
+The server **pushes nothing** — clients poll `GET /rounds/:roundId/scorecard` every 60s while the
+screen is focused. A live-score WebSocket used to exist and was removed: it echoed every save back
+to the device that made it (whose refetch reflowed the scorecard mid-tap and swallowed FIR/GIR
+presses), and it never completed a `wss` handshake on the league's cellular network. Full rationale:
+[`mobile/docs/live-updates.md`](../mobile/docs/live-updates.md).
+
+`GET /api/v1/ws/rounds/:roundId` survives as a tombstone returning **410 Gone**
+(`internal/handlers/sunset.go`) so builds already on players' phones stop retrying and fall back to
+their poll. Delete it once the sampled `ws.sunset_hit` log goes quiet.
 
 ## Docker / Railway Deployment
 

@@ -23,7 +23,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { followOrUnfollow } from "@/utils/follow";
 import UserAvatar from "@/components/UserAvatar";
 
@@ -69,11 +69,11 @@ export default function UserSearchScreen() {
       const url = debouncedQuery
         ? `${API_URL}/api/v1/users?q=${encodeURIComponent(debouncedQuery)}`
         : `${API_URL}/api/v1/users`;
-      const res = await apiFetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserSearchResult[]>({
+        url,
+        token: token ?? "",
+        label: "users_search",
       });
-      if (!res.ok) throw new Error(`Failed to search users: ${res.status}`);
-      return res.json();
     },
     enabled: debouncedQuery.length >= 1,
     placeholderData: (prev) => prev, // keep previous results while typing

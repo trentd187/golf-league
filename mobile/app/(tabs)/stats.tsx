@@ -34,7 +34,7 @@ import { useQuery } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, buildScoreHistory, scoreTextColor } from "@/utils/stats";
 import ScoreHistoryChart from "@/components/ScoreHistoryChart";
 import ModalHeader from "@/components/ModalHeader";
@@ -514,39 +514,28 @@ export default function StatsScreen() {
     queryKey: ["me"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<{ id: string }>({
+        url: `${API_URL}/api/v1/me`,
+        token: token ?? "",
+        label: "me",
       });
-      if (!res.ok) throw new Error(`Failed to fetch me: ${res.status}`);
-      return res.json();
     },
   });
 
   // Handicap index and anti-handicap are hidden pending GHIN integration review.
-  // Re-enable by restoring the useQuery call and <HandicapSection /> render below.
-  // const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
-  //   queryKey: ["userStats", me?.id],
-  //   queryFn: async () => {
-  //     const token = await getToken();
-  //     const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/stats`, {
-  //       headers: { Authorization: `Bearer ${token}` },
-  //     });
-  //     if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
-  //     return res.json();
-  //   },
-  //   enabled: !!me?.id,
-  // });
+  // Re-enable by restoring a ["userStats", me?.id] query against
+  // GET /api/v1/users/:id/stats and the <HandicapSection /> render below.
 
   // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
   const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
     queryKey: ["rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<RoundSummary[]>({
+        url: `${API_URL}/api/v1/rounds`,
+        token: token ?? "",
+        label: "rounds",
       });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
     },
   });
 
@@ -596,11 +585,11 @@ export default function StatsScreen() {
     queryKey: ["userScorecards", me?.id, last],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/scorecards?last=${last}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<Scorecard[]>({
+        url: `${API_URL}/api/v1/users/${me!.id}/scorecards?last=${last}`,
+        token: token ?? "",
+        label: "user_scorecards",
       });
-      if (!res.ok) throw new Error(`Failed to fetch scorecards: ${res.status}`);
-      return res.json();
     },
     enabled: !!me?.id && completedRounds.length > 0,
   });

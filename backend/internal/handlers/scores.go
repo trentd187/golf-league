@@ -13,41 +13,12 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/trentd187/golf-league/internal/services"
 )
-
-// Broadcaster is the slice of the WebSocket hub the score handlers depend on. The
-// *websocket.Hub satisfies it; handler tests inject a fake. Decoupling via this
-// interface keeps scores.go testable without importing or spinning up a real hub.
-type Broadcaster interface {
-	BroadcastToRound(roundID string, data []byte)
-}
-
-// liveScoreMessage is the small payload pushed to WebSocket subscribers when a
-// round's scores change. Clients react by invalidating their scorecard query —
-// the message intentionally carries no score data, just "something changed."
-type liveScoreMessage struct {
-	Type    string `json:"type"`
-	RoundID string `json:"round_id"`
-}
-
-// broadcastScoresUpdated notifies live-score subscribers that a round changed.
-// Best-effort: a nil Broadcaster (handler tests, or a build without the hub wired)
-// or a saturated hub simply means clients fall back to the 60s poll — a broadcast
-// never affects the save result and is called only after a successful save.
-func broadcastScoresUpdated(bc Broadcaster, roundID uuid.UUID) {
-	if bc == nil {
-		return
-	}
-	// Marshal of this fixed struct cannot fail; the error is ignored deliberately.
-	data, _ := json.Marshal(liveScoreMessage{Type: "scores_updated", RoundID: roundID.String()})
-	bc.BroadcastToRound(roundID.String(), data)
-}
 
 // ─── Request types ────────────────────────────────────────────────────────────
 
@@ -153,9 +124,10 @@ func SetPlayerHandicap(svc *services.ScoreService) fiber.Handler {
 
 // UpsertPlayerScores returns a handler for PUT .../scores.
 // Bulk upserts all hole scores for one player. Safe to call multiple times.
-// On success it broadcasts to WebSocket subscribers so other players watching the
-// round refresh immediately (bc may be nil — broadcasting is best-effort).
-func UpsertPlayerScores(svc *services.ScoreService, bc Broadcaster) fiber.Handler {
+// Other players watching the round pick the change up on their next 60s poll — the
+// server pushes nothing. (A WebSocket used to echo every save back to the saving
+// device, whose refetch reflowed the scorecard mid-tap and ate FIR/GIR presses.)
+func UpsertPlayerScores(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
@@ -182,16 +154,14 @@ func UpsertPlayerScores(svc *services.ScoreService, bc Broadcaster) fiber.Handle
 		if err != nil {
 			return writeScoreError(c, err, "score.upsert_scores", "failed to save scores")
 		}
-		broadcastScoresUpdated(bc, roundID)
 		return c.JSON(fiber.Map{"saved": saved})
 	}
 }
 
 // UpsertHoleStats returns a handler for PUT .../hole-stats.
 // Bulk upserts advanced per-hole stats for one player. Safe to call multiple times.
-// Like UpsertPlayerScores, it broadcasts a "scores_updated" message on success so
-// subscribers refresh (bc may be nil — best-effort).
-func UpsertHoleStats(svc *services.ScoreService, bc Broadcaster) fiber.Handler {
+// Like UpsertPlayerScores, it pushes nothing — peers poll.
+func UpsertHoleStats(svc *services.ScoreService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		roundID, err := uuid.Parse(c.Params("roundId"))
 		if err != nil {
@@ -218,7 +188,6 @@ func UpsertHoleStats(svc *services.ScoreService, bc Broadcaster) fiber.Handler {
 		if err != nil {
 			return writeScoreError(c, err, "score.upsert_hole_stats", "failed to save stats")
 		}
-		broadcastScoresUpdated(bc, roundID)
 		return c.JSON(fiber.Map{"saved": saved})
 	}
 }

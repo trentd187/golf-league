@@ -52,28 +52,30 @@ When a transport failure is *reconciled* (read-back confirms the write landed �
 
 ## Scorecard re-sync guard (`scorecard.merge_skipped`)
 
-The scorecard merges each fresh server snapshot into local state with a 3-way merge ([utils/scorecard.ts](../utils/scorecard.ts)). If a refetch or a thin WS push returns a **degraded** snapshot (collapsed to zero scores/stats while local still holds data — a failed/partial fetch), feeding it to the merge would treat every unchanged cell as a peer deletion and blank the screen — the 7/2 "stats disappeared after reactivate" incident (Incident B). The screen's re-sync effect ([app/scorecard/[roundId].tsx](../app/scorecard/[roundId].tsx)) guards this with `incomingSnapshotIsDegraded` and, when it skips a degraded half, calls `reportScorecardMergeSkipped` — a **warning log** `event:scorecard.merge_skipped` carrying `scores_degraded` / `stats_degraded` / local cell counts. The user loses nothing (the guard keeps last-good local + base), so it's a Log, not an Issue; **alert on the `scorecard.merge_skipped` facet** to catch a backend/WS path returning empty payloads. Every re-sync also drops an `addScorecardLoadBreadcrumb` (`category:scorecard`) with the snapshot's player/score/stat counts — a cheap trail (not a per-poll Log) that shows on any event when a payload shrank toward empty.
+The scorecard merges each fresh server snapshot into local state with a 3-way merge ([utils/scorecard.ts](../utils/scorecard.ts)). If a refetch returns a **degraded** snapshot (collapsed to zero scores/stats while local still holds data — a failed/partial fetch), feeding it to the merge would treat every unchanged cell as a peer deletion and blank the screen — the 7/2 "stats disappeared after reactivate" incident (Incident B). The screen's re-sync effect ([app/scorecard/[roundId].tsx](../app/scorecard/[roundId].tsx)) guards this with `incomingSnapshotIsDegraded` and, when it skips a degraded half, calls `reportScorecardMergeSkipped` — a **warning log** `event:scorecard.merge_skipped` carrying `scores_degraded` / `stats_degraded` / local cell counts. The user loses nothing (the guard keeps last-good local + base), so it's a Log, not an Issue; **alert on the `scorecard.merge_skipped` facet** to catch a backend path returning empty payloads. Every re-sync also drops an `addScorecardLoadBreadcrumb` (`category:scorecard`) with the snapshot's player/score/stat counts — a cheap trail (not a per-poll Log) that shows on any event when a payload shrank toward empty.
 
 ### Refetch attribution (`scorecard.refetch`)
 
-Every scorecard refetch site calls `addScorecardRefetchBreadcrumb(source, roundId)` (`utils/sentry.ts`) — a breadcrumb every time plus a **sampled** `event:scorecard.refetch` log (first 3 per source, then every 25th). The `source` tag (`ws_open` | `ws_message` | `poll` | `hole_change` | `manual`) is the value the backend's `http.request` GET-`/scorecard` count can't give: it attributes a **refetch storm** to its cause. On 7/7 a flapping cellular socket invalidated the query ~1×/s (`source:ws_open`), and each refetch's 3-way merge reflowed the huge scorecard mid-tap and cancelled FIR/GIR pill presses. The fix throttles the onopen catch-up (`WS_CATCHUP_MIN_MS`) and memoizes the pill rows (`components/AdvancedStatPillRow.tsx`); this signal confirms the `ws_open` bursts shrank.
+Every scorecard refetch site calls `addScorecardRefetchBreadcrumb(source, roundId)` (`utils/sentry.ts`) — a breadcrumb every time plus a **sampled** `event:scorecard.refetch` log (first 3 per source, then every 25th). The `source` tag (`poll` | `hole_change` | `manual`) attributes a **refetch storm** to its cause, which the backend's `http.request` GET-`/scorecard` count cannot.
 
-## Live-score WebSocket
+This signal is how the pill bug was finally diagnosed. On 7/7 a flapping cellular socket invalidated the query ~1×/s (`source:ws_open`), and each refetch's 3-way merge reflowed the huge scorecard mid-tap and cancelled FIR/GIR pill presses. The `ws_*` sources are gone now — **the WebSocket was removed** (it echoed every save back to the saving device, so the storm was partly self-inflicted and happened on healthy networks too). Polling is the only refetch driver, and a merge can no longer land mid-gesture at all: the [poll gate](live-updates.md#the-poll-gate) holds it.
 
-The round live-update WebSocket reports its lifecycle through `reportWsLifecycle` /
-`reportWsError` ([utils/sentry.ts](../utils/sentry.ts)): `ws.connected` / `ws.reconnect_attempt`
-breadcrumbs, a `ws.disconnected` warning log (sampled), and a `ws.gave_up` warning **log**
-(`event:ws.gave_up`, `error_source:ws`, plus the last close **`code`/`reason`** so we can tell a
-1006 network drop from a 1008/4xxx auth close) when reconnects are exhausted and the screen falls
-back to the 60s poll. `gave_up` firing at all is the signal the reconnect counter now reaches the
-cap — on 7/7 it fired 0× because NetInfo events kept resetting it (`shouldResetAttemptsOnReconnect`
-fixes that; see [websockets.md](../../backend/docs/websockets.md)). `gave_up` is deliberately a log, **not** an Issue — the 60s poll is the floor so
-the user loses nothing, and it was pure noise on web before the `wss://` mixed-content fix; alert
-on the `ws.gave_up` log facet rather than the Issues stream. Only `reportWsError` (an unexpected
-socket error) opens an Issue. The hook
-([hooks/useRoundLiveUpdates.ts](../hooks/useRoundLiveUpdates.ts)) and pure helpers
-([utils/liveUpdates.ts](../utils/liveUpdates.ts)) plus the full cross-stack matrix are documented
-in [backend/docs/websockets.md](../../backend/docs/websockets.md).
+## Read failures (`read.failed`, `error_source:read`)
+
+The read path had **zero** telemetry until the WebSocket removal: every `queryFn` was a bare `fetch` with no timeout, retry, or signal, so a GET that hung on a dead cellular socket produced nothing in Sentry — the app just sat on a spinner, indistinguishable from a freeze.
+
+Now every read goes through `apiGet`/`apiGetJson` ([utils/apiGet.ts](../utils/apiGet.ts)), which emits `addReadBreadcrumb` per failed attempt and, on exhaustion, `reportReadFailure`:
+
+- a **5xx** → Sentry **Issue** (`error_source:read`, `read_kind:http`, `read_endpoint:<label>`, `connection_type`) — a real backend defect;
+- a **4xx or a transport failure** → a **warning log** `event:read.failed`, *not* an Issue. On cellular a dropped GET is routine, and an Issue per occurrence would recreate exactly the alert flood the WebSocket used to produce. **Alert on the `read.failed` facet**, sliced by `read_endpoint`.
+
+A failed read reports itself **once**: `apiGet` files it (with the endpoint label + a lazy connection snapshot the generic handler can't reconstruct) and marks the `ApiError` `reported`, which `reportQueryError` checks so the QueryCache handler doesn't duplicate it.
+
+`reportUploadFailure` (`error_source:upload`) covers the avatar → Supabase Storage push, which is user-initiated and visible, so it *does* open an Issue.
+
+## Poll gating (`poll.deferred`)
+
+`reportPollDeferred` — a breadcrumb plus a **sampled** `event:poll.deferred` log — fires when the [poll gate](live-updates.md#the-poll-gate) holds a snapshot because a save is in flight or the player just tapped. It's the successor to the `ws.*` signals: it proves the guard is working and bounds how long a peer's score can sit unapplied. Sampled deliberately — during active scoring it fires often, and not flooding Sentry is half the point of the change.
 
 ## Team-format derivations (Vegas / Best Ball)
 
@@ -85,7 +87,7 @@ Las Vegas and Best Ball compute entirely on-device (`utils/vegas.ts`, `utils/bes
 
 ## Distributed tracing
 
-Automatic. The SDK's fetch instrumentation injects `sentry-trace` + `baggage` headers on outgoing requests, and `sentry-go/fiber` continues the trace on the backend. `utils/api.ts` (`apiFetch`) is now a thin passthrough — it adds **no** headers. Never set `traceparent`/`sentry-trace` manually.
+Automatic. The SDK's fetch instrumentation patches the global `fetch` and injects `sentry-trace` + `baggage` headers on outgoing requests, and `sentry-go/fiber` continues the trace on the backend. Our primitives (`apiGet`, `saveWithRetry`) call through that patched `fetch`, so they inherit tracing for free — they add **no** headers of their own. Never set `traceparent`/`sentry-trace` manually.
 
 ## Cross-platform
 

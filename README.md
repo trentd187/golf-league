@@ -20,7 +20,6 @@ A mobile-first golf league and tournament management application. Players can tr
 | Database | PostgreSQL 16 |
 | ORM | GORM |
 | Migrations | golang-migrate |
-| Real-time | WebSockets (gofiber/websocket) |
 | Auth | Clerk |
 | Deployment | Railway (backend) + App Store / Google Play (mobile) |
 
@@ -28,7 +27,7 @@ A mobile-first golf league and tournament management application. Players can tr
 
 ```
 golf-league/
-├── backend/            # Go REST API + WebSocket server
+├── backend/            # Go REST API
 ├── mobile/             # React Native + Expo mobile app
 ├── docker-compose.yml  # Local development environment (postgres + backend)
 ├── .env.example        # Root environment variable template

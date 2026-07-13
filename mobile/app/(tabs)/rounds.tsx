@@ -33,7 +33,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
 import { apiToDisplay } from "@/components/DateInput";
@@ -181,11 +181,11 @@ export default function RoundsScreen() {
     queryKey: ["my-rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<MyRound[]>({
+        url: `${API_URL}/api/v1/rounds`,
+        token: token ?? "",
+        label: "my_rounds",
       });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
     },
   });
 

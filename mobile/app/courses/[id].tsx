@@ -24,7 +24,7 @@ import { useMe } from "@/hooks/useMe";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import ModalHeader from "@/components/ModalHeader";
@@ -69,11 +69,11 @@ export default function CourseDetailScreen() {
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {
     const token = await getToken();
-    const res = await apiFetch(`${API_URL}/api/v1/courses/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    return apiGetJson<CourseDetail>({
+      url: `${API_URL}/api/v1/courses/${id}`,
+      token: token ?? "",
+      label: "course",
     });
-    if (!res.ok) throw new Error("Failed to load course");
-    return res.json();
   }, [id, getToken]);
 
   const {

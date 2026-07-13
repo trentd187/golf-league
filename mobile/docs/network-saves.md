@@ -18,8 +18,8 @@ from a screen for a save. `savePut` is the single instrumented chokepoint, so al
 uniformly:
 
 1. **A bounded per-attempt timeout** (`AbortController`). A request stuck on a dead okhttp
-   keep-alive socket fails fast so the *next* retry opens a fresh connection. `utils/api.ts`
-   (`apiFetch`) has no timeout, and the old raw saves had none.
+   keep-alive socket fails fast so the *next* retry opens a fresh connection. The old raw saves
+   had none, and a bare `fetch` can hang indefinitely.
 2. **Capped exponential backoff with Full Jitter** (via [`withRetry`](../utils/withRetry.ts)).
 3. **A throw on `!res.ok`**, so HTTP errors are retried and surfaced (this fixed the
    `handleSaveHandicaps` silent-success-on-5xx bug, where a raw fetch never checked the status).
@@ -44,14 +44,20 @@ await savePut({
 // try/catch still sets its UI error flag.
 ```
 
-## Every mutation goes through a helper — no raw `fetch`/`apiFetch` writes
+## Every call goes through a helper — bare `fetch` is a lint error
 
 The chokepoint isn't just for scorecard `PUT`s. **Every state-mutating request in the app**
 routes through `savePut` (idempotent `PUT`/`PATCH`/`DELETE`) or `savePost`
-([`utils/savePost.ts`](../utils/savePost.ts), non-idempotent `POST` creates). Screens/components
-call `apiFetch` only for **reads**. This closed the remaining raw sites — round end/reactivate
-/edit/delete, group + member + team deletes, event edit/cancel/delete/role/join-request, course
-create/edit/delete/refresh, tee + hole authoring, request-join, and follow/unfollow.
+([`utils/savePost.ts`](../utils/savePost.ts), non-idempotent `POST` creates). This closed the
+remaining raw sites — round end/reactivate/edit/delete, group + member + team deletes, event
+edit/cancel/delete/role/join-request, course create/edit/delete/refresh, tee + hole authoring,
+request-join, and follow/unfollow.
+
+**Reads have the same contract now.** They go through `apiGetJson`/`apiGet`
+([`utils/apiGet.ts`](../utils/apiGet.ts)) — same timeout, same Full-Jitter retry, same telemetry.
+A `no-restricted-syntax` ESLint rule makes a bare `fetch()` an **error** in `app/`, `components/`,
+and `hooks/`, because hand-removing them twice (`ff78640`, `457559c`) didn't stop them coming back.
+See [`live-updates.md`](live-updates.md#the-read-path).
 
 - **`savePut` method** is `PUT` (default), `PATCH`, or `DELETE`. `DELETE` is idempotent and
   **404-tolerant**: a 404 on a retry means the row is already gone (a phantom delete whose ack

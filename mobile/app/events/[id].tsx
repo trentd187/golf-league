@@ -36,8 +36,8 @@ import { useUser } from "@/hooks/useUser";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { API_URL, LIVE_POLL_MS } from "@/constants/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 
@@ -172,13 +172,19 @@ export default function EventDetailScreen() {
     queryKey: ["event", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<EventDetail>({
+        url: `${API_URL}/api/v1/events/${id}`,
+        token: token ?? "",
+        label: "event",
       });
-      if (!res.ok) throw new Error(`Failed to fetch event: ${res.status}`);
-      return res.json();
     },
     enabled: !!id, // Expo Router may render before params are populated
+    // Poll while the screen is focused and the app is foregrounded, so an event left open
+    // reflects new rounds/members without a manual pull-to-refresh. Replaces nothing —
+    // this screen never had live updates — but the socket's removal makes polling the one
+    // mechanism, so it should be applied consistently. See mobile/docs/live-updates.md.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const {
@@ -188,24 +194,26 @@ export default function EventDetailScreen() {
     queryKey: ["event", id, "rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<RoundSummary[]>({
+        url: `${API_URL}/api/v1/events/${id}/rounds`,
+        token: token ?? "",
+        label: "event_rounds",
       });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
     },
     enabled: !!id,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const { data: allUsers } = useQuery<UserSummary[]>({
     queryKey: ["users"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserSummary[]>({
+        url: `${API_URL}/api/v1/users`,
+        token: token ?? "",
+        label: "users",
       });
-      if (!res.ok) throw new Error("Failed to fetch users");
-      return res.json();
     },
     enabled: addMemberModalVisible, // only fetch when the Add Member modal is open
   });
@@ -229,13 +237,18 @@ export default function EventDetailScreen() {
       queryKey: ["scorecard", roundId],
       queryFn: async () => {
         const token = await getToken();
-        const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
-          headers: { Authorization: `Bearer ${token}` },
+        return apiGetJson<Scorecard>({
+          url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+          token: token ?? "",
+          label: "scorecard",
         });
-        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-        return res.json() as Promise<Scorecard>;
       },
       enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches" || activeTab === "teams"),
+      // The leaderboard is the one place a spectator watches scores land, so it polls on
+      // the same 60s cadence as the scorecard. Only the visible tab's queries are enabled,
+      // so this never fans out N polls while the user is browsing Members.
+      refetchInterval: LIVE_POLL_MS,
+      refetchIntervalInBackground: false,
     })),
   });
 
@@ -254,11 +267,11 @@ export default function EventDetailScreen() {
     queryKey: ["event", id, "join-requests"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/join-requests`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<MemberResponse[]>({
+        url: `${API_URL}/api/v1/events/${id}/join-requests`,
+        token: token ?? "",
+        label: "event_join_requests",
       });
-      if (!res.ok) throw new Error(`Failed to fetch join requests: ${res.status}`);
-      return res.json();
     },
     enabled: !!id && activeTab === "requests",
   });

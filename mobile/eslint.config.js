@@ -64,6 +64,34 @@ module.exports = defineConfig([
     },
   },
 
+  // ---- No bare fetch() in screens, components, or hooks ----
+  //
+  // This rule is the durable half of the WebSocket removal. A bare fetch() has no timeout
+  // (a GET on a dead cellular socket hangs forever, and a frozen spinner is indistinguishable
+  // from a frozen app), no retry, and no telemetry. We have repeatedly hand-removed bare
+  // fetches — commits ff78640 and 457559c both did exactly that — and they crept straight
+  // back, because nothing enforced it. Now the linter does.
+  //
+  // Use instead:
+  //   reads   → apiGetJson / apiGet        (utils/apiGet.ts)
+  //   writes  → savePut / savePost          (utils/saveRequest.ts, utils/savePost.ts)
+  //
+  // utils/ is deliberately NOT covered: that is where the primitives live, and they are the
+  // one place a real fetch() belongs.
+  {
+    files: ["app/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "hooks/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.name='fetch']",
+          message:
+            "Bare fetch() has no timeout, retry, or telemetry. Use apiGetJson/apiGet (utils/apiGet.ts) for reads, or savePut/savePost for writes. See mobile/docs/live-updates.md.",
+        },
+      ],
+    },
+  },
+
   // ---- Ignored paths ----
   {
     ignores: [

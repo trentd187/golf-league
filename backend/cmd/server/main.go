@@ -23,7 +23,6 @@ import (
 	"github.com/trentd187/golf-league/internal/middleware"
 	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
-	"github.com/trentd187/golf-league/internal/websocket"
 )
 
 func main() {
@@ -59,12 +58,6 @@ func main() {
 	}
 	fmt.Println("Migrations applied successfully")
 
-	// NewHub + supervised run starts the WebSocket broadcast loop as a background
-	// goroutine (so it doesn't block startup). RunHubSupervised recovers + restarts
-	// on panic so one bad broadcast can't permanently kill live updates.
-	hub := websocket.NewHub()
-	go websocket.RunHubSupervised(hub)
-
 	// GolfCourseAPIClient is created once and shared across requests.
 	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
 	// (mapped to 503) if any external-API method is called without a key.
@@ -92,11 +85,16 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
 		// IdleTimeout closes idle keep-alive connections so a churn of half-open sockets
-		// (the cellular case) doesn't accumulate. ReadTimeout/WriteTimeout are intentionally
-		// left unset: WriteTimeout would break the long-lived live-score WebSocket, and the
-		// meaningful bound on slow work is the per-request context deadline (RequestTimeout
-		// on the /api/v1 group), which turns a hung DB query into a fast, logged 5xx.
+		// (the cellular case) doesn't accumulate.
 		IdleTimeout: 60 * time.Second,
+		// ReadTimeout/WriteTimeout bound a client that dribbles a request or stops reading
+		// its response — a real risk on the flaky cellular links this app runs on. They were
+		// deliberately unset while the live-score WebSocket existed, because WriteTimeout
+		// kills a long-lived connection; with the socket gone, every request is short and
+		// these are safe. They complement (not replace) the per-request context deadline in
+		// middleware.RequestTimeout, which is what turns a hung DB query into a logged 5xx.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	})
 
 	// fiberrecover catches any panics in middleware or handlers and returns 500 instead
@@ -136,8 +134,7 @@ func main() {
 
 	// All routes under /api/v1 require a valid Supabase JWT. RequestTimeout runs first so
 	// every handler's context carries a deadline — a hung DB query fails fast into a logged
-	// 5xx instead of a silent 502. The live-score WebSocket is registered on `app` (below),
-	// outside this group, so its long-lived connection is exempt from the deadline.
+	// 5xx instead of a silent 502.
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.RequestTimeout(cfg.RequestTimeout), middleware.Auth(cfg, db))
 
@@ -211,13 +208,15 @@ func main() {
 	// (idempotent) save into a server-side phantom-save signal.
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService, hub))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService, hub))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
 
-	// Live-score WebSocket. Registered on `app` (not the `api` group) because it uses
-	// query-param auth — a browser can't set an Authorization header on a WS upgrade.
-	// middleware.WSAuth validates ?token= and rejects non-upgrade requests with 426.
-	app.Get("/api/v1/ws/rounds/:roundId", middleware.WSAuth(cfg), websocket.ServeRoundWS(hub))
+	// Retired live-score WebSocket, kept only as a tombstone. Builds already on players'
+	// phones still dial it; a definitive 410 lets their reconnect loop give up once and
+	// settle on the 60s poll instead of storming. No auth — the point is a cheap, certain
+	// rejection. Registered on `app` (not `api`) to match the old path exactly. Delete this
+	// route and handlers.WSSunset once ws.sunset_hit goes quiet. See handlers/sunset.go.
+	app.Get("/api/v1/ws/rounds/:roundId", handlers.WSSunset())
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))

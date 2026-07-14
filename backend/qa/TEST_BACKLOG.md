@@ -44,6 +44,7 @@ live, checks it off (with date), and commits the new test to `develop`.
 
 ## Backend (Hurl) — ordered safest → richest
 
+- [x] **B-WS** — Retired live-score WebSocket route `GET /api/v1/ws/rounds/:roundId` → **410 Gone**, *unauthenticated* (the route must not sit behind the `/api/v1` group auth, or old builds get a 401 they can't act on and `ws.sunset_hit` never fires). Also asserts the real old-client shape (`?token=` + upgrade headers) still gets the 410. — `backend/qa/ws_sunset.hurl` (added 2026-07-13; caught a live 401 regression on first deploy)
 - [x] **B1** — Unauthenticated `GET /api/v1/me` with no token → **401**. — `backend/qa/unauth_me.hurl` (added 2026-06-19)
 - [x] **B2** — Non-admin `POST /api/v1/courses` as the QA user → **403**. — `backend/qa/non_admin_course_403.hurl` (added 2026-06-19)
 - [x] **B3** — `GET /api/v1/users/me/scorecard-settings` → 200, returns a settings object. (read-only) — `backend/qa/scorecard_settings.hurl` (added 2026-06-21)

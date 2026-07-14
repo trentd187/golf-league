@@ -36,7 +36,7 @@ export function SaveStatusBanner({ message, onRetry, retrying = false }: Readonl
       className={`flex-row items-center gap-2 px-4 py-2.5 border-t border-b border-amber-500/40 bg-amber-500/10 ${t.divider}`}
       accessibilityRole="alert"
     >
-      <Ionicons name="cloud-offline-outline" size={16} color="#d97706" />
+      <Ionicons name="cloud-offline-outline" size={16} color={t.colors.warning} />
       <View className="flex-1">
         <Text className="text-xs font-semibold text-amber-700">{message}</Text>
         {/* The reassurance is the point: the number is on the phone, it just hasn't reached

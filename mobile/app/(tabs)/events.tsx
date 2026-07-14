@@ -355,7 +355,7 @@ export default function EventsScreen() {
           </View>
         ) : isError ? (
           <View className="flex-1 items-center justify-center gap-3">
-            <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+            <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
             <Text className={`font-semibold ${t.textPrimary}`}>Failed to load events</Text>
             <TouchableOpacity className={`${t.primaryBg} rounded-xl px-6 py-3`} onPress={() => refetch()}>
               <Text className="text-white font-semibold">Retry</Text>
@@ -602,8 +602,8 @@ export default function EventsScreen() {
                   <Switch
                     value={newIsPublic}
                     onValueChange={setNewIsPublic}
-                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                    thumbColor="#ffffff"
+                    trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                    thumbColor={t.colors.onPrimary}
                     disabled={createEventMutation.isPending}
                   />
                 </View>

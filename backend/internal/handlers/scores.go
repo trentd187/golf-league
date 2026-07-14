@@ -135,11 +135,9 @@ func SetPlayerHandicap(svc *services.ScoreService) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid request body"})
 		}
 
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		callerID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
+		callerID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
 
 		if err := svc.SetHandicap(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.CourseHandicap); err != nil {
@@ -170,11 +168,9 @@ func UpsertPlayerScores(svc *services.ScoreService) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "scores array is required"})
 		}
 
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		callerID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
+		callerID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
 
 		saved, err := svc.UpsertScores(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.Scores)
@@ -204,11 +200,9 @@ func UpsertHoleStats(svc *services.ScoreService) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "stats array is required"})
 		}
 
-		userIDStr, _ := c.Locals("userID").(string)
-		userRole, _ := c.Locals("userRole").(string)
-		callerID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{jsonKeyError: "invalid user ID"})
+		callerID, userRole, ok := authUser(c)
+		if !ok {
+			return nil
 		}
 
 		saved, err := svc.UpsertHoleStats(c.UserContext(), roundID, roundPlayerID, callerID, userRole, req.Stats)

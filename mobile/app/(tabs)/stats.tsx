@@ -626,7 +626,7 @@ export default function StatsScreen() {
   if (roundsError) {
     return (
       <View className={`flex-1 items-center justify-center gap-3 ${t.screen}`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`font-semibold ${t.textPrimary}`}>Failed to load stats</Text>
       </View>
     );

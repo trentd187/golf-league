@@ -142,7 +142,7 @@ export default function RoundFormFields({
       {/* Warning when the course has no hole data */}
       {selectedCourse && !selectedCourse.has_holes && (
         <View className="mb-4 flex-row items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3">
-          <Ionicons name="warning-outline" size={16} color="#d97706" />
+          <Ionicons name="warning-outline" size={16} color={t.colors.warning} />
           <Text className="text-xs text-amber-700 flex-1">
             This course has no hole data. Par and stroke index won{"'"}t be available on the scorecard.
           </Text>

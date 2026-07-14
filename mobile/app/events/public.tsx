@@ -208,7 +208,7 @@ export default function PublicEventsScreen() {
 
                     {isPending ? (
                       <View className="flex-row items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200">
-                        <Ionicons name="time-outline" size={13} color="#d97706" />
+                        <Ionicons name="time-outline" size={13} color={t.colors.warning} />
                         <Text className="text-xs font-semibold text-amber-700">Pending</Text>
                       </View>
                     ) : (

@@ -48,6 +48,8 @@ import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericSta
 import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
+import { holeHandicapStrokes } from "@/utils/handicap";
+import { formatToPar } from "@/utils/scoringFormats";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { buildLiveBestBallMatch, type BestBallBasis } from "@/utils/bestBall";
 import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
@@ -108,16 +110,13 @@ const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string 
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// handicapStrokes returns the number of strokes a player receives on a hole.
-// strokeIndex must be a normalized rank within the played set (1 = hardest).
-// holeCount is the number of holes being played (9 or 18).
-// Mirrors the Go HandicapStrokes function in services/handicap.go.
-function handicapStrokes(courseHandicap: number, strokeIndex: number, holeCount: number): number {
-  if (holeCount <= 0) return 0;
-  const base = Math.floor(courseHandicap / holeCount);
-  const remainder = courseHandicap % holeCount;
-  return base + (strokeIndex <= remainder ? 1 : 0);
-}
+// Stroke allocation and to-par formatting come from utils/ — this screen used to re-implement
+// BOTH, despite already importing twenty other things from the same modules.
+//
+// The handicapStrokes copy was not merely redundant, it was WRONG: it lacked the
+// `effHandicap <= 0` guard, so for a plus-handicap player (a negative handicap) it returned
+// NEGATIVE strokes where holeHandicapStrokes returns 0 — silently mis-scoring their net.
+// That is exactly the divergence a duplicated derivation invites.
 
 // emptyHoleStat is the default state for a hole with no stats entered yet.
 const emptyHoleStat: HoleStatEntry = {
@@ -168,13 +167,6 @@ function scoreToPar(
     }
   }
   return count > 0 ? diff : null;
-}
-
-// formatToPar converts a numeric score differential to the standard display:
-// "E" for even, "+N" for over, "-N" for under.
-function formatToPar(diff: number): string {
-  if (diff === 0) return "E";
-  return diff > 0 ? `+${diff}` : String(diff);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -798,7 +790,7 @@ export default function ScorecardScreen() {
   if (isError || !scorecard) {
     return (
       <View className={`flex-1 ${t.screen} items-center justify-center px-6 gap-4`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`text-base font-semibold text-center ${t.textPrimary}`}>
           Failed to load scorecard
         </Text>
@@ -972,7 +964,7 @@ export default function ScorecardScreen() {
         indivGrossCount++;
         if (showNetCol && selectedPlayer.effective_course_handicap != null && hole.stroke_index) {
           const nsi = normalizedSIMap.get(hole.hole_number) ?? 0;
-          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, nsi, handicapHoleCount);
+          indivNetTotal += g - holeHandicapStrokes(selectedPlayer.effective_course_handicap, nsi, handicapHoleCount);
           indivNetCount++;
         }
       }
@@ -1043,7 +1035,7 @@ export default function ScorecardScreen() {
         {/* ── Round completed notice ─────────────────────────────────────────── */}
         {isRoundLocked && (
           <View className="mx-4 mt-4 flex-row items-center gap-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3">
-            <Ionicons name="lock-closed-outline" size={16} color="#d97706" />
+            <Ionicons name="lock-closed-outline" size={16} color={t.colors.warning} />
             <Text className="flex-1 text-sm font-semibold text-amber-700">
               Round completed — scores are locked
             </Text>
@@ -1325,7 +1317,7 @@ export default function ScorecardScreen() {
                       })()}
                       {/* Failure-only indicator; a spacer keeps the column height stable otherwise. */}
                       {hasSaveError
-                        ? <Ionicons name="alert-circle" size={10} color="#dc2626" />
+                        ? <Ionicons name="alert-circle" size={10} color={t.colors.danger} />
                         : <View style={{ height: 10 }} />}
                     </View>
                   );
@@ -1501,7 +1493,7 @@ export default function ScorecardScreen() {
               // matches what the server will store (allowance already applied).
               const hcp        = selectedPlayer.effective_course_handicap ?? null;
               const strokes    = (holeData.stroke_index && hcp != null)
-                ? handicapStrokes(hcp, normalizedSIMap.get(holeData.hole_number) ?? 0, handicapHoleCount)
+                ? holeHandicapStrokes(hcp, normalizedSIMap.get(holeData.hole_number) ?? 0, handicapHoleCount)
                 : 0;
               const net        = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
               const grossClr   = (holeData.par && !isNaN(gross) && gross >= 1)

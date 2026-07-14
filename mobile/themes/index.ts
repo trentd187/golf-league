@@ -43,11 +43,23 @@ export interface Theme {
 
   // Hex color values — required for React Navigation props (tabBarActiveTintColor etc.)
   // and Ionicons' `color` prop, which both require hex strings, not class names.
+  //
+  // The semantic slots below (danger/warning/info/onPrimary/switchTrackOff) exist because the
+  // screens were hardcoding raw hex for them — #dc2626 in ~10 places, #d97706 in 4, #2563eb in
+  // 4, #d1d5db / #e5e7eb in ~10. Most were tolerable, but the Switch track and the avatar
+  // border were LIGHT-MODE values applied unconditionally: they did not adapt in dark or
+  // high-contrast at all. A token can't be forgotten the way a hex literal can.
   colors: {
     tabBarBg: string;
     tabBarBorder: string;
     tabBarActive: string;   // active tab icon; also used for primary icon tint throughout the app
     tabBarInactive: string; // inactive tab icon; also used as placeholderTextColor
+
+    danger: string;         // destructive actions, error icons/text (was hardcoded #dc2626)
+    warning: string;        // caution states (was hardcoded #d97706)
+    info: string;           // edit / secondary actions (was hardcoded #2563eb)
+    onPrimary: string;      // content ON a primary-colored surface (spinner in a green button)
+    switchTrackOff: string; // Switch track when off (was hardcoded light-mode #d1d5db)
   };
 }
 
@@ -72,6 +84,11 @@ const light: Theme = {
     tabBarBorder:   "#e5e7eb",
     tabBarActive:   "#15803d",
     tabBarInactive: "#9ca3af",
+    danger:         "#dc2626", // red-600
+    warning:        "#d97706", // amber-600
+    info:           "#2563eb", // blue-600
+    onPrimary:      "#ffffff",
+    switchTrackOff: "#d1d5db", // gray-300
   },
 };
 
@@ -93,6 +110,11 @@ const dark: Theme = {
     tabBarBorder:   "#374151",
     tabBarActive:   "#16a34a",
     tabBarInactive: "#6b7280",
+    danger:         "#f87171", // red-400 — red-600 is muddy on a dark surface
+    warning:        "#fbbf24", // amber-400
+    info:           "#60a5fa", // blue-400
+    onPrimary:      "#ffffff",
+    switchTrackOff: "#4b5563", // gray-600 — the light-mode #d1d5db glared here
   },
 };
 
@@ -116,6 +138,11 @@ const highContrast: Theme = {
     tabBarBorder:   "#facc15", // yellow-400
     tabBarActive:   "#facc15", // yellow-400 — Night Sky accent
     tabBarInactive: "#71717a", // zinc-500
+    danger:         "#ff6b6b", // vivid red — must stay legible against pure black
+    warning:        "#facc15", // yellow-400 — the Night Sky accent doubles as caution
+    info:           "#67e8f9", // cyan-300
+    onPrimary:      "#000000", // black on the vivid green-500 button
+    switchTrackOff: "#3f3f46", // zinc-700
   },
 };
 

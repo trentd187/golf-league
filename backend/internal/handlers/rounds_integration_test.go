@@ -15,6 +15,7 @@
 package handlers_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -80,4 +81,60 @@ func TestCreateEventlessRound_Success_CreatesTheRound(t *testing.T) {
 	require.NoError(t, db.First(&round, "created_by = ?", user.ID).Error)
 	assert.Equal(t, "Saturday Casual", round.Name)
 	assert.Nil(t, round.EventID)
+}
+
+// ─── Scorecard read handlers (Tier 2) ─────────────────────────────────────────
+//
+// Both were only covered on their bad-UUID branch. GetEventScorecards in particular is the
+// endpoint that replaced the event screen's useQueries() fan-out, so its happy path is worth
+// exercising against a real database.
+
+func TestGetRoundScorecard_Success(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	user := seedRoundUser(t, db)
+	course := seedCourse(t, db, "Scorecard Read Course")
+	tee := seedTee(t, db, course.ID, "White")
+
+	roundSvc := services.NewRoundService(db, services.NewEventService(db))
+	courseID, teeID := course.ID.String(), tee.ID.String()
+	created, err := roundSvc.CreateEventlessRound(context.Background(), user.ID,
+		services.CreateEventlessRoundInput{
+			Name:          "Read Me",
+			ScheduledDate: time.Now().UTC().Format("2006-01-02"),
+			CourseID:      &courseID,
+			DefaultTeeID:  &teeID,
+		})
+	require.NoError(t, err)
+
+	scoreSvc := services.NewScoreService(db, services.NewEventService(db))
+	app := newAppAsUser(http.MethodGet, "/rounds/:roundId/scorecard", user.ID,
+		handlers.GetRoundScorecard(scoreSvc))
+
+	resp := testutil.DoRequest(t, app, http.MethodGet,
+		"/rounds/"+created.Round.ID.String()+"/scorecard", nil)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestGetEventScorecards_Success_EmptyWhenNoCompletedRounds(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	user := seedRoundUser(t, db)
+
+	eventSvc := services.NewEventService(db)
+	event, err := eventSvc.Create(context.Background(), services.CreateEventInput{
+		Name:      "Scorecards Event",
+		EventType: "league",
+		CreatedBy: user.ID,
+	})
+	require.NoError(t, err)
+
+	scoreSvc := services.NewScoreService(db, eventSvc)
+	app := newAppAsUser(http.MethodGet, "/events/:id/scorecards", user.ID,
+		handlers.GetEventScorecards(scoreSvc))
+
+	resp := testutil.DoRequest(t, app, http.MethodGet,
+		"/events/"+event.Event.ID.String()+"/scorecards", nil)
+
+	// No completed rounds yet — an empty list, not an error.
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

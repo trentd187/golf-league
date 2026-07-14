@@ -254,7 +254,7 @@ export default function RoundsScreen() {
           </View>
         ) : isError || !rounds ? (
           <View className="flex-1 items-center justify-center gap-3 px-8">
-            <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+            <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
             <Text className={`font-semibold text-center ${t.textPrimary}`}>
               Failed to load rounds
             </Text>

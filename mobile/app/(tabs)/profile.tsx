@@ -626,8 +626,8 @@ export default function ProfileScreen() {
                 onValueChange={(val) =>
                   settingsMutation.mutate({ ...settings, show_group_on_scorecard: val })
                 }
-                trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                thumbColor="#ffffff"
+                trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                thumbColor={t.colors.onPrimary}
                 disabled={settingsMutation.isPending}
               />
             </View>
@@ -686,8 +686,8 @@ export default function ProfileScreen() {
                     onValueChange={(val) =>
                       settingsMutation.mutate({ ...settings, [enabledKey]: val })
                     }
-                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                    thumbColor="#ffffff"
+                    trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                    thumbColor={t.colors.onPrimary}
                     disabled={settingsMutation.isPending}
                   />
                 </View>
@@ -718,8 +718,8 @@ export default function ProfileScreen() {
                 onValueChange={(val) =>
                   settingsMutation.mutate({ ...settings, ob_enabled: val })
                 }
-                trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                thumbColor="#ffffff"
+                trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                thumbColor={t.colors.onPrimary}
                 disabled={settingsMutation.isPending}
               />
             </View>
@@ -732,7 +732,7 @@ export default function ProfileScreen() {
             disabled={signingOut || editing}
           >
             {signingOut ? (
-              <ActivityIndicator color="#dc2626" />
+              <ActivityIndicator color={t.colors.danger} />
             ) : (
               <Text className="text-red-600 font-semibold text-base">Sign Out</Text>
             )}

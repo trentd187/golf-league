@@ -61,6 +61,7 @@ import { useRoundForm } from "@/hooks/useRoundForm";
 import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import UserAvatar from "@/components/UserAvatar";
 import { formatLabel, formatToPar } from "@/utils/scoringFormats";
+import { buildEventLeaderboard } from "@/utils/leaderboard";
 import { buildStats } from "@/utils/stats";
 import { buildEventTally } from "@/utils/vegas";
 import { buildBestBallEventTally } from "@/utils/bestBall";
@@ -588,85 +589,11 @@ export default function EventDetailScreen() {
 
   // --- Leaderboard + stats helpers ---
 
-  // EventLeaderboardEntry: per-player aggregate across all completed rounds.
-  type EventLeaderboardEntry = {
-    user_id: string;
-    display_name: string;
-    rank: string;
-    roundsPlayed: number;    // completed rounds the player participated in
-    grossTotal: number;      // sum of gross scores across all completed rounds
-    netTotal: number;        // sum of net scores across all completed rounds
-    grossToPar: number | null; // null when any round lacks hole par data
-    netToPar: number | null;
-  };
-
-  // buildEventLeaderboard: aggregates scores across all completed scorecards by user_id,
-  // sorts by net (lowest first), and assigns rank strings.
-  function buildEventLeaderboard(scs: Scorecard[]): EventLeaderboardEntry[] {
-    const map = new Map<string, Omit<EventLeaderboardEntry, "rank">>();
-
-    for (const sc of scs) {
-      const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-      const hasHoles = sc.holes.length > 0;
-
-      for (const group of sc.groups) {
-        for (const p of group.players) {
-          if (p.scores.length === 0) continue;
-          const gross = p.scores.reduce((s, x) => s + x.gross_score, 0);
-          const net   = p.scores.reduce((s, x) => s + x.net_score, 0);
-          const parPlayed = hasHoles
-            ? p.scores.reduce((s, x) => s + (holeMap.get(x.hole_number) ?? 0), 0)
-            : 0;
-          const roundGross = hasHoles ? gross - parPlayed : null;
-          const roundNet   = hasHoles ? net   - parPlayed : null;
-
-          const existing = map.get(p.user_id);
-          if (existing) {
-            existing.roundsPlayed++;
-            existing.grossTotal += gross;
-            existing.netTotal   += net;
-            // If any round lacks hole par data, toPar becomes unavailable for the whole aggregate.
-            if (existing.grossToPar !== null && roundGross !== null) {
-              existing.grossToPar += roundGross;
-              existing.netToPar = (existing.netToPar ?? 0) + roundNet!;
-            } else {
-              existing.grossToPar = null;
-              existing.netToPar   = null;
-            }
-          } else {
-            map.set(p.user_id, {
-              user_id: p.user_id,
-              display_name: p.display_name,
-              roundsPlayed: 1,
-              grossTotal: gross,
-              netTotal: net,
-              grossToPar: roundGross,
-              netToPar: roundNet,
-            });
-          }
-        }
-      }
-    }
-
-    const entries = [...map.values()].sort((a, b) => {
-      const aScore = a.netToPar ?? a.netTotal;
-      const bScore = b.netToPar ?? b.netTotal;
-      return aScore - bScore;
-    });
-
-    // Assign rank strings: tied players share a "T1" prefix.
-    let rank = 1;
-    return entries.map((e, i, arr) => {
-      if (i > 0) {
-        const prev = arr[i - 1];
-        if ((e.netToPar ?? e.netTotal) !== (prev.netToPar ?? prev.netTotal)) rank = i + 1;
-      }
-      const isTied = entries.filter(
-        (x) => (x.netToPar ?? x.netTotal) === (e.netToPar ?? e.netTotal)
-      ).length > 1;
-      return { ...e, rank: isTied ? `T${rank}` : `${rank}` };
-    });
-  }
+  // buildEventLeaderboard used to be declared right here, inside the component body — in a
+  // file excluded from the coverage set, so the event standings math had zero tests and was
+  // invisible to the ratchet. Extracted to utils/leaderboard.ts (pure + tested), where it now
+  // shares its ranking and par-accumulation logic with the round leaderboard rather than
+  // duplicating it.
 
   // --- Loading / error states ---
 
@@ -681,7 +608,7 @@ export default function EventDetailScreen() {
   if (eventError || !event) {
     return (
       <View className={`flex-1 ${t.screen} items-center justify-center gap-3 px-8`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`font-semibold text-center ${t.textPrimary}`}>Failed to load event</Text>
         <TouchableOpacity
           className={`${t.primaryBg} rounded-xl px-6 py-3`}
@@ -707,7 +634,7 @@ export default function EventDetailScreen() {
         </Text>
         {isOrganizer && (
           <TouchableOpacity onPress={openEditModal} hitSlop={8}>
-            <Ionicons name="pencil-outline" size={20} color="#2563eb" />
+            <Ionicons name="pencil-outline" size={20} color={t.colors.info} />
           </TouchableOpacity>
         )}
       </View>
@@ -722,7 +649,7 @@ export default function EventDetailScreen() {
             <StatusChip status={event.status} />
             {event.is_public && (
               <View className="flex-row items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200">
-                <Ionicons name="globe-outline" size={11} color="#2563eb" />
+                <Ionicons name="globe-outline" size={11} color={t.colors.info} />
                 <Text className="text-xs font-semibold text-blue-700">Public</Text>
               </View>
             )}
@@ -1290,8 +1217,8 @@ export default function EventDetailScreen() {
                   <Switch
                     value={editIsPublic}
                     onValueChange={setEditIsPublic}
-                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                    thumbColor="#ffffff"
+                    trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                    thumbColor={t.colors.onPrimary}
                     disabled={updateEventMutation.isPending}
                   />
                 </View>
@@ -1323,7 +1250,7 @@ export default function EventDetailScreen() {
                   disabled={deleteEventMutation.isPending}
                 >
                   {deleteEventMutation.isPending ? (
-                    <ActivityIndicator color="#dc2626" />
+                    <ActivityIndicator color={t.colors.danger} />
                   ) : (
                     <Text className="text-sm font-semibold text-red-600">Delete Event</Text>
                   )}

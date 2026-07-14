@@ -26,24 +26,12 @@ import (
 	"github.com/trentd187/golf-league/internal/services"
 )
 
-// fatal reports an unrecoverable startup failure and exits.
-//
-// Every startup failure used to be log.Fatal, which writes to stderr via the STDLIB logger —
-// it never touches slog, so it never reached the Sentry handler. And log.Fatal calls
-// os.Exit(1), which skips `defer sentryShutdown()`, so even a buffered event would not have
-// flushed. The result: a failed migration, an unreachable database, or a bad JWKS URL
-// produced a Railway crashloop with ZERO Sentry signal — the highest-severity events this
-// service can have were the only ones with no telemetry at all.
-//
-// The explicit Flush is required precisely because os.Exit skips defers.
-func fatal(msg string, err error) {
-	slog.Error(msg,
-		"event_type_label", "server.startup_failed",
-		"error", err.Error(),
-	)
-	sentry.Flush(2 * time.Second)
-	os.Exit(1)
-}
+// fatal is observability.Fatal — slog.Error (→ Sentry) then an explicit Flush, because the
+// os.Exit inside skips `defer sentryShutdown()`. It lives in the observability package, not
+// here, so middleware.Auth (which must die if the JWKS is unreachable) can reach the same
+// path without an import cycle. Never call log.Fatal directly: it writes via the stdlib
+// logger, never touches slog, and so never reaches Sentry at all.
+var fatal = observability.Fatal
 
 func main() {
 	cfg := config.Load()

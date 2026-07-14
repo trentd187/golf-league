@@ -6,7 +6,6 @@ package middleware
 import (
 	"context"
 	"errors"
-	"log"
 	"log/slog"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -117,10 +117,16 @@ func LoadJWKS(ctx context.Context, jwksURL string) (jwt.Keyfunc, error) {
 }
 
 // newJWKSKeyfunc loads the key set at startup, or dies trying. Called once, from Auth.
+//
+// Dies via observability.Fatal, NOT log.Fatalf. That distinction is the whole point: making
+// the JWKS failure fatal (above) is only useful if the resulting crash is VISIBLE. log.Fatalf
+// writes through the stdlib logger, which never reaches slog and therefore never reaches
+// Sentry, and its os.Exit skips main's `defer sentryShutdown()` — so the fix for the silent
+// auth outage would itself have crashlooped Railway in silence.
 func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
 	keyfn, err := LoadJWKS(context.Background(), cfg.SupabaseJWKSURL)
 	if err != nil {
-		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
+		observability.Fatal("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set?", err)
 	}
 	return keyfn
 }

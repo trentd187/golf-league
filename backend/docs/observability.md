@@ -91,7 +91,7 @@ were the *only* ones with no Sentry signal at all.
 
 | `event_type_label` | Emitted by | Fires when |
 |---|---|---|
-| `server.startup_failed` | `main.fatal` | a dead DB, a failed migration, or an unreachable JWKS at boot |
+| `server.startup_failed` | `observability.Fatal` | a dead DB, a failed migration, or an unreachable JWKS at boot |
 | `server.listen_failed` | `cmd/server/main.go` | `app.Listen` fails (port in use). It used to `log.Printf` and *return* while `main` stayed parked on `<-quit` — the container reported **running and healthy with no listener**. |
 | `server.panic` | `cmd/server/main.go` | the listener goroutine panicked (it had no `recover`, so a panic there died silently) |
 | `auth.jwks_refresh_failed` | `middleware.LoadJWKS` | a background JWKS refresh failed. The cached keys still work, so it isn't fatal — but if it keeps failing through a key rotation, every token stops verifying. |
@@ -99,11 +99,21 @@ were the *only* ones with no Sentry signal at all.
 | `health.db_unreachable` | `handlers.HealthCheck` | the DB ping failed → 503 |
 | `health.jwks_empty` | `handlers.HealthCheck` | **zero verifying keys** → 503 |
 
-**Why `fatal` exists.** Every startup failure used to be `log.Fatal`, which writes to stderr via the
-**stdlib** logger — it never touches `slog`, so it never reached the Sentry handler. And `log.Fatal`
-calls `os.Exit(1)`, which skips `defer sentryShutdown()`, so even a buffered event wouldn't flush.
-`main.fatal` does `slog.Error` → **explicit `sentry.Flush`** → `os.Exit(1)`. The explicit flush is
-required precisely *because* `os.Exit` skips defers.
+**Why `observability.Fatal` exists — and why it lives in that package.** Every startup failure used
+to be `log.Fatal`, which writes to stderr via the **stdlib** logger — it never touches `slog`, so it
+never reached the Sentry handler. And `log.Fatal` calls `os.Exit(1)`, which skips
+`defer sentryShutdown()`, so even a buffered event wouldn't flush. `observability.Fatal` does
+`slog.Error` → **explicit `sentry.Flush`** → `os.Exit(1)`; the explicit flush is required precisely
+*because* `os.Exit` skips defers, and it's pinned by `observability/fatal_test.go` (which asserts the
+event is emitted at `ERROR` with the stable label *before* the exit — a contract you cannot verify by
+watching the process, since a `log.Fatal` crashloop looks identical from outside).
+
+**It must be the ONLY way the process dies at startup.** It lives in `internal/observability`, not
+`package main`, for one reason: `middleware.newJWKSKeyfunc` must die if the JWKS is unreachable, and a
+sibling of `main.fatal` would have forced it back to `log.Fatalf` — reintroducing the exact silent
+crash. This is the trap the audit hit *inside its own fix*: making the JWKS boot genuinely fatal
+(below) is worthless if the resulting crash is invisible. **Never call `log.Fatal`/`os.Exit`
+directly** anywhere but `Init`'s own failure (which by definition can't be reported to Sentry).
 
 **Why `/health` checks JWKS.** `keyfunc.NewDefault` builds its storage with
 `NoErrorReturnFirstHTTPReq: true`, so it **returned no error** when the JWKS was unreachable: the

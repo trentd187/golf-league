@@ -250,8 +250,13 @@ func (s *DurableIdempotencyStore) Lookup(
 }
 
 // maybeCleanup deletes expired rows at most once per cleanupInterval. Throttled so a
-// burst of creates doesn't run the sweep on every request; best-effort (a failed sweep
-// just leaves rows to be collected on the next pass).
+// burst of creates doesn't run the sweep on every request.
+//
+// Best-effort by design — a failed sweep just leaves the rows for the next pass, so it must
+// NOT fail the create it is piggybacking on. But "best-effort" is not "unobservable": if the
+// sweep fails permanently (a lost DELETE grant, a bad migration), this table grows without
+// bound until it becomes a real outage, and the discarded *gorm.DB would have told nobody.
+// Degrade gracefully, but degrade LOUDLY — warn, don't error, so it never pages anyone.
 func (s *DurableIdempotencyStore) maybeCleanup(ctx context.Context) {
 	now := s.now()
 	s.mu.Lock()
@@ -261,7 +266,15 @@ func (s *DurableIdempotencyStore) maybeCleanup(ctx context.Context) {
 	}
 	s.lastCleanup = now
 	s.mu.Unlock()
-	s.db.WithContext(ctx).Where("expires_at < ?", now).Delete(&models.IdempotencyKey{})
+
+	if err := s.db.WithContext(ctx).
+		Where("expires_at < ?", now).
+		Delete(&models.IdempotencyKey{}).Error; err != nil {
+		slog.WarnContext(ctx, "idempotency key cleanup sweep failed",
+			"event_type_label", "idempotency.cleanup_failed",
+			"error", err.Error(),
+		)
+	}
 }
 
 // RequestFingerprint hashes the parts of a request that must match for a replay to be

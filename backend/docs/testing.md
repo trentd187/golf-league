@@ -145,6 +145,16 @@ if err := ...Count(&currentCount).Error; err != nil {
 }
 ```
 
+**"Handle it" is not always "become a 500."** A genuinely best-effort query — one whose failure must
+*not* fail the request it piggybacks on — still may not discard its `.Error`; it degrades *loudly*.
+The expired-idempotency-key sweep (`middleware/idempotency.go maybeCleanup`) is the canonical case:
+a failed sweep just leaves rows for the next pass, so it returns no error to the caller — but it
+`slog.WarnContext`s with `event_type_label:idempotency.cleanup_failed`, because a *permanently*
+failing sweep grows that table without bound and the dropped `*gorm.DB` would have told nobody. The
+test is "if this failed forever, would anyone see it?" — Warn for best-effort, wrapped-500 for
+everything on the request's critical path. **The one thing never allowed is a silently discarded
+`*gorm.DB`.**
+
 `gorm.Config{TranslateError: true}` is set in `database.GormConfig()` (shared with the
 testcontainers DB via `testutil`, so the two cannot drift) — that is what makes
 `errors.Is(err, gorm.ErrDuplicatedKey)` work. Without it a unique violation arrives as an opaque

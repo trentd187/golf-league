@@ -10,8 +10,8 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Modal sheets, badges, date inputs, picker components | [`mobile/docs/components.md`](mobile/docs/components.md) |
 | `package.json`, expo install, dependency upgrade, OAuth/Supabase setup | [`mobile/docs/dependencies.md`](mobile/docs/dependencies.md) |
 | Keyboard handling, TextInput chaining, file uploads, KeyboardAvoidingView | [`mobile/docs/keyboard-and-platform.md`](mobile/docs/keyboard-and-platform.md) |
-| Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy | [`backend/docs/testing.md`](backend/docs/testing.md) |
-| Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
+| Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy, **the GORM `*gorm.DB`-not-`error` trap**, injecting DB faults | [`backend/docs/testing.md`](backend/docs/testing.md) |
+| Sentry init, per-request hub, slog→Sentry routing, background goroutines, **startup death (`observability.Fatal`), JWKS outage, why 4xx≠Issue** | [`backend/docs/observability.md`](backend/docs/observability.md) |
 | Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Scorecard saves/creates, retry/backoff, `savePut`/`savePost`, Idempotency-Key dedupe, phantom-write observability | [`mobile/docs/network-saves.md`](mobile/docs/network-saves.md) |
 | Live score updates, 60s polling, the poll gate, the hardened read path (`apiGetJson`), no-bare-fetch rule | [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md) |
@@ -137,6 +137,26 @@ func HandlerName(svc *services.DomainService) fiber.Handler {
     }
 }
 ```
+
+### Backend error-handling rules (the traps the 7/14 audit found)
+
+These recurred because the compiler and `errcheck` are blind to all four. Full detail + how to
+test each: [`backend/docs/testing.md`](backend/docs/testing.md) and [`backend/docs/observability.md`](backend/docs/observability.md).
+
+- **GORM `Count`/`Find`/`Scan`/`Pluck`/`Delete`/`Updates` return `*gorm.DB`, not `error`.** A dropped
+  DB error compiles clean and passes lint. Always append `.Error` and handle it. **Only
+  `gorm.ErrRecordNotFound` may collapse to a "not found / denied" result** — everything else wraps
+  with `%w` and becomes a 500. Best-effort background work (e.g. a cleanup sweep) may skip the 500
+  but must `slog.Warn` with a stable label, never silently discard the `*gorm.DB`.
+- **A DB fault must surface as a 5xx.** `ErrorLogger` only escalates **5xx** to a Sentry Issue, so a
+  DB error laundered into a 2xx (zeroed data) or 4xx (a fake 403/409) is *invisible*. That single
+  mistake defeats the whole phantom-save observability program. Keep `error_detail` populated.
+- **Multi-step mutations run in one `s.DB.Transaction(...)`.** A mid-loop failure that half-writes is
+  corruption. The mobile client must never delete-then-recreate across separate requests — expose a
+  transactional bulk-replace endpoint instead (see `ReplaceGroupTeams`).
+- **A process may only die at startup via `observability.Fatal`** — never `log.Fatal`/`os.Exit`
+  directly (they bypass `slog`→Sentry and skip the flush, so the crash is invisible). The sole
+  exception is a failure of Sentry init itself.
 
 ### Adding a New Model
 

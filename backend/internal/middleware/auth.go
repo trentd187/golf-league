@@ -4,10 +4,12 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"log"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
@@ -52,16 +54,94 @@ func authDBError(c *fiber.Ctx, tag string, err error, msg string) error {
 	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
 }
 
-// newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying
-// key function (keyfunc handles caching + automatic key rotation). Without the
-// JWKS we cannot verify any token, so a failure here is fatal at startup rather
-// than a silent per-request failure later.
+// jwksHTTPTimeout bounds the JWKS fetch. The library's default is a full MINUTE, which would
+// stall startup (and every background refresh) far longer than is useful.
+const jwksHTTPTimeout = 10 * time.Second
+
+// jwksRefreshInterval is how often the key set is re-fetched in the background. Shorter than
+// the library's 1-hour default so a rotated Supabase key is picked up promptly.
+const jwksRefreshInterval = 15 * time.Minute
+
+// newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying key function
+// (keyfunc handles caching + automatic key rotation). Without the JWKS we cannot verify any
+// token, so a failure here is fatal at startup — and, as of this change, ACTUALLY is.
+//
+// The bug this fixes. keyfunc.NewDefault builds its storage with
+// jwkset.HTTPClientStorageOptions{NoErrorReturnFirstHTTPReq: true} (jwkset/http.go), and
+// jwkset/storage.go then does `return s, nil` when the first fetch fails. So NewDefault NEVER
+// returned an error for an unreachable JWKS — the log.Fatalf below was dead code, and the old
+// comment claiming "a failure here is fatal at startup" asserted the exact opposite of the
+// truth.
+//
+// What actually happened: the server booted with an EMPTY key set, every authenticated request
+// failed validateToken and got a 401, and /health (which only pinged the DB) kept answering
+// 200 — so Railway happily routed traffic into a service where nothing worked, indefinitely.
+// A silent, total auth outage that looked healthy.
+//
+// NoErrorReturnFirstHTTPReq: false makes the fatal real: fail fast, let Railway restart, and
+// never serve a broken key set. RefreshErrorHandler covers the other half — a JWKS that goes
+// away AFTER a good boot, which no startup check can catch.
+// LoadJWKS fetches the key set and returns the verifying key function. Exported (and
+// error-returning rather than fatal) so a test can assert the contract that actually matters:
+// an UNREACHABLE JWKS MUST RETURN AN ERROR. Under keyfunc.NewDefault it did not — that is the
+// whole bug.
+func LoadJWKS(ctx context.Context, jwksURL string) (jwt.Keyfunc, error) {
+	noErrorReturnFirstHTTPReq := false
+
+	jwks, err := keyfunc.NewDefaultOverrideCtx(ctx,
+		[]string{jwksURL},
+		keyfunc.Override{
+			HTTPTimeout:               jwksHTTPTimeout,
+			NoErrorReturnFirstHTTPReq: &noErrorReturnFirstHTTPReq,
+			RefreshInterval:           jwksRefreshInterval,
+			RefreshErrorHandlerFunc: func(u string) func(ctx context.Context, err error) {
+				return func(ctx context.Context, err error) {
+					// A background refresh failed. The cached keys still work, so this is not
+					// fatal — but if it keeps failing through a key rotation, every token
+					// starts failing to verify. Give it a stable label so it is alertable.
+					slog.ErrorContext(ctx, "failed to refresh Supabase JWKS",
+						"event_type_label", "auth.jwks_refresh_failed",
+						"jwks_url", u,
+						"error", err.Error(),
+					)
+				}
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	jwksStore = jwks
+	return jwks.Keyfunc, nil
+}
+
+// newJWKSKeyfunc loads the key set at startup, or dies trying. Called once, from Auth.
 func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
-	jwks, err := keyfunc.NewDefault([]string{cfg.SupabaseJWKSURL})
+	keyfn, err := LoadJWKS(context.Background(), cfg.SupabaseJWKSURL)
 	if err != nil {
 		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
 	}
-	return jwks.Keyfunc
+	return keyfn
+}
+
+// jwksStore holds the live key set so /health can report whether we actually have keys.
+// A server with zero keys 401s every request; without this, that outage is invisible to
+// any readiness check.
+var jwksStore keyfunc.Keyfunc
+
+// JWKSKeyCount returns how many JWKs are currently cached, and whether the key set has been
+// initialised at all. handlers.HealthCheck uses it: zero keys means every authenticated
+// request will 401, which must not be reported as healthy.
+func JWKSKeyCount(ctx context.Context) (count int, ok bool) {
+	if jwksStore == nil {
+		return 0, false
+	}
+	jwkSet, err := jwksStore.Storage().KeyReadAll(ctx)
+	if err != nil {
+		return 0, false
+	}
+	return len(jwkSet), true
 }
 
 // validateToken parses and cryptographically verifies a Supabase JWT, returning its

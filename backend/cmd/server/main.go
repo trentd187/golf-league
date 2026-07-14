@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
@@ -25,6 +26,25 @@ import (
 	"github.com/trentd187/golf-league/internal/services"
 )
 
+// fatal reports an unrecoverable startup failure and exits.
+//
+// Every startup failure used to be log.Fatal, which writes to stderr via the STDLIB logger —
+// it never touches slog, so it never reached the Sentry handler. And log.Fatal calls
+// os.Exit(1), which skips `defer sentryShutdown()`, so even a buffered event would not have
+// flushed. The result: a failed migration, an unreachable database, or a bad JWKS URL
+// produced a Railway crashloop with ZERO Sentry signal — the highest-severity events this
+// service can have were the only ones with no telemetry at all.
+//
+// The explicit Flush is required precisely because os.Exit skips defers.
+func fatal(msg string, err error) {
+	slog.Error(msg,
+		"event_type_label", "server.startup_failed",
+		"error", err.Error(),
+	)
+	sentry.Flush(2 * time.Second)
+	os.Exit(1)
+}
+
 func main() {
 	cfg := config.Load()
 
@@ -33,6 +53,7 @@ func main() {
 	// and shutdown is a no-op — server runs identically without telemetry.
 	logger, sentryShutdown, err := observability.Init(cfg)
 	if err != nil {
+		// The one failure that genuinely cannot be reported — Sentry itself is what failed.
 		log.Fatal("Failed to initialise Sentry:", err)
 	}
 	defer sentryShutdown()
@@ -45,16 +66,16 @@ func main() {
 		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
 	})
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		fatal("Failed to connect to database", err)
 	}
 	// sqlDB is the pooled *sql.DB behind GORM — used by the /health readiness ping.
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Fatal("Failed to access database handle:", err)
+		fatal("Failed to access database handle", err)
 	}
 
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatal("Failed to run migrations:", err)
+		fatal("Failed to run migrations", err)
 	}
 	fmt.Println("Migrations applied successfully")
 
@@ -130,7 +151,9 @@ func main() {
 
 	// GET /health — readiness probe for Railway and load balancers: no auth, but it pings the
 	// DB so a wedged connection pool surfaces as a 503 instead of a false 200 (the 7/3 mode).
-	app.Get("/health", handlers.HealthCheck(sqlDB))
+	// Readiness: the DB must be reachable AND we must hold Supabase verifying keys. Zero keys
+	// means every authenticated request 401s — an outage that used to report itself as 200.
+	app.Get("/health", handlers.HealthCheck(sqlDB, middleware.JWKSKeyCount))
 
 	// Retired live-score WebSocket — a tombstone answering 410 Gone. Builds already on
 	// players' phones still dial it; a definitive 410 lets their reconnect loop reach its
@@ -282,12 +305,33 @@ func main() {
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
+		// A panic in a goroutine takes the whole process down, and without a recover it does
+		// so with no Sentry event — the crash would be invisible except as a Railway restart.
+		defer func() {
+			if r := recover(); r != nil {
+				sentry.CurrentHub().Recover(r)
+				sentry.Flush(2 * time.Second)
+				slog.Error("Server goroutine panicked",
+					"event_type_label", "server.panic",
+					"panic", fmt.Sprint(r))
+				quit <- syscall.SIGTERM
+			}
+		}()
+
 		slog.Info("Server starting",
 			"event_type_label", "server.startup",
 			"port", cfg.Port,
 			"env", cfg.Env)
+
 		if err := app.Listen(":" + cfg.Port); err != nil {
-			log.Printf("Server listen error: %v", err)
+			// This used to log.Printf and return, leaving main parked on <-quit forever: the
+			// container reported RUNNING AND HEALTHY with no listener at all. Signal quit so
+			// the process actually exits and Railway restarts it.
+			slog.Error("Server failed to listen",
+				"event_type_label", "server.listen_failed",
+				"port", cfg.Port,
+				"error", err.Error())
+			quit <- syscall.SIGTERM
 		}
 	}()
 

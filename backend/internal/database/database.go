@@ -2,6 +2,8 @@
 package database
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -63,8 +65,22 @@ func RunMigrations(dsn string) error {
 		return err
 	}
 
+	// A DIRTY version means a previous migration died partway through and the schema is in an
+	// unknown state. migrate refuses to proceed, and every subsequent boot fails the same way —
+	// so without this branch the operator sees a generic error and no hint of the real problem,
+	// while the container crashloops. Say exactly what's wrong and what fixes it.
+	if version, dirty, verr := m.Version(); verr == nil && dirty {
+		return fmt.Errorf(
+			"migration %d is DIRTY: a previous run failed partway through and the schema is in an "+
+				"unknown state. Inspect it, then force the version with `migrate force %d` once the "+
+				"schema matches",
+			version, version-1,
+		)
+	}
+
 	// ErrNoChange means all migrations are already applied — not an error.
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	// errors.Is, not !=: a wrapped ErrNoChange would otherwise be treated as fatal.
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
 

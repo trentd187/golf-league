@@ -212,6 +212,23 @@ expired / foreign) falls through to the normal failure path. Round-create passes
 `POST .../groups/:gid/members`, `POST .../groups/:gid/guests`, `POST /rounds/:id/teams` —
 each behind `middleware.Idempotency` on the backend and `savePost` on the client.
 
+> ### ⚠️ `recoverByKey` MUST go through `apiGet` — it was the last bare fetch, and it hung
+>
+> For months this read-back was a bare `fetch()` with no `AbortController`. Read when it runs:
+> **only after every create attempt has already died on the transport** — i.e. on exactly the
+> dead cellular socket that just exhausted the retries. And `runSaveWithRetry` **awaits** it.
+>
+> So on a stale okhttp keep-alive it never settled: the `savePost` promise neither resolved nor
+> rejected, `opts.report(...)` was never reached, and the user watched a create spinner **forever
+> with nothing in Sentry**. The surrounding `catch` swallows a *throw* — and a hang is not a throw.
+>
+> It now uses `apiGet({ profile: RECONCILE_GET, label: "idempotency_recover" })`. Same bug, same
+> fix as `ff78640` applied to the scorecard's read-back; the create path was simply missed. The
+> regression test (`savePost.test.ts`) drives a `fetchImpl` that only settles on abort — it would
+> hang forever against the old code.
+>
+> **The general rule: any read-back on a failure path is still a read. It goes through `apiGet`.**
+
 ## Idempotent PATCH/PUT mutations also use `savePut`
 
 Mutations that converge to the same state on repeat — **not** just PUT — route through

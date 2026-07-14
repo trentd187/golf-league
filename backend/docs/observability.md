@@ -78,10 +78,40 @@ Business events are emitted at the **service commit site** via `slog.InfoContext
 | `score.hole_stats_saved` | `ScoreService.UpsertHoleStats` | a hole-stats upsert commits — carries `round_player_id`, `count` |
 | `score.handicap_blocked` | `ScoreService.UpsertScores` (**warn**) | a score save is rejected (422) because the round requires a handicap the player hasn't set — the previously-invisible UX block. Hole-stats have no such gate (asymmetry), so a player can save stats but not scores. |
 | `create.recovered_by_lookup` | `handlers.LookupIdempotentResponse` | a client recovered a phantom create via `GET /idempotency/:key` (every ack was lost; the row committed). Its error path is `create.idempotency_lookup_error`. |
-| `ws.upgrade_missing` | `middleware.MakeWSAuthHandler` | the WS route was hit without an `Upgrade` (426) — surfaces a proxy/carrier stripping the handshake (7/7: client stormed, backend logged no `ws.connected`). |
+| `round.created` | `handlers.ScheduleEventRound` **and** `handlers.CreateEventlessRound` | a round is created. The eventless path — the "Create Round" button, the most-used create in the app — emitted **nothing** until the full-codebase audit; the single most common create was invisible. |
+| `ws.sunset_hit` | `handlers.WSSunset` (**sampled**) | an old build still dialing the retired WebSocket route (410). When this goes quiet, delete the tombstone. |
 | `event.status_changed` | `handlers/events.go` (handler-level, pre-existing) | an event's status changes |
 
 The absence of `round.status_changed` and the two `score.*` events is exactly what left the 7/1 stat-save and 7/2 end→reactivate incidents with no server-side trail.
+
+## Startup and auth failures — the events that used to have NO telemetry
+
+These are the highest-severity events the service can have, and until the full-codebase audit they
+were the *only* ones with no Sentry signal at all.
+
+| `event_type_label` | Emitted by | Fires when |
+|---|---|---|
+| `server.startup_failed` | `main.fatal` | a dead DB, a failed migration, or an unreachable JWKS at boot |
+| `server.listen_failed` | `cmd/server/main.go` | `app.Listen` fails (port in use). It used to `log.Printf` and *return* while `main` stayed parked on `<-quit` — the container reported **running and healthy with no listener**. |
+| `server.panic` | `cmd/server/main.go` | the listener goroutine panicked (it had no `recover`, so a panic there died silently) |
+| `auth.jwks_refresh_failed` | `middleware.LoadJWKS` | a background JWKS refresh failed. The cached keys still work, so it isn't fatal — but if it keeps failing through a key rotation, every token stops verifying. |
+| `auth.user_sync_failed` | `middleware.MakeAuthHandler` (**warn**) | the JWT→DB user sync write failed. Not worth a 500 (the caller is authenticated, their data is merely stale) but it fails *forever, silently* if left unreported. |
+| `health.db_unreachable` | `handlers.HealthCheck` | the DB ping failed → 503 |
+| `health.jwks_empty` | `handlers.HealthCheck` | **zero verifying keys** → 503 |
+
+**Why `fatal` exists.** Every startup failure used to be `log.Fatal`, which writes to stderr via the
+**stdlib** logger — it never touches `slog`, so it never reached the Sentry handler. And `log.Fatal`
+calls `os.Exit(1)`, which skips `defer sentryShutdown()`, so even a buffered event wouldn't flush.
+`main.fatal` does `slog.Error` → **explicit `sentry.Flush`** → `os.Exit(1)`. The explicit flush is
+required precisely *because* `os.Exit` skips defers.
+
+**Why `/health` checks JWKS.** `keyfunc.NewDefault` builds its storage with
+`NoErrorReturnFirstHTTPReq: true`, so it **returned no error** when the JWKS was unreachable: the
+server booted with an **empty key set**, 401'd every authenticated request, and `/health` — which
+only pinged the DB — kept answering **200**. Railway routed live traffic into a completely broken
+service and never restarted it. The boot is now genuinely fatal (`NoErrorReturnFirstHTTPReq: false`,
+pinned by `middleware/jwks_test.go`), and `/health` covers the case where the key set empties out
+*later*, which no startup check can catch.
 
 ## Backend availability — DB pool, request timeout, `/health` (the 7/3 502 hardening)
 

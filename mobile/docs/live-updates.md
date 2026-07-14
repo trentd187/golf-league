@@ -126,15 +126,57 @@ multi-minute tail before a screen could even show an error.
 **Read-shaped POST.** `POST /courses/search-external` is a query in everything but HTTP verb, so it
 goes through `apiGet({ method: "POST", body })` — read telemetry, no Idempotency-Key.
 
+### The Supabase surface — the hole *under* this layer
+
+[`utils/supabaseFetch.ts`](../utils/supabaseFetch.ts) is injected into `createClient` via
+`global.fetch`, so **every** Supabase auth and storage call is bounded and instrumented too.
+
+This is not an optional extra. Every read and write in the app begins:
+
+```ts
+const token = await getToken();          // → supabase.auth.getSession()
+await apiGetJson({ url, token, ... });   // ← the AbortController starts HERE
+```
+
+`getSession()` is only local while the access token is still valid; once it expires it makes a
+network round-trip to refresh. With the platform's bare fetch that call had **no timeout** — an
+unbounded request running *in front of* every hardened one. That is why hardening our own
+endpoints alone never fully fixed "the app just froze".
+
+**Retry policy is asymmetric on purpose.** Only GET/HEAD and the **token refresh** are retried.
+The refresh is a POST but replaying it is safe, and it's the one that matters most: when it
+exhausts, every subsequent call goes out with an empty `Bearer` and 401s — which reads as
+ordinary 4xx noise rather than the auth outage it is (hence it's escalated to an Issue).
+`POST /auth/v1/otp` and `/verify` are **never** retried: a retry sends a second magic-link email
+or burns a one-time code.
+
 ### No bare fetch
 
 Enforced by `no-restricted-syntax` in [`eslint.config.js`](../eslint.config.js) across `app/`,
-`components/`, and `hooks/`. `utils/` is exempt — that's where the primitives live. There is exactly
-one sanctioned exception, marked with an `eslint-disable`: reading a local `file://` URI into an
+`components/`, `hooks/`, `stores/`, **and `utils/`** — with an allowlist for exactly three files
+(`apiGet.ts`, `saveWithRetry.ts`, `supabaseFetch.ts`), which *are* the hardening.
+
+The rule used to cover only `app/`, `components/`, and `hooks/`, with a comment explaining that
+`utils/` was excluded "because that is where the primitives live". A later audit found a live,
+unbounded bare fetch **in `utils/savePost.ts`** — in the phantom-*create* recovery path, the code
+that runs *only* when the network has already failed. It hung the create spinner forever and
+reported nothing.
+
+Two things had to change, and the second is the subtle one:
+
+1. `utils/` is now in scope.
+2. **The selector also catches `?? fetch`.** The primitives call fetch as
+   `(opts.fetchImpl ?? fetch)(url, init)`, whose callee is a `LogicalExpression` — *not* an
+   Identifier named `fetch`. So `CallExpression[callee.name='fetch']` alone would have sailed
+   right past the bug even with `utils/` in scope. That exact shape is what leaked.
+
+Also banned: `globalThis.fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`.
+
+One sanctioned exception, marked with an `eslint-disable`: reading a local `file://` URI into an
 ArrayBuffer for the avatar upload (no network, nothing to retry).
 
-This rule is the durable half of the change. Bare fetches had been hand-removed twice before
-(`ff78640`, `457559c`) and crept straight back, because nothing enforced it.
+Bare fetches had been hand-removed three times before (`ff78640`, `457559c`, the WS removal) and
+crept straight back, because nothing enforced it.
 
 ---
 
@@ -165,6 +207,9 @@ immediate feedback on the player's own typo, not a network panic.
 | `upload.failed` / `error_source:upload` | Issue | avatar → Supabase Storage failed after retries |
 | `scorecard.merge_skipped` | warn log | degraded snapshot rejected |
 | `save.*` / `create.*` | Issues + logs | unchanged (see [network-saves.md](network-saves.md)) |
+| `supabase.request_failed` / `error_source:auth\|storage` | warn log, **Issue** on 5xx or an exhausted `auth.token_refresh` | a Supabase auth/storage call failed |
+| `auth.session_unavailable` / `error_source:auth` | warn log, **Issue** when `fatal` | `getSession()` failed; `fatal` = it *threw*, which used to strand the app on a blank screen |
+| `storage.failed` / `error_source:storage` | warn log | SecureStore/localStorage read or write failed — the user's theme/prefs silently won't persist |
 | `ws.sunset_hit` | sampled backend log | an old build still dialing the dead socket |
 
 A failed read reports itself **once**: `apiGet` files it (with the label and connection snapshot

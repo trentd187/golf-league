@@ -214,9 +214,16 @@ Primary brand: **green-700** (`#15803d`). Secondary: gray. Errors: red-600.
 
 ### API Calls — TanStack Query + the hardened primitives
 
-**A bare `fetch()` is an ESLint error** in `app/`, `components/`, and `hooks/`. It has no timeout,
-no retry, and no telemetry — a read stuck on a dead cellular socket hangs forever and shows up in
-Sentry as nothing at all. Reads go through `apiGetJson`; writes through `savePut`/`savePost`.
+**A bare `fetch()` is an ESLint error** in `app/`, `components/`, `hooks/`, `stores/`, **and
+`utils/`** — allowlisted only in `apiGet.ts`, `saveWithRetry.ts`, and `supabaseFetch.ts`, which
+*are* the hardening. It has no timeout, no retry, and no telemetry — a read stuck on a dead
+cellular socket hangs forever and shows up in Sentry as nothing at all.
+
+- Reads → `apiGetJson` · Writes → `savePut` / `savePost`
+- **Supabase auth + storage are hardened globally** via `global.fetch` on the client
+  (`utils/supabaseFetch.ts`). This matters because `getToken()` → `getSession()` refreshes over
+  the network and runs in front of *every* call.
+
 Details: [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md).
 
 ```tsx
@@ -288,6 +295,16 @@ Even if the destination doesn't exist yet — Expo Router's "Unmatched Route" pa
 
 **Any non-trivial logic added to a screen component MUST be extracted to `utils/` first as a pure function with its own test.** Then the component calls the utility. This is the only way coverage stays stable when screen files (which are excluded from coverage) get modified. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
 
+**This is not bookkeeping — here is what it costs when ignored.** `buildLeaderboard` and
+`buildEventLeaderboard` lived inside the component bodies of `rounds/[id].tsx` and
+`events/[id].tsx` for months. Both files are coverage-excluded, so **the code that decides who
+wins had zero tests and was invisible to the ratchet**: it could be changed freely and nothing
+would notice. The same drift put a *second, subtly wrong* copy of `handicapStrokes` in the
+scorecard screen — missing the `effHandicap <= 0` guard, so a plus-handicap player silently got
+**negative** strokes. Both now live in `utils/leaderboard.ts` and `utils/handicap.ts`, tested.
+
+If you catch yourself writing `function` inside a component body, that's the signal.
+
 ---
 
 ## Data Model
@@ -344,7 +361,7 @@ Player-entered per round — **no automatic WHS calculation.**
 
 ### Las Vegas (`scoring_format = 'las_vegas'`)
 
-2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables (organizer assigns two teams of two per group via `RoundService` team CRUD: `GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`); `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
+2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables. **The mobile modals save via `PUT /rounds/:id/groups/:groupId/teams`, which replaces a group's whole team set in ONE transaction** — they used to DELETE each team then POST + PUT the new ones as separate requests, so a create that failed after the deletes landed left the group with *no teams at all* (real data loss on a flaky course network). The finer-grained routes (`GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`) remain for single-team edits. `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
 
 ### Best Ball (`scoring_format = 'best_ball'`)
 

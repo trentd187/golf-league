@@ -42,6 +42,17 @@ function MyScreen() {
 | `t.primaryBgDisabled` | Primary button while loading/pending |
 | `t.colors.tabBarActive` | Hex — for `Ionicons color`, `ActivityIndicator color`, inline styles |
 | `t.colors.tabBarInactive` | Hex — for secondary icons, `placeholderTextColor` |
+| `t.colors.danger` | Hex — destructive actions, error icons/text (**never** hardcode `#dc2626`) |
+| `t.colors.warning` | Hex — caution states (**never** hardcode `#d97706`) |
+| `t.colors.info` | Hex — edit / secondary actions (**never** hardcode `#2563eb`) |
+| `t.colors.onPrimary` | Hex — content **on** a primary surface (e.g. a spinner inside a green button) |
+| `t.colors.switchTrackOff` | Hex — `Switch` `trackColor.false` |
+
+> **Why the semantic slots exist.** Screens were hardcoding these — `#dc2626` in ~10 places,
+> `#d1d5db` in ~10. Most were survivable, but the `Switch` track and the avatar border were
+> **light-mode hex applied unconditionally**: they didn't adapt in dark or high-contrast *at all*.
+> The dark theme uses deliberately brighter variants (`danger` is red-**400**, not red-600, which
+> is muddy on a dark surface). A token can't be forgotten the way a hex literal can.
 
 ## Tailwind JIT constraint — critical rule
 

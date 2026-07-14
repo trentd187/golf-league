@@ -33,7 +33,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "@/hooks/useAuth";
 import { useUser } from "@/hooks/useUser";
-import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL, LIVE_POLL_MS } from "@/constants/api";
@@ -219,7 +219,7 @@ export default function EventDetailScreen() {
   });
 
   // completedRoundIds: IDs of rounds to aggregate for leaderboard/stats.
-  // Empty array while rounds are still loading — useQueries handles the empty case gracefully.
+  // Empty array while rounds are still loading; the batched scorecards query stays disabled.
   const completedRoundIds = (rounds ?? [])
     .filter((r) => r.status === "completed")
     .map((r) => r.id);
@@ -229,35 +229,45 @@ export default function EventDetailScreen() {
   // hasBestBallRound gates the event-level Teams tab (any Best Ball round in the event).
   const hasBestBallRound = (rounds ?? []).some((r) => r.scoring_format === "best_ball");
 
-  // scorecardQueries: one query per completed round.
-  // Lazy — only enabled when the user opens the Leaderboard or Stats tab to avoid
-  // fetching N scorecard payloads while just browsing Members or Rounds.
-  const scorecardQueries = useQueries({
-    queries: completedRoundIds.map((roundId) => ({
-      queryKey: ["scorecard", roundId],
-      queryFn: async () => {
-        const token = await getToken();
-        return apiGetJson<Scorecard>({
-          url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
-          token: token ?? "",
-          label: "scorecard",
-        });
-      },
-      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches" || activeTab === "teams"),
-      // The leaderboard is the one place a spectator watches scores land, so it polls on
-      // the same 60s cadence as the scorecard. Only the visible tab's queries are enabled,
-      // so this never fans out N polls while the user is browsing Members.
-      refetchInterval: LIVE_POLL_MS,
-      refetchIntervalInBackground: false,
-    })),
+  // Every completed round's scorecard in ONE request.
+  //
+  // This was a useQueries() fan-out — one /rounds/:id/scorecard request per completed round —
+  // and it polled EVERY one of them on the 60s live interval. A 20-round league meant 20
+  // concurrent requests on tab open and 20 more every single minute, over the same cellular
+  // links the whole save path was hardened for. It is the identical N+1 that
+  // GET /users/:id/scorecards already removed from the Stats screen; the event screen just
+  // never got the same treatment. GET /events/:id/scorecards now returns them all at once.
+  //
+  // Still lazy: only fetched once the user opens a tab that actually needs scorecards, so
+  // browsing Members or Rounds costs nothing.
+  const needsScorecards =
+    activeTab === "leaderboard" ||
+    activeTab === "stats" ||
+    activeTab === "matches" ||
+    activeTab === "teams";
+
+  const {
+    data: scorecardsData,
+    isLoading: scorecardsLoading,
+    isError: scorecardsError,
+  } = useQuery<Scorecard[]>({
+    queryKey: ["event", id, "scorecards"],
+    queryFn: async () => {
+      const token = await getToken();
+      return apiGetJson<Scorecard[]>({
+        url: `${API_URL}/api/v1/events/${id}/scorecards`,
+        token: token ?? "",
+        label: "event_scorecards",
+      });
+    },
+    enabled: !!id && needsScorecards && completedRoundIds.length > 0,
+    // The leaderboard is the one place a spectator watches scores land, so it polls on the
+    // same 60s cadence as the scorecard — but now that is ONE request, not N.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
-  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
-  const scorecardsError   = scorecardQueries.some((q) => q.isError);
-  // Only include scorecards that have fully loaded — partial results would skew the aggregate.
-  const scorecards        = scorecardQueries
-    .map((q) => q.data)
-    .filter((sc): sc is Scorecard => sc !== undefined);
+  const scorecards = scorecardsData ?? [];
 
   // Join requests — only fetched when the organizer opens the Requests tab.
   const {

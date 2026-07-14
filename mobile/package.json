@@ -73,7 +73,7 @@
     "@react-native-community/netinfo": "11.4.1",
     "@sentry/react-native": "~7.2.0",
     "@supabase/supabase-js": "^2.104.0",
-    "@tanstack/react-query": "latest",
+    "@tanstack/react-query": "5.90.21",
     "expo": "~54.0.35",
     "expo-auth-session": "~7.0.11",
     "expo-constants": "~18.0.13",
@@ -88,11 +88,11 @@
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "expo-web-browser": "~15.0.11",
-    "nativewind": "latest",
+    "nativewind": "4.2.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-css-interop": "latest",
+    "react-native-css-interop": "0.2.2",
     "react-native-keyboard-controller": "1.18.5",
     "react-native-reanimated": "~4.1.6",
     "react-native-safe-area-context": "~5.6.2",
@@ -102,7 +102,7 @@
     "react-native-web": "^0.21.2",
     "react-native-worklets": "0.7.4",
     "tailwindcss": "^3.4.0",
-    "zustand": "latest"
+    "zustand": "5.0.11"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

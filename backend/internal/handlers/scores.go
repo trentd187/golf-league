@@ -66,6 +66,33 @@ func writeScoreError(c *fiber.Ctx, err error, tag, fallbackMsg string) error {
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
+// GetEventScorecards returns a handler for GET /api/v1/events/:id/scorecards.
+//
+// Every completed round in the event, in ONE response. The event detail screen used to build
+// its leaderboard with a useQueries() fan-out — one /rounds/:id/scorecard request per completed
+// round — and it polled every one of them on the 60s live interval. A 20-round league meant 20
+// concurrent requests on tab open and 20 more every minute, over the same cellular links the
+// entire save path was hardened for. This is the same N+1 that GET /users/:id/scorecards
+// already removed from the stats screen.
+func GetEventScorecards(svc *services.ScoreService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		eventID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid event ID"})
+		}
+
+		userIDStr, _ := c.Locals("userID").(string)
+		userRole, _ := c.Locals("userRole").(string)
+		callerID, _ := uuid.Parse(userIDStr)
+
+		cards, err := svc.GetEventScorecards(c.UserContext(), eventID, callerID, userRole)
+		if err != nil {
+			return writeScoreError(c, err, "score.get_event_scorecards", "failed to load event scorecards")
+		}
+		return c.JSON(cards)
+	}
+}
+
 // GetRoundScorecard returns a handler for GET /api/v1/rounds/:roundId/scorecard.
 // Any authenticated user may view the scorecard; no write permission is required.
 func GetRoundScorecard(svc *services.ScoreService) fiber.Handler {

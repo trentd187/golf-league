@@ -25,12 +25,16 @@ package services_test
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/services"
@@ -179,4 +183,111 @@ func TestRoundService_CreateGroup_DBFailure_DoesNotCollideOnGroupNumber(t *testi
 	_, err := roundSvc.CreateGroup(context.Background(), result.Round.ID, organizer.ID, "user")
 
 	require.Error(t, err, "a failed MAX(group_number) scan must abort, not number every group 1")
+}
+
+// ─── N+1: query count must not scale with the number of players ───────────────
+//
+// assembleGroupPlayers used to issue TWO queries per player (scores + hole_stats) — and it
+// runs inside a per-group loop, inside a per-round loop (GetScorecardsForRounds). The stats
+// screen requests ?last=200, so a heavy user's stats load ran on the order of two thousand
+// queries inside one 30s request deadline. The comment on GetScorecardsForRounds calls it the
+// fix for "the FRONTEND-2 N+1"; in truth it moved the client's fan-out into the server.
+//
+// This test pins the fix by COUNTING queries: a 2-player group and a 4-player group must issue
+// the SAME number. Against the old code the counts differ by four.
+
+// queryCounter is a GORM logger that counts executed SQL statements.
+type queryCounter struct {
+	logger.Interface
+	n *int64
+}
+
+func (q queryCounter) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	atomic.AddInt64(q.n, 1)
+}
+
+func TestScoreService_GetScorecard_QueryCountDoesNotScaleWithPlayers(t *testing.T) {
+	db := testutil.NewTestDB(t)
+
+	countQueriesForGroupSize := func(t *testing.T, suffix string, playerCount int) int64 {
+		t.Helper()
+		eventSvc := services.NewEventService(db)
+		roundSvc := services.NewRoundService(db, eventSvc)
+
+		organizer := seedUser(t, db, suffix+"_org")
+		course, tee := seedCourseWithTee(t, db, "N1 Course "+suffix)
+		seedHoles(t, db, tee.ID)
+		event := seedEvent(t, eventSvc, organizer.ID)
+		result := scheduleRound(t, roundSvc, event.ID, organizer.ID,
+			course.ID.String(), tee.ID.String())
+
+		grp, err := roundSvc.CreateGroup(context.Background(), result.Round.ID, organizer.ID, "user")
+		require.NoError(t, err)
+
+		for i := 0; i < playerCount; i++ {
+			p := seedUser(t, db, fmt.Sprintf("%s_p%d", suffix, i))
+			ep := addEventMember(t, db, event.ID, p.ID)
+			rp := addRoundPlayer(t, db, result.Round.ID, ep.ID)
+			require.NoError(t, db.Create(&models.GroupPlayer{
+				GroupID: grp.Group.ID, RoundPlayerID: rp.ID,
+			}).Error)
+			// A score and a stat each, so both batched queries have rows to group.
+			require.NoError(t, db.Create(&models.Score{
+				RoundPlayerID: rp.ID, HoleNumber: 1, GrossScore: 4, NetScore: 4, EnteredBy: p.ID,
+			}).Error)
+			putts := 2
+			require.NoError(t, db.Create(&models.HoleStat{
+				RoundPlayerID: rp.ID, HoleNumber: 1, Putts: &putts,
+			}).Error)
+		}
+
+		// Count only the queries GetScorecard itself issues.
+		var n int64
+		counting := db.Session(&gorm.Session{Logger: queryCounter{Interface: db.Logger, n: &n}})
+		scoreSvc := services.NewScoreService(counting, services.NewEventService(counting))
+
+		_, err = scoreSvc.GetScorecard(context.Background(), result.Round.ID, organizer.ID, "admin")
+		require.NoError(t, err)
+		return n
+	}
+
+	twoPlayers := countQueriesForGroupSize(t, "n1a", 2)
+	fourPlayers := countQueriesForGroupSize(t, "n1b", 4)
+
+	assert.Equal(t, twoPlayers, fourPlayers,
+		"scorecard query count must be CONSTANT in the number of players — doubling the group "+
+			"must not double the queries (it used to add 2 per player, nested inside a "+
+			"per-group loop inside a per-round loop)")
+}
+
+// ─── GetEventScorecards: the event leaderboard's N+1, removed ─────────────────
+//
+// The event detail screen built its leaderboard with a useQueries() fan-out — one
+// /rounds/:id/scorecard request PER completed round — and polled every one of them on the 60s
+// live interval. A 20-round league meant 20 concurrent requests on tab open and 20 more every
+// minute, over the same cellular links the whole save path was hardened for. This endpoint
+// returns them all at once.
+func TestScoreService_GetEventScorecards_ReturnsOnlyCompletedRounds(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+	scoreSvc := services.NewScoreService(db, eventSvc)
+
+	organizer := seedUser(t, db, "evsc_org")
+	course, tee := seedCourseWithTee(t, db, "Event Scorecards Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+
+	// Two rounds: one completed, one still scheduled.
+	done := scheduleRound(t, roundSvc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+	pending := scheduleRound(t, roundSvc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", done.Round.ID).
+		Update("status", models.RoundStatusCompleted).Error)
+
+	cards, err := scoreSvc.GetEventScorecards(context.Background(), event.ID, organizer.ID, "user")
+
+	require.NoError(t, err)
+	require.Len(t, cards, 1, "only COMPLETED rounds belong on the event leaderboard")
+	assert.Equal(t, done.Round.ID.String(), cards[0].RoundID)
+	assert.NotEqual(t, pending.Round.ID.String(), cards[0].RoundID)
 }

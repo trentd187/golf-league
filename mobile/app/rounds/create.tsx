@@ -22,6 +22,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 
 import { useAuth } from "@/hooks/useAuth";
+import { MY_ROUNDS_KEY } from "@/hooks/useMyRounds";
 import { useTheme } from "@/hooks/useTheme";
 import { useRoundForm } from "@/hooks/useRoundForm";
 import { API_URL } from "@/constants/api";
@@ -85,7 +86,7 @@ export default function CreateRoundScreen() {
       });
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["my-rounds"] });
+      queryClient.invalidateQueries({ queryKey: MY_ROUNDS_KEY });
       // Replace so tapping back from the round detail returns to My Rounds, not this form.
       router.replace(`/rounds/${data.id}`);
     },

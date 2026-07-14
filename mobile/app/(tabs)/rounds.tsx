@@ -28,12 +28,10 @@ import {
   RefreshControl,
 } from "react-native";
 
-import { useAuth } from "@/hooks/useAuth";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMyRounds, MY_ROUNDS_KEY } from "@/hooks/useMyRounds";
+import { useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
-import { API_URL } from "@/constants/api";
-import { apiGetJson } from "@/utils/apiGet";
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
 import { apiToDisplay } from "@/components/DateInput";
@@ -161,7 +159,6 @@ function SectionLabel({ label }: { label: string }) {
 export default function RoundsScreen() {
   const t = useTheme();
   const router = useRouter();
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   // Filter / sort selection is persisted across sessions in the shared list-prefs
@@ -177,17 +174,9 @@ export default function RoundsScreen() {
     isLoading,
     isError,
     refetch,
-  } = useQuery<MyRound[]>({
-    queryKey: ["my-rounds"],
-    queryFn: async () => {
-      const token = await getToken();
-      return apiGetJson<MyRound[]>({
-        url: `${API_URL}/api/v1/rounds`,
-        token: token ?? "",
-        label: "my_rounds",
-      });
-    },
-  });
+    // Shares ONE cache key with the Stats tab via hooks/useMyRounds.ts. They used to use
+    // different keys for the same endpoint, so an invalidation here never reached Stats.
+  } = useMyRounds<MyRound>();
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -201,7 +190,7 @@ export default function RoundsScreen() {
   // changes made on other screens without refetching on every render.
   useFocusEffect(
     useCallback(() => {
-      if (queryClient.getQueryState(["my-rounds"])?.isInvalidated) {
+      if (queryClient.getQueryState(MY_ROUNDS_KEY)?.isInvalidated) {
         refetch();
       }
     }, [queryClient, refetch])

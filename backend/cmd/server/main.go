@@ -212,6 +212,10 @@ func main() {
 	api.Patch("/events/:id/members/:userId/role", handlers.UpdateMemberRole(eventService))
 
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
+	// Every completed round's scorecard in ONE response. The event detail screen used to fan
+	// out one /rounds/:id/scorecard request per round via useQueries — AND poll every one of
+	// them every 60s. Same N+1 that GET /users/:id/scorecards already removed from stats.
+	api.Get("/events/:id/scorecards", handlers.GetEventScorecards(scoreService))
 	api.Post("/events/:id/rounds", durableIdempotency, handlers.ScheduleEventRound(roundService))
 
 	// request-join is a non-idempotent create (RequestJoin returns ErrMemberAlreadyExists on a

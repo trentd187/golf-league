@@ -56,6 +56,23 @@ func TestGetRoundScorecard_InvalidUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── GetEventScorecards ───────────────────────────────────────────────────────
+//
+// One request for every completed round in the event, replacing the event screen's
+// useQueries() fan-out — which issued one /rounds/:id/scorecard request PER round and polled
+// every one of them every 60s.
+
+func TestGetEventScorecards_InvalidUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet,
+		"/events/:id/scorecards",
+		handlers.GetEventScorecards(nil))
+
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodGet, "/events/not-a-uuid/scorecards", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── SetPlayerHandicap ────────────────────────────────────────────────────────
 
 func TestSetPlayerHandicap_InvalidRoundUUID(t *testing.T) {

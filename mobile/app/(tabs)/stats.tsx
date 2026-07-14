@@ -30,6 +30,8 @@ import {
   RefreshControl,
 } from "react-native";
 import { useAuth } from "@/hooks/useAuth";
+import { useMyRounds } from "@/hooks/useMyRounds";
+import { useMe } from "@/hooks/useMe";
 import { useQuery } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
@@ -508,36 +510,23 @@ export default function StatsScreen() {
   const [selectedRound, setSelectedRound] = useState<RoundSummary | null>(null);
   const [openModal, setOpenModal] = useState<"stats" | "scorecard" | null>(null);
 
-  // GET /api/v1/me is shared with the Profile tab — React Query serves it from cache.
-  // We need the DB UUID (me.id) to call the stats endpoint for handicap data.
-  const { data: me } = useQuery<{ id: string }>({
-    queryKey: ["me"],
-    queryFn: async () => {
-      const token = await getToken();
-      return apiGetJson<{ id: string }>({
-        url: `${API_URL}/api/v1/me`,
-        token: token ?? "",
-        label: "me",
-      });
-    },
-  });
+  // We need the DB UUID (me.id) to call the scorecards endpoint. useMe() (hooks/useMe.ts) owns
+  // the ["me"] key — this screen used to hand-roll the query, which four other screens already
+  // had a hook for.
+  const { data: me } = useMe();
 
   // Handicap index and anti-handicap are hidden pending GHIN integration review.
   // Re-enable by restoring a ["userStats", me?.id] query against
   // GET /api/v1/users/:id/stats and the <HandicapSection /> render below.
 
-  // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
-  const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
-    queryKey: ["rounds"],
-    queryFn: async () => {
-      const token = await getToken();
-      return apiGetJson<RoundSummary[]>({
-        url: `${API_URL}/api/v1/rounds`,
-        token: token ?? "",
-        label: "rounds",
-      });
-    },
-  });
+  // GET /api/v1/rounds, shared with the Rounds tab through ONE cache key (hooks/useMyRounds.ts).
+  //
+  // This screen used to hand-roll the same query under the key ["rounds"] while the Rounds tab
+  // used ["my-rounds"] — two cache entries, two requests for identical data, and a genuinely
+  // stale Stats tab, because rounds/create.tsx invalidates only ["my-rounds"]. The old comment
+  // here claimed React Query served it from cache; it never did.
+  const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } =
+    useMyRounds<RoundSummary>();
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);

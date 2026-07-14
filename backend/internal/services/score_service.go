@@ -320,6 +320,27 @@ func (s *ScoreService) GetUserScorecards(ctx context.Context, targetID, callerID
 	return s.GetScorecardsForRounds(ctx, roundIDs, callerID, callerRole)
 }
 
+// GetEventScorecards returns the scorecards for every COMPLETED round in an event, in one
+// response.
+//
+// Backs GET /events/:eventId/scorecards. The event detail screen used to build its leaderboard
+// with a useQueries() fan-out — one /rounds/:id/scorecard request per completed round — AND it
+// polled every one of them on the 60s live interval. A 20-round league meant 20 concurrent
+// requests on tab open and 20 more every minute, on the same cellular links the whole save
+// path was hardened for. Exactly the N+1 that GET /users/:id/scorecards already removed from
+// the stats screen; the event screen simply never got the same treatment.
+func (s *ScoreService) GetEventScorecards(ctx context.Context, eventID, callerID uuid.UUID, callerRole string) ([]*ScorecardData, error) {
+	var roundIDs []uuid.UUID
+	if err := s.DB.WithContext(ctx).Model(&models.Round{}).
+		Select("id").
+		Where("event_id = ? AND status = ?", eventID, models.RoundStatusCompleted).
+		Order("scheduled_date ASC").
+		Scan(&roundIDs).Error; err != nil {
+		return nil, fmt.Errorf("list event rounds: %w", err)
+	}
+	return s.GetScorecardsForRounds(ctx, roundIDs, callerID, callerRole)
+}
+
 // GetScorecard assembles the full scorecard for a round. Any authenticated
 // user may call this — no write permission required.
 // callerID may be uuid.Nil (unauthenticated fallback) — IsOrganizer returns false in that case.
@@ -447,18 +468,54 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		return nil, fmt.Errorf("load group players: %w", err)
 	}
 
+	if len(rows) == 0 {
+		return []ScorecardPlayerData{}, nil
+	}
+
+	// Batch the scores and hole stats: TWO queries for the whole group, not two PER PLAYER.
+	//
+	// This loop used to issue `Find(&dbScores)` and `Find(&dbStats)` per player — and it sits
+	// inside a per-group loop, inside a per-round loop (GetScorecardsForRounds). The stats
+	// screen requests ?last=200, so a heavy user's stats load was on the order of TWO THOUSAND
+	// queries in a single 30s request. The comment on GetScorecardsForRounds calls it the fix
+	// for "the FRONTEND-2 N+1" — it removed the client's fan-out by moving the fan-out into
+	// the server. Same pattern as round_service.go's batched group loads.
+	rpIDs := make([]uuid.UUID, 0, len(rows))
+	for _, pr := range rows {
+		if rpID, err := uuid.Parse(pr.RoundPlayerID); err == nil {
+			rpIDs = append(rpIDs, rpID)
+		}
+	}
+
+	var allScores []models.Score
+	if err := s.DB.WithContext(ctx).
+		Where("round_player_id IN ?", rpIDs).
+		Order("hole_number ASC").
+		Find(&allScores).Error; err != nil {
+		return nil, fmt.Errorf("load group scores: %w", err)
+	}
+	scoresByRP := make(map[uuid.UUID][]models.Score, len(rpIDs))
+	for _, sc := range allScores {
+		scoresByRP[sc.RoundPlayerID] = append(scoresByRP[sc.RoundPlayerID], sc)
+	}
+
+	var allStats []models.HoleStat
+	if err := s.DB.WithContext(ctx).
+		Where("round_player_id IN ?", rpIDs).
+		Order("hole_number ASC").
+		Find(&allStats).Error; err != nil {
+		return nil, fmt.Errorf("load group hole stats: %w", err)
+	}
+	statsByRP := make(map[uuid.UUID][]models.HoleStat, len(rpIDs))
+	for _, st := range allStats {
+		statsByRP[st.RoundPlayerID] = append(statsByRP[st.RoundPlayerID], st)
+	}
+
 	players := make([]ScorecardPlayerData, 0, len(rows))
 	for _, pr := range rows {
 		rpID, _ := uuid.Parse(pr.RoundPlayerID)
 
-		var dbScores []models.Score
-		if err := s.DB.WithContext(ctx).
-			Where("round_player_id = ?", rpID).
-			Order("hole_number ASC").
-			Find(&dbScores).Error; err != nil {
-			return nil, fmt.Errorf("load scores for player %s: %w", rpID, err)
-		}
-
+		dbScores := scoresByRP[rpID]
 		scores := make([]ScorecardScoreData, 0, len(dbScores))
 		totalGross, totalNet := 0, 0
 		for _, sc := range dbScores {
@@ -473,14 +530,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 			tg, tn = &totalGross, &totalNet
 		}
 
-		var dbStats []models.HoleStat
-		if err := s.DB.WithContext(ctx).
-			Where("round_player_id = ?", rpID).
-			Order("hole_number ASC").
-			Find(&dbStats).Error; err != nil {
-			return nil, fmt.Errorf("load stats for player %s: %w", rpID, err)
-		}
-
+		dbStats := statsByRP[rpID]
 		holeStats := make([]ScorecardHoleStatData, 0, len(dbStats))
 		for _, st := range dbStats {
 			holeStats = append(holeStats, ScorecardHoleStatData{

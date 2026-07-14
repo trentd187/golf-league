@@ -510,8 +510,12 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			return &ValidationError{Field: colNineHoleSelection, Message: "nine_hole_selection is only valid for 18-hole courses"}
 		}
 
+		// Unchecked, a failed Count leaves roundCount at 0 and every round in the event is
+		// numbered "Round 1".
 		var roundCount int64
-		tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount)
+		if err := tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount).Error; err != nil {
+			return fmt.Errorf("count event rounds: %w", err)
+		}
 		nextRoundNumber := int(roundCount) + 1
 
 		roundName := in.Name
@@ -730,8 +734,11 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		return RoundUpdateResult{}, fmt.Errorf("save round: %w", err)
 	}
 
-	// Reload for the fresh course name after a potential course change.
-	s.DB.WithContext(ctx).Preload("Course").First(&round, "id = ?", roundID)
+	// Reload for the fresh course name after a potential course change. A failure here would
+	// silently return a stale/empty course_name in the PATCH response.
+	if err := s.DB.WithContext(ctx).Preload("Course").First(&round, "id = ?", roundID).Error; err != nil {
+		return RoundUpdateResult{}, fmt.Errorf("reload round after update: %w", err)
+	}
 
 	statusChanged := in.Status != nil && oldStatus != round.Status
 	if statusChanged {
@@ -796,11 +803,14 @@ func (s *RoundService) CreateGroup(ctx context.Context, roundID, callerID uuid.U
 		return GroupMutationResult{}, ErrRoundForbidden
 	}
 
+	// Unchecked, a failed Scan leaves maxGroupNum at 0 and the new group collides on "Group 1".
 	var maxGroupNum int
-	s.DB.WithContext(ctx).Model(&models.Group{}).
+	if err := s.DB.WithContext(ctx).Model(&models.Group{}).
 		Where("round_id = ?", roundID).
 		Select("COALESCE(MAX(group_number), 0)").
-		Scan(&maxGroupNum)
+		Scan(&maxGroupNum).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("max group number: %w", err)
+	}
 
 	group := models.Group{
 		RoundID:      roundID,
@@ -942,8 +952,14 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
 	}
 
+	// This Count is the ONLY thing enforcing the 4-player cap. Unchecked, any DB error left
+	// currentCount at 0, the `>= 4` test passed, and the cap was silently bypassed — a
+	// 5-player group with no error anywhere.
 	var currentCount int64
-	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if err := s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).
+		Where("group_id = ?", groupID).Count(&currentCount).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("count group players: %w", err)
+	}
 	if currentCount >= 4 {
 		return GroupMutationResult{}, ErrGroupFull
 	}
@@ -988,14 +1004,19 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 		}
 	}
 
-	// Prevent a player from being in two groups for the same round.
+	// Prevent a player from being in two groups for the same round. `== nil` meant "assigned",
+	// so ANY error — including a DB fault — read as "not assigned" and let the duplicate
+	// through. Only a genuine ErrRecordNotFound may mean not-assigned.
 	var existing models.GroupPlayer
-	alreadyAssigned := s.DB.WithContext(ctx).
+	assignedErr := s.DB.WithContext(ctx).
 		Joins("JOIN groups g ON g.id = group_players.group_id").
 		Where("group_players.round_player_id = ? AND g.round_id = ?", roundPlayer.ID, roundID).
-		First(&existing).Error == nil
-	if alreadyAssigned {
+		First(&existing).Error
+	switch {
+	case assignedErr == nil:
 		return GroupMutationResult{}, ErrPlayerAlreadyInGroup
+	case !errors.Is(assignedErr, gorm.ErrRecordNotFound):
+		return GroupMutationResult{}, fmt.Errorf("check existing group assignment: %w", assignedErr)
 	}
 
 	gp := models.GroupPlayer{GroupID: groupID, RoundPlayerID: roundPlayer.ID}
@@ -1043,8 +1064,14 @@ func (s *RoundService) AddGuestToGroup(ctx context.Context, roundID, groupID, ca
 		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
 	}
 
+	// This Count is the ONLY thing enforcing the 4-player cap. Unchecked, any DB error left
+	// currentCount at 0, the `>= 4` test passed, and the cap was silently bypassed — a
+	// 5-player group with no error anywhere.
 	var currentCount int64
-	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if err := s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).
+		Where("group_id = ?", groupID).Count(&currentCount).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("count group players: %w", err)
+	}
 	if currentCount >= 4 {
 		return GroupMutationResult{}, ErrGroupFull
 	}
@@ -1260,11 +1287,15 @@ func (s *RoundService) AssignTeamMembers(ctx context.Context, roundID, teamID, c
 		return TeamResult{}, fmt.Errorf("load team: %w", err)
 	}
 
-	// Every target round_player must belong to this round.
+	// Every target round_player must belong to this round. Unchecked, a failed Count left
+	// validCount at 0 and the mismatch test rejected a legitimate assignment — or, worse,
+	// reported a DB fault to the client as ErrPlayerNotInRound.
 	if len(roundPlayerIDs) > 0 {
 		var validCount int64
-		s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
-			Where("round_id = ? AND id IN ?", roundID, roundPlayerIDs).Count(&validCount)
+		if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+			Where("round_id = ? AND id IN ?", roundID, roundPlayerIDs).Count(&validCount).Error; err != nil {
+			return TeamResult{}, fmt.Errorf("validate round players: %w", err)
+		}
 		if int(validCount) != len(roundPlayerIDs) {
 			return TeamResult{}, ErrPlayerNotInRound
 		}

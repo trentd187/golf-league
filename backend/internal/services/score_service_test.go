@@ -920,3 +920,57 @@ func TestScoreService_GetScorecard_RoundNotFound(t *testing.T) {
 	_, err := svc.GetScorecard(context.Background(), uuid.New(), uuid.New(), "user")
 	assert.True(t, errors.Is(err, services.ErrRoundNotFound))
 }
+
+// ─── A DB fault must be a 500, not a 403 ──────────────────────────────────────
+//
+// canModifyScores used to `return false, nil` on ANY error from the group-membership
+// lookups. So a connection blip, a pool timeout, or a context deadline mid-round became
+// ErrScoreForbidden → HTTP 403 "not authorized to modify scores for this player". 403 is a
+// 4xx, which ErrorLogger deliberately skips — so a database fault during a live round
+// produced NO Sentry Issue and looked to the player like a permissions bug.
+//
+// That single shortcut defeated the phantom-save observability program: "my score wouldn't
+// save" with nothing in Sentry is exactly the report we chased for weeks.
+//
+// Forcing the failure precisely: a cancelled context would trip the FIRST query (loading the
+// round), which was always error-checked correctly — it would prove nothing. Renaming
+// group_players lets the round and organizer lookups succeed and fails only the group
+// membership check, which is the code path under test.
+func TestScoreService_UpsertScores_DBFailure_Is500NotForbidden(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "dbfail_org")
+	player := seedUser(t, db, "dbfail_player")
+	target := seedUser(t, db, "dbfail_target")
+	course, tee := seedCourseWithTee(t, db, "DB Fault Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+
+	epPlayer := addEventMember(t, db, event.ID, player.ID)
+	epTarget := addEventMember(t, db, event.ID, target.ID)
+	cStr, tStr := course.ID.String(), tee.ID.String()
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, cStr, tStr)
+
+	rpPlayer := addRoundPlayer(t, db, result.Round.ID, epPlayer.ID)
+	rpTarget := addRoundPlayer(t, db, result.Round.ID, epTarget.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rpPlayer.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rpTarget.ID)
+	activateRound(t, db, result.Round.ID)
+
+	// Break only the group-membership lookup. Restored unconditionally: the Postgres
+	// container is shared across every test in this process.
+	require.NoError(t, db.Exec(`ALTER TABLE group_players RENAME TO group_players_broken`).Error)
+	t.Cleanup(func() {
+		_ = db.Exec(`ALTER TABLE group_players_broken RENAME TO group_players`).Error
+	})
+
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rpTarget.ID, player.ID, "user",
+		[]services.ScoreInput{{HoleNumber: 1, GrossScore: 4}})
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, services.ErrScoreForbidden),
+		"a database fault must surface as a 500 (→ Sentry Issue), not a 403 the player can't act on")
+}

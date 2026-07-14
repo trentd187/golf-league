@@ -23,9 +23,24 @@ type PoolConfig struct {
 	ConnMaxIdleTime time.Duration
 }
 
+// GormConfig returns the GORM configuration used for EVERY connection — production and the
+// Tier 2 testcontainers DB alike (internal/testutil/db.go calls this). It exists so the two
+// cannot drift: a test database configured differently from production is a test that lies.
+func GormConfig() *gorm.Config {
+	return &gorm.Config{
+		// TranslateError converts driver-specific errors into GORM's sentinels
+		// (gorm.ErrDuplicatedKey, gorm.ErrForeignKeyViolated, ...). Without it a unique
+		// violation arrives as an opaque *pq.Error, which is why services could not tell a
+		// genuine conflict apart from a real DB fault and defaulted to reporting BOTH as a
+		// benign 4xx — hiding outages. Services now branch on the sentinels; this is what
+		// makes that possible.
+		TranslateError: true,
+	}
+}
+
 // Connect opens a GORM database handle using the given DSN and applies the pool bounds.
 func Connect(dsn string, pool PoolConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), GormConfig())
 	if err != nil {
 		return nil, err
 	}

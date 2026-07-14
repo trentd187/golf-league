@@ -36,6 +36,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/trentd187/golf-league/internal/database"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -119,7 +120,9 @@ func setupContainer() {
 		return
 	}
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	// Same GORM config as production (notably TranslateError) — a test DB configured
+	// differently from the real one is a test that lies.
+	db, err := gorm.Open(postgres.Open(dsn), database.GormConfig())
 	if err != nil {
 		setupErr = fmt.Errorf("open gorm: %w", err)
 		return

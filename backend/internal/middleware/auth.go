@@ -6,6 +6,7 @@ package middleware
 import (
 	"errors"
 	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
@@ -39,6 +40,17 @@ type Claims struct {
 
 // bearerPrefix is the standard HTTP Authorization header prefix for JWTs.
 const bearerPrefix = "Bearer "
+
+// authDBError returns a 500 for a database failure inside the auth middleware, stashing the
+// cause in c.Locals("error_detail") the way the handlers' write<Domain>Error helpers do.
+//
+// The two 500s here used to be built inline with no detail, so ErrorLogger emitted an
+// http.error event with an EMPTY "error" field — a 500 on user provisioning (a user's very
+// first sign-in) reached Sentry with the root cause thrown away.
+func authDBError(c *fiber.Ctx, tag string, err error, msg string) error {
+	c.Locals("error_detail", tag+": "+err.Error())
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
+}
 
 // newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying
 // key function (keyfunc handles caching + automatic key rotation). Without the
@@ -119,14 +131,20 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 			avatarURL = custom
 		}
 
+		// WithContext is not optional here: this middleware runs on EVERY authenticated
+		// request, and without it these queries ignore RequestTimeout — so a hung DB parks the
+		// goroutine indefinitely, which is the exact failure the timeout middleware exists to
+		// prevent. Every other DB call in the codebase already passes the context.
+		ctx := c.UserContext()
+
 		var user models.User
-		result := db.Where("auth_id = ?", authID).First(&user)
+		result := db.WithContext(ctx).Where("auth_id = ?", authID).First(&user)
 
 		if result.Error != nil {
-			if result.Error != gorm.ErrRecordNotFound {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "database error",
-				})
+			// errors.Is, not !=: a wrapped ErrRecordNotFound would otherwise be treated as a
+			// hard DB failure and 500 on every first-time sign-in.
+			if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return authDBError(c, "auth.lookup_user", result.Error, "database error")
 			}
 
 			// Truly new user — create the record. Role defaults to "user".
@@ -151,10 +169,8 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 					AvatarURL:   avatarURLPtr,
 					Role:        models.UserRoleUser,
 				}
-				if err := db.Create(&user).Error; err != nil {
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-						"error": "failed to create user record",
-					})
+				if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+					return authDBError(c, "auth.create_user", err, "failed to create user record")
 				}
 			}
 		} else {
@@ -173,7 +189,18 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 				user.AvatarURL = &avatarURL
 			}
 			if len(updates) > 0 {
-				db.Model(&user).Updates(updates)
+				// The error used to be discarded. This is the write that keeps the display
+				// name, email, and avatar in sync — if it fails it fails on every request,
+				// forever, with no log and no Sentry event, and the user's name silently
+				// never persists. It is not worth 500ing the whole request over (the caller
+				// is authenticated and their data is merely stale), but it must be SEEN.
+				if err := db.WithContext(ctx).Model(&user).Updates(updates).Error; err != nil {
+					slog.WarnContext(ctx, "failed to sync user fields from JWT",
+						"event_type_label", "auth.user_sync_failed",
+						"user_id", user.ID.String(),
+						"error", err.Error(),
+					)
+				}
 			}
 		}
 

@@ -208,11 +208,24 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		return false, ErrRoundNotActive
 	}
 
+	// Every lookup below distinguishes "the row genuinely isn't there" (a real permission
+	// denial) from "the database failed" (a 500).
+	//
+	// This used to be `return false, nil` on ANY error. A connection blip, a pool timeout, a
+	// context deadline — all of them became a 403 "not authorized to modify scores for this
+	// player". And 403 is a 4xx, which ErrorLogger deliberately skips, so a DB fault mid-round
+	// produced NO Sentry Issue and looked to the player like a permissions bug. That single
+	// shortcut defeated the whole phantom-save observability program: "my score wouldn't save"
+	// with nothing in Sentry is exactly the report we chased for weeks.
+
 	// Find which group the target player belongs to.
 	var targetGP models.GroupPlayer
 	if err := s.DB.WithContext(ctx).First(&targetGP, "round_player_id = ?", targetRoundPlayerID).Error; err != nil {
-		// Target not in any group — deny without leaking why.
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Target genuinely isn't in a group — deny without leaking why.
+			return false, nil
+		}
+		return false, fmt.Errorf("load target group player: %w", err)
 	}
 
 	// Resolve caller → RoundPlayer → GroupPlayer.
@@ -223,25 +236,40 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		if err := s.DB.WithContext(ctx).
 			Where("event_id = ? AND user_id = ?", *round.EventID, callerID).
 			First(&callerEP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in the event
+			}
+			return false, fmt.Errorf("load caller event player: %w", err)
 		}
 		if err := s.DB.WithContext(ctx).
 			Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
 			First(&callerRP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in this round
+			}
+			return false, fmt.Errorf("load caller round player: %w", err)
 		}
 	} else {
 		if err := s.DB.WithContext(ctx).
 			Where("round_id = ? AND user_id = ?", roundID, callerID).
 			First(&callerRP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in this round
+			}
+			return false, fmt.Errorf("load caller round player: %w", err)
 		}
 	}
+
 	var callerGP models.GroupPlayer
-	err2 := s.DB.WithContext(ctx).
+	if err := s.DB.WithContext(ctx).
 		Where("round_player_id = ? AND group_id = ?", callerRP.ID, targetGP.GroupID).
-		First(&callerGP).Error
-	return err2 == nil, nil
+		First(&callerGP).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil // caller is in the round, but not in the target's group
+		}
+		return false, fmt.Errorf("load caller group player: %w", err)
+	}
+	return true, nil
 }
 
 // ─── GetScorecard ─────────────────────────────────────────────────────────────

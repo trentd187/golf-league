@@ -19,6 +19,8 @@ import { render, fireEvent, act } from "@testing-library/react-native";
 
 const mockUseQuery  = jest.fn();
 const mockUseMutation = jest.fn();
+
+jest.mock("@/utils/alerts", () => ({ showAlert: jest.fn() }));
 const mockUseQueryClient = jest.fn(() => ({
   setQueryData: jest.fn(),
   getQueryData: jest.fn(),
@@ -423,4 +425,21 @@ it("unfollow onSuccess: flips profile cache and removes user from following list
   expect(updated).toContainEqual(expect.objectContaining({ id: "other" }));
 
   expect(stableClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["users", "following"] });
+});
+
+// A failed follow used to be a silent no-op — Sentry saw it (via the global MutationCache
+// handler), but the user just watched the button do nothing. See users/search.test.tsx.
+it("tells the user when a follow fails, instead of silently doing nothing", () => {
+  const { showAlert } = jest.requireMock("@/utils/alerts") as { showAlert: jest.Mock };
+
+  render(<UserProfileScreen />);
+
+  const options = mockUseMutation.mock.calls[0][0] as { onError?: (err: Error) => void };
+  expect(options.onError).toBeDefined();
+
+  act(() => {
+    options.onError?.(new Error("Network request failed"));
+  });
+
+  expect(showAlert).toHaveBeenCalledWith("Couldn't update follow", "Network request failed");
 });

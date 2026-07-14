@@ -37,6 +37,8 @@ import {
   reportSupabaseFailure,
   addSupabaseBreadcrumb,
   reportAuthFailure,
+  reportStorageFailure,
+  reportReadFailure,
   initSentry,
 } from "@/utils/sentry";
 import { ApiError } from "@/utils/apiError";
@@ -758,6 +760,71 @@ describe("reportAuthFailure", () => {
       expect.objectContaining({
         event: "auth.session_unavailable",
         auth_stage: "get_token",
+      }),
+    );
+  });
+});
+
+describe("reportReadFailure", () => {
+  const conn = { connectionType: "wifi", cellularGeneration: null, isInternetReachable: true };
+
+  // Routing is deliberately asymmetric. A 5xx is a real backend defect → Issue.
+  it("files an Issue for a 5xx, tagged with the endpoint", () => {
+    reportReadFailure(new ApiError("Request failed: HTTP 500", { status: 500 }), {
+      label: "scorecard",
+      attempts: 1,
+      elapsedMs: 300,
+      httpStatus: 500,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Request failed: HTTP 500" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "read",
+          read_kind: "http",
+          read_endpoint: "scorecard",
+        }),
+      }),
+    );
+  });
+
+  // A dropped GET on cellular is routine and the poll will repaint — an Issue per occurrence
+  // would recreate exactly the alert flood the WebSocket used to produce.
+  it("logs (does not file an Issue for) a transport failure", () => {
+    reportReadFailure(new Error("Network request failed"), {
+      label: "events",
+      attempts: 3,
+      elapsedMs: 12000,
+      ...conn,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "read failed after retries",
+      expect.objectContaining({ event: "read.failed", read_kind: "network", read_endpoint: "events" }),
+    );
+  });
+});
+
+describe("reportStorageFailure", () => {
+  // Never an Issue — the store falls back to defaults and the app keeps working. But never
+  // silent either: a persistently failing write means the user's theme and list prefs revert
+  // on every launch, and the old `.catch(() => {})` said nothing at all.
+  it("logs a failed write with the area and operation, without filing an Issue", () => {
+    reportStorageFailure(new Error("QuotaExceededError"), {
+      area: "list_prefs",
+      operation: "write",
+      key: "list-prefs-storage",
+    });
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "persisted storage operation failed",
+      expect.objectContaining({
+        event: "storage.failed",
+        error_source: "storage",
+        storage_area: "list_prefs",
+        storage_operation: "write",
       }),
     );
   });

@@ -638,6 +638,26 @@ export function reportAuthFailure(
   });
 }
 
+// ─── Persisted-storage reporting ────────────────────────────────────────────────
+
+// reportStorageFailure records a failed SecureStore / localStorage operation (see
+// utils/persistStorage.ts). Never an Issue: the store falls back to its defaults and the app
+// keeps working, so an Issue per occurrence would be noise. But it must not be SILENT either —
+// a persistently failing write means the user's theme and list preferences never save, they
+// revert on every launch, and previously nothing anywhere said so.
+export function reportStorageFailure(
+  error: unknown,
+  ctx: { area: string; operation: "read" | "write" | "remove"; key: string },
+): void {
+  Sentry.logger.warn("persisted storage operation failed", {
+    event: "storage.failed",
+    error_source: "storage",
+    storage_area: ctx.area,
+    storage_operation: ctx.operation,
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
 // ─── Upload reporting ───────────────────────────────────────────────────────────
 
 // reportUploadFailure captures a failed binary upload (avatar → Supabase Storage) as an

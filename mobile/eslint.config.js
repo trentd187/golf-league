@@ -64,22 +64,40 @@ module.exports = defineConfig([
     },
   },
 
-  // ---- No bare fetch() in screens, components, or hooks ----
+  // ---- No unhardened network calls, anywhere ----
   //
-  // This rule is the durable half of the WebSocket removal. A bare fetch() has no timeout
-  // (a GET on a dead cellular socket hangs forever, and a frozen spinner is indistinguishable
-  // from a frozen app), no retry, and no telemetry. We have repeatedly hand-removed bare
-  // fetches — commits ff78640 and 457559c both did exactly that — and they crept straight
-  // back, because nothing enforced it. Now the linter does.
+  // A bare fetch() has no timeout (a GET on a dead cellular socket hangs forever, and a frozen
+  // spinner is indistinguishable from a frozen app), no retry, and no telemetry. Bare fetches
+  // have been hand-removed three times — ff78640, 457559c, and the WebSocket removal — and
+  // crept straight back each time, because nothing enforced it.
   //
   // Use instead:
-  //   reads   → apiGetJson / apiGet        (utils/apiGet.ts)
-  //   writes  → savePut / savePost          (utils/saveRequest.ts, utils/savePost.ts)
+  //   reads   → apiGetJson / apiGet          (utils/apiGet.ts)
+  //   writes  → savePut / savePost           (utils/saveRequest.ts, utils/savePost.ts)
+  //   supabase → already hardened globally    (utils/supabaseFetch.ts)
   //
-  // utils/ is deliberately NOT covered: that is where the primitives live, and they are the
-  // one place a real fetch() belongs.
+  // The rule was previously scoped to app/, components/, and hooks/ ONLY, with a comment
+  // explaining that utils/ was excluded because "that is where the primitives live". A later
+  // audit found a live, unbounded bare fetch in utils/savePost.ts — in the phantom-create
+  // recovery path, the code that runs *only* when the network has already failed. It hung the
+  // create spinner forever and reported nothing. The rule was structurally incapable of seeing
+  // it. utils/ is now covered, with a precise allowlist for the three files that are ALLOWED
+  // to touch the network directly.
+  //
+  // The selectors also catch `?? fetch`. That matters: the primitives call fetch as
+  // `(opts.fetchImpl ?? fetch)(url, init)`, whose callee is a LogicalExpression — NOT an
+  // Identifier named `fetch`. So a `CallExpression[callee.name='fetch']` selector alone would
+  // have missed the savePost bug even with utils/ in scope. That exact shape is what leaked.
   {
-    files: ["app/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "hooks/**/*.{ts,tsx}"],
+    files: [
+      "app/**/*.{ts,tsx}",
+      "components/**/*.{ts,tsx}",
+      "hooks/**/*.{ts,tsx}",
+      "stores/**/*.{ts,tsx}",
+      "utils/**/*.{ts,tsx}",
+    ],
+    // The only three files permitted to make a raw network call — they ARE the hardening.
+    ignores: ["utils/apiGet.ts", "utils/saveWithRetry.ts", "utils/supabaseFetch.ts"],
     rules: {
       "no-restricted-syntax": [
         "error",
@@ -87,6 +105,29 @@ module.exports = defineConfig([
           selector: "CallExpression[callee.name='fetch']",
           message:
             "Bare fetch() has no timeout, retry, or telemetry. Use apiGetJson/apiGet (utils/apiGet.ts) for reads, or savePut/savePost for writes. See mobile/docs/live-updates.md.",
+        },
+        {
+          // `(opts.fetchImpl ?? fetch)(...)` — the exact shape of the savePost bug.
+          selector: "LogicalExpression > Identifier[name='fetch']",
+          message:
+            "Falling back to the global fetch() bypasses the hardened path (no timeout, retry, or telemetry). Inject apiGet/savePut/savePost instead. See mobile/docs/live-updates.md.",
+        },
+        {
+          selector:
+            "MemberExpression[object.name=/^(globalThis|window|self)$/][property.name='fetch']",
+          message:
+            "globalThis.fetch bypasses the hardened path. Use apiGetJson/apiGet or savePut/savePost.",
+        },
+        {
+          selector:
+            "NewExpression[callee.name=/^(XMLHttpRequest|WebSocket|EventSource)$/]",
+          message:
+            "Raw network primitives are not allowed. Reads go through apiGetJson, writes through savePut/savePost. (The WebSocket was removed deliberately — see mobile/docs/live-updates.md.)",
+        },
+        {
+          selector: "MemberExpression[property.name='sendBeacon']",
+          message:
+            "navigator.sendBeacon has no retry or telemetry. Use savePut/savePost.",
         },
       ],
     },

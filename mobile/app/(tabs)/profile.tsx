@@ -132,6 +132,10 @@ export default function ProfileScreen() {
     onSuccess: (_, next) => {
       queryClient.setQueryData<ScorecardSettings>(["scorecardSettings"], next);
     },
+    // Without this the toggle silently snapped back (onSuccess never ran, so the cache was
+    // never updated) and the user was told nothing — it just looked broken.
+    onError: (err: Error) =>
+      showAlert("Couldn't save settings", err.message || "Please try again."),
   });
 
   // Merge with defaults so partial or missing data (e.g. old server responses without

@@ -25,6 +25,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { apiGetJson } from "@/utils/apiGet";
 import { followOrUnfollow } from "@/utils/follow";
+import { showAlert } from "@/utils/alerts";
 import UserAvatar from "@/components/UserAvatar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -101,6 +102,10 @@ export default function UserSearchScreen() {
       );
       queryClient.invalidateQueries({ queryKey: ["following"] });
     },
+    // Without this, a failed follow was a SILENT no-op: the global MutationCache handler
+    // reported it to Sentry, so we could see it, but the user tapped Follow and simply nothing
+    // happened — no error, no change, no explanation. Tell them.
+    onError: (err: Error) => showAlert("Couldn't update follow", err.message),
   });
 
   // Which user ID is currently pending a follow mutation (for per-row loading state).

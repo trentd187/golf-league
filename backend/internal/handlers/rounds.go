@@ -25,6 +25,7 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -695,6 +696,16 @@ func CreateEventlessRound(svc *services.RoundService) fiber.Handler {
 		if err != nil {
 			return writeRoundError(c, err, "round.create_eventless", "failed to create round")
 		}
+
+		// round.created — this is the "Create Round" button, the most-used create in the app,
+		// and it emitted NO business event at all. ScheduleEventRound has always emitted one;
+		// the casual-round path was simply never given one, so the single most common create
+		// was invisible in Sentry. Same label, so both round-creation paths aggregate.
+		slog.InfoContext(c.UserContext(), "Eventless round created",
+			"event_type_label", "round.created",
+			"round_id", result.Round.ID.String(),
+			"scoring_format", string(result.Round.ScoringFormat),
+		)
 
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"id":             result.Round.ID.String(),

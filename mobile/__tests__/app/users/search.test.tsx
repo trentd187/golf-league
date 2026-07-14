@@ -39,6 +39,8 @@ jest.mock("expo-router", () => ({
   useRouter: () => ({ back: mockBack, push: mockPush }),
 }));
 
+jest.mock("@/utils/alerts", () => ({ showAlert: jest.fn() }));
+
 jest.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ getToken: jest.fn().mockResolvedValue("test-token") }),
 }));
@@ -215,4 +217,27 @@ it("clears the query when the input is cleared", async () => {
   });
 
   expect(getByText("Start typing to search for players by name or email.")).toBeTruthy();
+});
+
+// ─── A failed follow must not be a silent no-op ───────────────────────────────
+//
+// followMutation had no onError. The global MutationCache handler reported the failure to
+// Sentry, so we could SEE it — but the user tapped Follow and nothing happened at all: no
+// error, no state change, no explanation. They'd tap again, and again.
+it("tells the user when a follow fails, instead of silently doing nothing", async () => {
+  const { showAlert } = jest.requireMock("@/utils/alerts") as { showAlert: jest.Mock };
+
+  render(<UserSearchScreen />);
+
+  // useMutation is mocked, so grab the options the screen passed and fire its onError.
+  const options = mockUseMutation.mock.calls[0][0] as {
+    onError?: (err: Error) => void;
+  };
+  expect(options.onError).toBeDefined();
+
+  act(() => {
+    options.onError?.(new Error("Network request failed"));
+  });
+
+  expect(showAlert).toHaveBeenCalledWith("Couldn't update follow", "Network request failed");
 });

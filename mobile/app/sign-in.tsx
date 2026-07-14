@@ -116,6 +116,12 @@ export default function SignIn() {
         }
         const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
         if (sessionError) {
+          // Previously unreported. The PKCE exchange is the last step of Google sign-in, so a
+          // failure here means the user cannot get into the app AT ALL — and we had no signal.
+          Sentry.logger.warn("Google OAuth code exchange failed", {
+            event: "auth.google.exchange_error",
+            message: sessionError.message,
+          });
           showErrorAlert(sessionError.message);
         } else {
           Sentry.logger.info("Google OAuth sign-in succeeded", {
@@ -125,6 +131,10 @@ export default function SignIn() {
         }
       }
     } catch (err) {
+      Sentry.logger.warn("Google OAuth sign-in threw", {
+        event: "auth.google.error",
+        message: err instanceof Error ? err.message : String(err),
+      });
       showErrorAlert((err as Error)?.message ?? "An unexpected error occurred.");
     } finally {
       setLoading(false);
@@ -132,23 +142,42 @@ export default function SignIn() {
   };
 
   // --- Email OTP: Step 1 — send a 6-digit code ---
+  //
+  // The try/finally is load-bearing. supabase-js normally RETURNS { error }, but a transport
+  // failure can THROW (AuthRetryableFetchError) — and without a finally, setLoading(false) never
+  // ran, leaving the button permanently disabled with a spinner. The user could not even retry.
   const handleSendEmail = async () => {
     setLoading(true);
     setInlineError("");
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      // shouldCreateUser: true is the default — creates an account if the email is new.
-      options: { shouldCreateUser: true },
-    });
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        // shouldCreateUser: true is the default — creates an account if the email is new.
+        options: { shouldCreateUser: true },
+      });
 
-    setLoading(false);
+      if (error) {
+        // Previously unreported: failing to SEND the code is one of the three ways a user
+        // fails to get into the app, and it produced no signal whatsoever.
+        Sentry.logger.warn("OTP email send failed", {
+          event: "auth.otp.send_error",
+          message: error.message,
+        });
+        showErrorAlert(error.message);
+        return;
+      }
 
-    if (error) {
-      showErrorAlert(error.message);
-    } else {
       Sentry.logger.info("OTP email sent", { event: "auth.otp.sent" });
       setPendingVerification(true);
+    } catch (err) {
+      Sentry.logger.warn("OTP email send threw", {
+        event: "auth.otp.send_error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      showErrorAlert("Couldn't send the code. Check your connection and try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -157,11 +186,23 @@ export default function SignIn() {
     setLoading(true);
     setInlineError("");
 
-    const { error } = await supabase.auth.verifyOtp({
-      email,
-      token: code,
-      type: "email",
-    });
+    let error: { message: string } | null = null;
+    try {
+      ({ error } = await supabase.auth.verifyOtp({
+        email,
+        token: code,
+        type: "email",
+      }));
+    } catch (err) {
+      // A THROWN verify (transport failure) used to skip setLoading(false) entirely.
+      Sentry.logger.warn("OTP verification threw", {
+        event: "auth.otp.error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      setInlineError("Couldn't verify the code. Check your connection and try again.");
+      setLoading(false);
+      return;
+    }
 
     setLoading(false);
 

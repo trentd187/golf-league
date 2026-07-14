@@ -318,6 +318,25 @@ export default function ScorecardScreen() {
   // statSaveTimers debounces per-hole stat saves (key: "<rpId>-<holeNumber>").
   const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  // Clear every pending debounce on unmount. Without this, a player who types a score and
+  // immediately backs out of the scorecard left a timer armed: it fired against a dead
+  // component and called setSaveError / setStatsSaveError on it. React 18 no longer warns, so
+  // it was silent — a whole class of writes to a component nobody was looking at.
+  //
+  // Note this cancels the debounce, not an in-flight save: a save already on the wire still
+  // completes (savePut owns its own lifecycle), which is what we want — leaving the round
+  // must not discard the score you just entered.
+  useEffect(() => {
+    const scoreTimers = saveTimers.current;
+    const statTimers = statSaveTimers.current;
+    return () => {
+      scoreTimers.forEach(clearTimeout);
+      statTimers.forEach(clearTimeout);
+      scoreTimers.clear();
+      statTimers.clear();
+    };
+  }, []);
+
   // inputRefs: Basic view grid — key "<holeIndex>-<playerIndex>".
   const inputRefs      = useRef<Map<string, TextInput | null>>(new Map());
   // statsInputRefs: Advanced view numeric stat fields, indexed by field position (0–3).

@@ -33,6 +33,7 @@ import UserAvatar from "@/components/UserAvatar";
 import { ScoringCard, DirectionalMissCard, PuttingCard } from "@/components/StatCards";
 import HandicapSection from "@/components/HandicapSection";
 import { buildMyStats, buildGirByBand } from "@/utils/stats";
+import { showAlert } from "@/utils/alerts";
 import type { Scorecard, UserHandicapStats } from "@/types/scorecard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -181,6 +182,9 @@ export default function UserProfileScreen() {
       // Invalidate so the list syncs with the server on next active fetch.
       queryClient.invalidateQueries({ queryKey: ["users", "following"] });
     },
+    // A failed follow used to be a silent no-op — Sentry saw it (via the global MutationCache
+    // handler), but the user just watched the button do nothing.
+    onError: (err: Error) => showAlert("Couldn't update follow", err.message),
   });
 
   if (profileLoading) {

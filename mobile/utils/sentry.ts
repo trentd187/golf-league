@@ -540,6 +540,104 @@ export function addReadBreadcrumb(ctx: {
   });
 }
 
+// ─── Supabase (auth + storage) reporting ────────────────────────────────────────
+//
+// Supabase's client used the platform's bare fetch, so every auth and storage call — the
+// token refresh that runs in front of EVERY api call, the sign-in flow, the avatar upload —
+// had no timeout, no retry, and no telemetry. utils/supabaseFetch.ts now wraps them; these
+// are its reporters.
+
+// SupabaseFailureContext describes a Supabase request that exhausted its attempts (or came
+// back 5xx). `label` is coarse and PII-free — a storage object path carries a user id, and an
+// auth URL can carry a one-time code, so neither is ever tagged.
+export interface SupabaseFailureContext {
+  label: string; // e.g. "auth.token_refresh" → supabase_endpoint
+  kind: "auth" | "storage" | "other";
+  attempts: number;
+  elapsedMs: number;
+  httpStatus?: number; // undefined ⇒ transport failure (never got a response)
+  connectionType?: string;
+  cellularGeneration?: string | null;
+  isInternetReachable?: boolean | null;
+}
+
+// reportSupabaseFailure records a failed Supabase call. Routing mirrors reportReadFailure and
+// is deliberately asymmetric: a 5xx is Supabase itself breaking → Issue. A transport failure
+// is routine on cellular and the client will retry or the user will re-tap, so it lands in a
+// searchable Log — alert on the facet, not the event.
+//
+// The exception is the token refresh: when THAT exhausts, every subsequent API call goes out
+// with an empty Bearer and 401s, which reads as ordinary 4xx noise rather than the auth
+// outage it is. So it gets an Issue even on a transport failure.
+export function reportSupabaseFailure(error: unknown, ctx: SupabaseFailureContext): void {
+  const isServerFault = ctx.httpStatus !== undefined && ctx.httpStatus >= 500;
+  const strandsTheSession = ctx.label === "auth.token_refresh" && ctx.httpStatus === undefined;
+
+  if (isServerFault || strandsTheSession) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), {
+      tags: {
+        error_source: ctx.kind === "storage" ? "storage" : "auth",
+        supabase_endpoint: ctx.label,
+        supabase_kind: ctx.httpStatus === undefined ? "network" : "http",
+        connection_type: ctx.connectionType ?? "unknown",
+      },
+      extra: { ...ctx },
+    });
+    return;
+  }
+
+  Sentry.logger.warn("supabase request failed", {
+    event: "supabase.request_failed",
+    error_source: ctx.kind === "storage" ? "storage" : "auth",
+    supabase_endpoint: ctx.label,
+    message: error instanceof Error ? error.message : String(error),
+    ...ctx,
+  });
+}
+
+// addSupabaseBreadcrumb records one failed attempt before its retry (nextDelayMs null on the
+// final attempt). These are what turn a later "save failed" Issue into a story: "the token
+// refresh timed out three times, THEN the save 401'd."
+export function addSupabaseBreadcrumb(ctx: {
+  label: string;
+  attempt: number;
+  nextDelayMs: number | null;
+  message: string;
+}): void {
+  Sentry.addBreadcrumb({
+    category: "supabase",
+    level: ctx.nextDelayMs === null ? "error" : "warning",
+    message: `supabase ${ctx.label} attempt ${ctx.attempt} failed: ${ctx.message}`,
+    data: ctx,
+  });
+}
+
+// reportAuthFailure records a failure to establish or restore the user's session.
+//
+// `fatal` distinguishes the two very different cases. A THROWN getSession() (fatal) is
+// exceptional and used to strand the app on a blank screen forever — that is an Issue. A
+// RETURNED { error } (not fatal) is ordinary: an expired refresh token after a long absence.
+// The user is sent to sign-in and life continues, so it belongs in a Log.
+export function reportAuthFailure(
+  error: unknown,
+  ctx: { stage: string; fatal?: boolean },
+): void {
+  if (ctx.fatal) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), {
+      tags: { error_source: "auth", auth_stage: ctx.stage },
+      extra: { ...ctx },
+    });
+    return;
+  }
+
+  Sentry.logger.warn("auth session unavailable", {
+    event: "auth.session_unavailable",
+    error_source: "auth",
+    auth_stage: ctx.stage,
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
 // ─── Upload reporting ───────────────────────────────────────────────────────────
 
 // reportUploadFailure captures a failed binary upload (avatar → Supabase Storage) as an

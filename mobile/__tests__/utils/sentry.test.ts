@@ -34,6 +34,9 @@ import {
   reportScorecardMergeSkipped,
   addScorecardLoadBreadcrumb,
   addScorecardRefetchBreadcrumb,
+  reportSupabaseFailure,
+  addSupabaseBreadcrumb,
+  reportAuthFailure,
   initSentry,
 } from "@/utils/sentry";
 import { ApiError } from "@/utils/apiError";
@@ -629,6 +632,134 @@ describe("addScorecardRefetchBreadcrumb", () => {
     for (let i = 0; i < 10; i++) addScorecardRefetchBreadcrumb("hole_change", "r1");
     expect(Sentry.addBreadcrumb).toHaveBeenCalledTimes(10); // breadcrumb every time
     expect((Sentry.logger.info as jest.Mock).mock.calls.length).toBeLessThan(10); // log is sampled
+  });
+});
+
+describe("reportSupabaseFailure", () => {
+  const conn = {
+    connectionType: "cellular",
+    cellularGeneration: "4g",
+    isInternetReachable: false,
+  };
+
+  it("captures a 5xx as an Issue — Supabase itself is broken", () => {
+    reportSupabaseFailure(new Error("Supabase auth.otp failed: HTTP 503"), {
+      label: "auth.otp",
+      kind: "auth",
+      attempts: 1,
+      elapsedMs: 800,
+      httpStatus: 503,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Supabase auth.otp failed: HTTP 503" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "auth",
+          supabase_endpoint: "auth.otp",
+          supabase_kind: "http",
+        }),
+      }),
+    );
+  });
+
+  // The token refresh is special: when it exhausts, every API call afterwards goes out with
+  // an empty Bearer and 401s — which reads as ordinary 4xx noise. Escalate it so a fleet-wide
+  // auth outage doesn't hide inside the warn logs.
+  it("captures an exhausted token refresh as an Issue even on a transport failure", () => {
+    reportSupabaseFailure(new Error("Network request failed"), {
+      label: "auth.token_refresh",
+      kind: "auth",
+      attempts: 3,
+      elapsedMs: 45000,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Network request failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          supabase_endpoint: "auth.token_refresh",
+          supabase_kind: "network",
+        }),
+      }),
+    );
+    expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs (does not file an Issue for) an ordinary transport failure on a storage upload", () => {
+    reportSupabaseFailure(new Error("Network request failed"), {
+      label: "storage.upload",
+      kind: "storage",
+      attempts: 1,
+      elapsedMs: 30000,
+      ...conn,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "supabase request failed",
+      expect.objectContaining({
+        event: "supabase.request_failed",
+        error_source: "storage",
+        supabase_endpoint: "storage.upload",
+      }),
+    );
+  });
+});
+
+describe("addSupabaseBreadcrumb", () => {
+  it("marks a retryable attempt warning and the final give-up error", () => {
+    addSupabaseBreadcrumb({
+      label: "auth.token_refresh",
+      attempt: 1,
+      nextDelayMs: 400,
+      message: "timeout",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ category: "supabase", level: "warning" }),
+    );
+
+    addSupabaseBreadcrumb({
+      label: "auth.token_refresh",
+      attempt: 3,
+      nextDelayMs: null,
+      message: "timeout",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({ category: "supabase", level: "error" }),
+    );
+  });
+});
+
+describe("reportAuthFailure", () => {
+  // A thrown getSession used to strand the app on a permanent blank screen — exceptional,
+  // and worth an Issue.
+  it("files an Issue for a fatal session failure, tagged with the stage", () => {
+    reportAuthFailure(new Error("SecureStore read failed"), {
+      stage: "root_session_restore",
+      fatal: true,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "SecureStore read failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "auth",
+          auth_stage: "root_session_restore",
+        }),
+      }),
+    );
+  });
+
+  // An expired refresh token after a long absence is routine: the user re-signs in.
+  it("logs a non-fatal session failure instead of alarming", () => {
+    reportAuthFailure({ message: "Invalid Refresh Token" }, { stage: "get_token" });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "auth session unavailable",
+      expect.objectContaining({
+        event: "auth.session_unavailable",
+        auth_stage: "get_token",
+      }),
+    );
   });
 });
 

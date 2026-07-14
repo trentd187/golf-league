@@ -25,6 +25,7 @@ import {
   digestStringAsync,
   getRandomValues as expoGetRandomValues,
 } from 'expo-crypto';
+import { createSupabaseFetch } from '@/utils/supabaseFetch';
 
 // Hermes/JSC (React Native's JS engines) do not expose a full WebCrypto API.
 // Supabase's PKCE implementation uses two surfaces:
@@ -66,6 +67,15 @@ export const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
   {
+    // Every Supabase auth and storage call goes through the hardened fetch: a per-attempt
+    // timeout, Full-Jitter retry on idempotent requests only, and Sentry telemetry.
+    //
+    // This closes the hole UNDER the rest of the hardening. getSession() — which runs at the
+    // top of every read and every write, via getToken() — silently makes a network call to
+    // refresh an expired token. With the platform's bare fetch that call had no timeout, so
+    // it could hang on a dead cellular socket BEFORE apiGet's AbortController ever existed.
+    // See utils/supabaseFetch.ts.
+    global: { fetch: createSupabaseFetch() },
     auth: {
       // Native: AsyncStorage (async — PKCE code verifier is flushed before OAuth browser opens).
       // Web: undefined — Supabase defaults to window.localStorage, which is always present.

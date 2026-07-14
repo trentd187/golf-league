@@ -524,59 +524,66 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 		return ErrScoreForbidden
 	}
 
-	var rp models.RoundPlayer
-	if err := s.DB.WithContext(ctx).First(&rp, "id = ? AND round_id = ?", roundPlayerID, roundID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrRoundPlayerNotFound
+	// One transaction. Saving the handicap and re-deriving every net score are a single
+	// logical change: without the transaction, a failure partway through the per-hole UPDATE
+	// loop (say at hole 12 of 18) committed the new handicap but left the card half
+	// recomputed — a permanently wrong leaderboard that no retry repairs, because the retry
+	// recalculates from the ALREADY-SAVED handicap and sees nothing to fix.
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rp models.RoundPlayer
+		if err := tx.First(&rp, "id = ? AND round_id = ?", roundPlayerID, roundID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRoundPlayerNotFound
+			}
+			return fmt.Errorf("load round player: %w", err)
 		}
-		return fmt.Errorf("load round player: %w", err)
-	}
 
-	rp.CourseHandicap = &handicap
-	if err := s.DB.WithContext(ctx).Save(&rp).Error; err != nil {
-		return fmt.Errorf("save handicap: %w", err)
-	}
-
-	// Back-fill net_score for every score this player has already entered.
-	// Mirrors RecalculateEventScores but scoped to a single round_player.
-	var round models.Round
-	if err := s.DB.WithContext(ctx).
-		Preload("Event").
-		Preload("DefaultTee.Holes").
-		First(&round, "id = ?", roundID).Error; err != nil {
-		return fmt.Errorf("load round for recalc: %w", err)
-	}
-	eff := EffectiveCourseHandicap(handicap, roundHandicapAllowance(&round))
-
-	played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
-	siMap := NormalizeStrokeIndexes(played)
-	holeCount := len(played)
-	if holeCount == 0 {
-		holeCount = 18
-	}
-
-	type scoreRow struct {
-		ScoreID    uuid.UUID
-		GrossScore int
-		HoleNumber int
-	}
-	var rows []scoreRow
-	if err := s.DB.WithContext(ctx).Table("scores s").
-		Select("s.id as score_id, s.gross_score, s.hole_number").
-		Where("s.round_player_id = ?", roundPlayerID).
-		Scan(&rows).Error; err != nil {
-		return fmt.Errorf("load scores for recalc: %w", err)
-	}
-
-	for _, row := range rows {
-		netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
-		if err := s.DB.WithContext(ctx).Model(&models.Score{}).
-			Where("id = ?", row.ScoreID).
-			Update("net_score", netScore).Error; err != nil {
-			return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+		rp.CourseHandicap = &handicap
+		if err := tx.Save(&rp).Error; err != nil {
+			return fmt.Errorf("save handicap: %w", err)
 		}
-	}
-	return nil
+
+		// Back-fill net_score for every score this player has already entered.
+		// Mirrors RecalculateEventScores but scoped to a single round_player.
+		var round models.Round
+		if err := tx.
+			Preload("Event").
+			Preload("DefaultTee.Holes").
+			First(&round, "id = ?", roundID).Error; err != nil {
+			return fmt.Errorf("load round for recalc: %w", err)
+		}
+		eff := EffectiveCourseHandicap(handicap, roundHandicapAllowance(&round))
+
+		played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
+		siMap := NormalizeStrokeIndexes(played)
+		holeCount := len(played)
+		if holeCount == 0 {
+			holeCount = 18
+		}
+
+		type scoreRow struct {
+			ScoreID    uuid.UUID
+			GrossScore int
+			HoleNumber int
+		}
+		var rows []scoreRow
+		if err := tx.Table("scores s").
+			Select("s.id as score_id, s.gross_score, s.hole_number").
+			Where("s.round_player_id = ?", roundPlayerID).
+			Scan(&rows).Error; err != nil {
+			return fmt.Errorf("load scores for recalc: %w", err)
+		}
+
+		for _, row := range rows {
+			netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
+			if err := tx.Model(&models.Score{}).
+				Where("id = ?", row.ScoreID).
+				Update("net_score", netScore).Error; err != nil {
+				return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // roundHandicapAllowance returns the event's handicap allowance, or nil for

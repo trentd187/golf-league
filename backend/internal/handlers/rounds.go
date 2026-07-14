@@ -183,6 +183,18 @@ type AssignTeamMembersRequest struct {
 	RoundPlayerIDs []string `json:"round_player_ids"`
 }
 
+// TeamSpecRequest is one desired team inside a ReplaceGroupTeamsRequest.
+type TeamSpecRequest struct {
+	Name           string   `json:"name"`
+	RoundPlayerIDs []string `json:"round_player_ids"`
+}
+
+// ReplaceGroupTeamsRequest is the JSON body for PUT .../groups/:groupId/teams — the full,
+// desired set of teams for that group. Sending no teams (or only empty ones) clears them.
+type ReplaceGroupTeamsRequest struct {
+	Teams []TeamSpecRequest `json:"teams"`
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 // parseRoundID parses the ":roundId" path param. Writes 400 + returns false on failure.
@@ -783,6 +795,61 @@ func AssignTeamMembers(svc *services.RoundService) fiber.Handler {
 			return writeRoundError(c, err, "round.assign_team_members", "failed to assign team members")
 		}
 		return c.JSON(toTeamResponse(result))
+	}
+}
+
+// ReplaceGroupTeams returns a handler for PUT .../groups/:groupId/teams.
+//
+// Atomically replaces every team in the group with the posted set. This exists because the
+// mobile modals used to do it with N separate calls (DELETE each team, then POST + PUT each
+// new one): if a create failed after the deletes landed, the group was left with NO teams and
+// the partnerships were gone. One transaction means the old teams survive any failure.
+//
+// Idempotent by construction (it replaces a set), so it is a PUT and rides the same
+// Idempotency-Key replay path as the other PUT mutations.
+func ReplaceGroupTeams(svc *services.RoundService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callerID, callerRole, ok := authUser(c)
+		if !ok {
+			return nil
+		}
+		roundID, ok := parseRoundID(c)
+		if !ok {
+			return nil
+		}
+		groupID, ok := parseGroupID(c)
+		if !ok {
+			return nil
+		}
+
+		var req ReplaceGroupTeamsRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "teams is required"})
+		}
+
+		specs := make([]services.TeamSpec, 0, len(req.Teams))
+		for _, t := range req.Teams {
+			ids := make([]uuid.UUID, 0, len(t.RoundPlayerIDs))
+			for _, s := range t.RoundPlayerIDs {
+				id, err := uuid.Parse(s)
+				if err != nil {
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{jsonKeyError: "invalid round_player_id"})
+				}
+				ids = append(ids, id)
+			}
+			specs = append(specs, services.TeamSpec{Name: t.Name, RoundPlayerIDs: ids})
+		}
+
+		results, err := svc.ReplaceGroupTeams(c.UserContext(), roundID, groupID, callerID, callerRole, specs)
+		if err != nil {
+			return writeRoundError(c, err, "round.replace_group_teams", "failed to save teams")
+		}
+
+		out := make([]TeamResponse, len(results))
+		for i, t := range results {
+			out[i] = toTeamResponse(t)
+		}
+		return c.JSON(out)
 	}
 }
 

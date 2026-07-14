@@ -48,7 +48,48 @@ const (
 	teamsRoute       = "/rounds/:roundId/teams"
 	teamMembersRoute = "/rounds/:roundId/teams/:teamId/members"
 	teamByIDRoute    = "/rounds/:roundId/teams/:teamId"
+	groupTeamsRoute  = "/rounds/:roundId/groups/:groupId/teams"
 )
+
+// ─── ReplaceGroupTeams (the atomic team bulk-replace) ────────────────────────
+//
+// Tier 1 only: parsing and auth. The transactional behaviour that actually matters — a failed
+// replace must roll back the deletes so the organizer's existing teams survive — is pinned in
+// services/round_service_teams_test.go, which can inject a real DB failure.
+
+func TestReplaceGroupTeams_MissingAuth(t *testing.T) {
+	app := newSingleRouteApp(http.MethodPut, groupTeamsRoute, handlers.ReplaceGroupTeams(nil))
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodPut, "/rounds/"+validUUID+"/groups/"+validUUID+"/teams", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestReplaceGroupTeams_InvalidRoundID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut, groupTeamsRoute, handlers.ReplaceGroupTeams(nilRoundSvc()))
+	resp := doJSON(t, app, http.MethodPut, "/rounds/bad-id/groups/"+validUUID+"/teams",
+		map[string]any{"teams": []any{}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestReplaceGroupTeams_InvalidGroupID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut, groupTeamsRoute, handlers.ReplaceGroupTeams(nilRoundSvc()))
+	resp := doJSON(t, app, http.MethodPut, "/rounds/"+validUUID+"/groups/bad-id/teams",
+		map[string]any{"teams": []any{}})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// A malformed round_player_id must be rejected at the edge, before any DB work.
+func TestReplaceGroupTeams_InvalidRoundPlayerID(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut, groupTeamsRoute, handlers.ReplaceGroupTeams(nilRoundSvc()))
+	resp := doJSON(t, app, http.MethodPut, "/rounds/"+validUUID+"/groups/"+validUUID+"/teams",
+		map[string]any{
+			"teams": []any{
+				map[string]any{"name": "A & B", "round_player_ids": []string{"not-a-uuid"}},
+			},
+		})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
 
 // ─── GetMyRounds ──────────────────────────────────────────────────────────────
 

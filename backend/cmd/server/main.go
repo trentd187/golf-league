@@ -213,8 +213,15 @@ func main() {
 	api.Post("/rounds/:roundId/groups/:groupId/guests", durableIdempotency, handlers.AddGuestToGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
-	// Las Vegas team routes — organizer-only partner assignment for las_vegas rounds.
+	// Team routes — organizer-only partner assignment for las_vegas / best_ball rounds.
+	//
+	// The PUT .../groups/:groupId/teams bulk replace is what the mobile modals now call: it
+	// swaps a group's whole team set in ONE transaction. They used to DELETE each team then
+	// POST + PUT the new ones as separate requests, so a create that failed after the deletes
+	// landed left the group with no teams at all — real data loss on a flaky course network.
+	// The finer-grained routes below remain for single-team edits.
 	api.Get("/rounds/:roundId/teams", handlers.ListTeams(roundService))
+	api.Put("/rounds/:roundId/groups/:groupId/teams", replayLog, handlers.ReplaceGroupTeams(roundService))
 	api.Post("/rounds/:roundId/teams", durableIdempotency, handlers.CreateTeam(roundService))
 	api.Put("/rounds/:roundId/teams/:teamId/members", replayLog, handlers.AssignTeamMembers(roundService))
 	api.Delete("/rounds/:roundId/teams/:teamId", handlers.DeleteTeam(roundService))

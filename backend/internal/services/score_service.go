@@ -760,6 +760,13 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 // tests can reach the validation error path via nilScoreSvc() with auth injected.
 func (s *ScoreService) UpsertHoleStats(ctx context.Context, roundID, roundPlayerID, callerID uuid.UUID, callerRole string, stats []HoleStatInput) (int, error) {
 	for _, st := range stats {
+		// hole_number has no DB CHECK (only NOT NULL + UNIQUE), so this is the only guard
+		// against a junk out-of-range hole row — the same gate UpsertScores applies. 18 is the
+		// max across every layout (front 1–9, back 10–18, full 1–18), so a constant bound needs
+		// no round load and keeps this whole validation block reachable without a DB (Tier 1).
+		if st.HoleNumber < 1 || st.HoleNumber > 18 {
+			return 0, &ValidationError{Field: "hole_number", Message: "hole_number must be between 1 and 18"}
+		}
 		if st.GIR != nil && !validGIR[*st.GIR] {
 			return 0, &ValidationError{Field: "gir", Message: "gir must be one of: hit, miss, na"}
 		}

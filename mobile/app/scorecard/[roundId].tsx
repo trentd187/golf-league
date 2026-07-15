@@ -456,6 +456,10 @@ export default function ScorecardScreen() {
               const res = await apiGet({
                 url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
                 token: token ?? "",
+                // Label the phantom-save read-back so it's distinguishable in Sentry — this is
+                // the highest-value read in the app (it decides whether a "failed" save actually
+                // committed). Unlabeled, it was indistinguishable from any other read on failure.
+                label: "scorecard_reconcile_scores",
               });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;
@@ -545,6 +549,9 @@ export default function ScorecardScreen() {
               const res = await apiGet({
                 url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
                 token: token ?? "",
+                // Label the phantom-save read-back (see the scores reconcile above) so a stats
+                // ack-loss confirmation is distinguishable from an ordinary read in Sentry.
+                label: "scorecard_reconcile_stats",
               });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;

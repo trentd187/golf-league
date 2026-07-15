@@ -257,6 +257,23 @@ func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestUpsertHoleStats_HoleNumberOutOfRange pins the hole_number bound. hole_stats has no
+// DB CHECK on hole_number (only NOT NULL + UNIQUE), so this Go-layer guard is the only thing
+// keeping a junk out-of-range hole row out of the table — the same gate UpsertScores applies.
+// Runs before the DB permission check, so nilScoreSvc() with auth injected reaches it.
+func TestUpsertHoleStats_HoleNumberOutOfRange(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nilScoreSvc()))
+
+	for _, hole := range []int{0, -1, 19, 99} {
+		resp := doJSON(t, app, http.MethodPut,
+			"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+			map[string]any{"stats": []map[string]any{{"hole_number": hole, "gir": "hit"}}})
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "hole_number %d must be rejected", hole)
+	}
+}
+
 // TestSetPlayerHandicap_NoUserID verifies that missing auth returns 401.
 // UUID and body validation pass; uuid.Parse("") on the empty userID local fails.
 func TestSetPlayerHandicap_NoUserID(t *testing.T) {

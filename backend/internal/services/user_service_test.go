@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trentd187/golf-league/internal/models"
 	"github.com/trentd187/golf-league/internal/services"
 	"github.com/trentd187/golf-league/internal/testutil"
 )
@@ -375,6 +376,26 @@ func TestUserService_GetUserRounds_DBFailure_ReturnsErrorNotEmptyList(t *testing
 
 	require.Error(t, err)
 	assert.Nil(t, results)
+}
+
+// TestUserService_GetUserRounds_IncludesEventlessRound covers the regression fix: the
+// other-user profile round list used to INNER JOIN event_players, dropping eventless rounds
+// (event_player_id IS NULL). It must now return them, filtering by round_players.user_id.
+func TestUserService_GetUserRounds_IncludesEventlessRound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+
+	player := seedUser(t, db, "eventlessProfileRounds")
+	course, tee := seedCourseWithTee(t, db, "Eventless Profile Course")
+	round := seedEventlessRound(t, db, player.ID, course.ID, tee.ID)
+	addEventlessRoundPlayer(t, db, round.ID, player.ID)
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", round.ID).
+		Update("status", models.RoundStatusCompleted).Error)
+
+	results, err := svc.GetUserRounds(context.Background(), player.ID)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "an eventless completed round must appear in the profile round list")
+	assert.Equal(t, round.ID.String(), results[0].ID)
 }
 
 // UnfollowUser discarded its *gorm.DB entirely and `return nil`d — it was structurally

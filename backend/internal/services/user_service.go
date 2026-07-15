@@ -654,14 +654,17 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 	}, nil
 }
 
-// GetUserRounds returns the last 20 completed rounds the target user participated in.
+// GetUserRounds returns the last 20 completed rounds the target user participated in,
+// both event-linked and eventless.
 func (s *UserService) GetUserRounds(ctx context.Context, targetID uuid.UUID) ([]UserRoundRef, error) {
+	// Filter by round_players.user_id directly (NOT NULL for all rounds since migration
+	// 000020). Joining event_players would drop eventless rounds, whose event_player_id is
+	// NULL — the same pattern RoundService.GetMyRounds uses.
 	var results []UserRoundRef
 	if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
 		Select("rounds.id, rounds.scheduled_date").
-		Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
 		Joins("JOIN rounds ON rounds.id = round_players.round_id").
-		Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
+		Where("round_players.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
 		Order("rounds.scheduled_date DESC").
 		Limit(20).
 		Scan(&results).Error; err != nil {

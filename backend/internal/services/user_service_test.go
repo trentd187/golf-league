@@ -315,3 +315,94 @@ func TestUserService_UpsertScorecardSettings_OBEnabledFalse(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, fetched.OBEnabled)
 }
+
+// ─── DB failures must SURFACE, not masquerade as empty results ────────────────
+//
+// These pin the fix for the worst class of bug the audit found. UserService dropped the
+// error on ~14 queries, so a total database failure returned 200 OK with a zeroed payload:
+// the user saw an empty stats screen, the backend logged a routine http.request line, and
+// Sentry saw nothing at all. "No data" and "the database is down" must never look alike.
+//
+// A cancelled context is the cleanest way to force a real driver error: every query below
+// fails immediately with context.Canceled. Before the fix, each of these returned (data, nil).
+
+// cancelledCtx returns a context that is already cancelled, so the next DB call fails.
+func cancelledCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestUserService_GetUserStats_DBFailure_ReturnsErrorNotZeroedStats(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	user := seedUser(t, db, "stats_dbfail")
+
+	data, err := svc.GetUserStats(cancelledCtx(), user.ID, "all_time")
+
+	require.Error(t, err, "a DB failure must not be reported as a user with zero rounds")
+	assert.Nil(t, data)
+}
+
+func TestUserService_SearchUsers_DBFailure_ReturnsErrorNotEmptyList(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	caller := seedUser(t, db, "search_dbfail")
+
+	results, err := svc.SearchUsers(cancelledCtx(), caller.ID, "")
+
+	require.Error(t, err, "a DB failure must not be reported as 'no users found'")
+	assert.Nil(t, results)
+}
+
+func TestUserService_GetFollowing_DBFailure_ReturnsErrorNotEmptyList(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	caller := seedUser(t, db, "following_dbfail")
+
+	results, err := svc.GetFollowing(cancelledCtx(), caller.ID)
+
+	require.Error(t, err)
+	assert.Nil(t, results)
+}
+
+func TestUserService_GetUserRounds_DBFailure_ReturnsErrorNotEmptyList(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	user := seedUser(t, db, "rounds_dbfail")
+
+	results, err := svc.GetUserRounds(cancelledCtx(), user.ID)
+
+	require.Error(t, err)
+	assert.Nil(t, results)
+}
+
+// UnfollowUser discarded its *gorm.DB entirely and `return nil`d — it was structurally
+// incapable of failing, so a failed DELETE still told the client "unfollowed" (204) while
+// the row stayed put.
+func TestUserService_UnfollowUser_DBFailure_ReturnsError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	caller := seedUser(t, db, "unfollow_dbfail_a")
+	target := seedUser(t, db, "unfollow_dbfail_b")
+
+	err := svc.UnfollowUser(cancelledCtx(), caller.ID, target.ID)
+
+	require.Error(t, err, "a failed DELETE must not report success")
+}
+
+// FollowUser mapped EVERY create error to ErrAlreadyFollowing → 409. A 409 is a 4xx, which
+// ErrorLogger skips, so a database outage on this endpoint was completely invisible. Only a
+// genuine duplicate key may produce ErrAlreadyFollowing now.
+func TestUserService_FollowUser_DBFailure_IsNotReportedAsAlreadyFollowing(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := services.NewUserService(db)
+	caller := seedUser(t, db, "follow_dbfail_a")
+	target := seedUser(t, db, "follow_dbfail_b")
+
+	err := svc.FollowUser(cancelledCtx(), caller.ID, target.ID)
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, services.ErrAlreadyFollowing),
+		"a DB fault must surface as a 500, not a benign 409 conflict")
+}

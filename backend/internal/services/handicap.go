@@ -100,54 +100,61 @@ func EffectiveCourseHandicap(courseHandicap int, allowance *float64) int {
 //
 // Processes per-round so each round's nine_hole_selection can be used to
 // normalize stroke indexes before applying HandicapStrokes.
-// Best-effort: returns the first DB error encountered.
+//
+// All-or-nothing. The whole recalculation runs in ONE transaction: it rewrites net_score for
+// every scored hole in the event, and a failure partway through used to leave half the event
+// on the old allowance and half on the new — a silently wrong leaderboard that nothing
+// repairs, because the allowance itself has already been saved and a retry sees no work to do.
+// Either every score reflects the new allowance or none does.
 func RecalculateEventScores(ctx context.Context, db *gorm.DB, eventID uuid.UUID, allowance *float64) error {
-	var rounds []models.Round
-	if err := db.WithContext(ctx).
-		Preload("DefaultTee.Holes").
-		Where("event_id = ?", eventID).
-		Find(&rounds).Error; err != nil {
-		return fmt.Errorf("load rounds for recalc: %w", err)
-	}
-
-	type scoreRow struct {
-		ScoreID        uuid.UUID
-		GrossScore     int
-		HoleNumber     int
-		CourseHandicap *int
-	}
-
-	for _, round := range rounds {
-		played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
-		if len(played) == 0 {
-			continue
-		}
-		siMap := NormalizeStrokeIndexes(played)
-		holeCount := len(played)
-
-		var rows []scoreRow
-		if err := db.WithContext(ctx).Table("scores s").
-			Select("s.id as score_id, s.gross_score, s.hole_number, rp.course_handicap").
-			Joins("JOIN round_players rp ON rp.id = s.round_player_id").
-			Where("rp.round_id = ?", round.ID).
-			Scan(&rows).Error; err != nil {
-			return fmt.Errorf("load scores for round %s: %w", round.ID, err)
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rounds []models.Round
+		if err := tx.
+			Preload("DefaultTee.Holes").
+			Where("event_id = ?", eventID).
+			Find(&rounds).Error; err != nil {
+			return fmt.Errorf("load rounds for recalc: %w", err)
 		}
 
-		for _, row := range rows {
-			raw := 0
-			if row.CourseHandicap != nil {
-				raw = *row.CourseHandicap
+		type scoreRow struct {
+			ScoreID        uuid.UUID
+			GrossScore     int
+			HoleNumber     int
+			CourseHandicap *int
+		}
+
+		for _, round := range rounds {
+			played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
+			if len(played) == 0 {
+				continue
 			}
-			eff := EffectiveCourseHandicap(raw, allowance)
-			netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
+			siMap := NormalizeStrokeIndexes(played)
+			holeCount := len(played)
 
-			if err := db.WithContext(ctx).Model(&models.Score{}).
-				Where("id = ?", row.ScoreID).
-				Update("net_score", netScore).Error; err != nil {
-				return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+			var rows []scoreRow
+			if err := tx.Table("scores s").
+				Select("s.id as score_id, s.gross_score, s.hole_number, rp.course_handicap").
+				Joins("JOIN round_players rp ON rp.id = s.round_player_id").
+				Where("rp.round_id = ?", round.ID).
+				Scan(&rows).Error; err != nil {
+				return fmt.Errorf("load scores for round %s: %w", round.ID, err)
+			}
+
+			for _, row := range rows {
+				raw := 0
+				if row.CourseHandicap != nil {
+					raw = *row.CourseHandicap
+				}
+				eff := EffectiveCourseHandicap(raw, allowance)
+				netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
+
+				if err := tx.Model(&models.Score{}).
+					Where("id = ?", row.ScoreID).
+					Update("net_score", netScore).Error; err != nil {
+					return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+				}
 			}
 		}
-	}
-	return nil
+		return nil
+	})
 }

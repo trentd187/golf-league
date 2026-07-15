@@ -17,6 +17,7 @@ import * as Sentry from "@sentry/react-native";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { platformStorage } from "@/utils/platformStorage";
+import { createPersistStorage } from "@/utils/persistStorage";
 import type { EventTypeFilter, EventStatusFilter, EventSortKey } from "@/utils/eventFilters";
 import type { RoundStatusFilter, RoundFormatFilter, RoundSortKey } from "@/utils/roundFilters";
 
@@ -97,16 +98,11 @@ interface ListPrefsState {
 }
 
 // ─── Storage adapter ──────────────────────────────────────────────────────────────
-// Matches createJSONStorage's async {getItem,setItem,removeItem}. The .catch
-// guards degrade gracefully to in-memory state if storage is unavailable.
-const storageAdapter = createJSONStorage(() => ({
-  getItem: (key: string): Promise<string | null> =>
-    platformStorage.getItemAsync(key).catch(() => null),
-  setItem: (key: string, value: string): Promise<void> =>
-    platformStorage.setItemAsync(key, value).catch(() => {}),
-  removeItem: (key: string): Promise<void> =>
-    platformStorage.deleteItemAsync(key).catch(() => {}),
-}));
+// Shared with themeStore via createPersistStorage (utils/persistStorage.ts): non-throwing AND
+// reported, rather than the silent `.catch(() => {})` it replaces.
+const storageAdapter = createJSONStorage(() =>
+  createPersistStorage(platformStorage, "list_prefs"),
+);
 
 // ─── Store ────────────────────────────────────────────────────────────────────────
 

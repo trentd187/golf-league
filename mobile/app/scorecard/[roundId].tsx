@@ -37,26 +37,28 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
-import { useRoundLiveUpdates } from "@/hooks/useRoundLiveUpdates";
 import { useUser } from "@/hooks/useUser";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { API_URL, LIVE_POLL_MS } from "@/constants/api";
 import { girScoreFromPutts, girKey, firKey, girHitDerivations, puttDistanceMirror, holeRangeTotal, numericStatFocusNext, scoreFocusNext, initScores, initStats, initHandicaps, threeWayMergeScores, threeWayMergeStats, threeWayMergeHandicaps, countScoreCells, countStatCells, incomingSnapshotIsDegraded } from "@/utils/scorecard";
 import { AdvancedStatPillRow } from "@/components/AdvancedStatPillRow";
+import { SaveStatusBanner } from "@/components/SaveStatusBanner";
 import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericStatField } from "@/utils/scorecard";
 import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
+import { holeHandicapStrokes } from "@/utils/handicap";
+import { formatToPar } from "@/utils/scoringFormats";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { buildLiveBestBallMatch, type BestBallBasis } from "@/utils/bestBall";
 import { deriveFormatMatches, logFormatSummary } from "@/utils/formatTelemetry";
 import BestBallBasicScorecard from "@/components/BestBallBasicScorecard";
 import { showAlert } from "@/utils/alerts";
 import { savePut, BACKGROUND_SAVE, FOREGROUND_SAVE } from "@/utils/saveRequest";
-import { apiGet } from "@/utils/apiGet";
-import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb, addScorecardRefetchBreadcrumb } from "@/utils/sentry";
+import { apiGet, apiGetJson } from "@/utils/apiGet";
+import { addStatFocusBreadcrumb, reportScorecardMergeSkipped, addScorecardLoadBreadcrumb, addScorecardRefetchBreadcrumb, reportPollDeferred } from "@/utils/sentry";
+import { shouldApplyPolledSnapshot } from "@/utils/pollGate";
 import {
   extractServerScores,
   scoresReconciled,
@@ -108,16 +110,13 @@ const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string 
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// handicapStrokes returns the number of strokes a player receives on a hole.
-// strokeIndex must be a normalized rank within the played set (1 = hardest).
-// holeCount is the number of holes being played (9 or 18).
-// Mirrors the Go HandicapStrokes function in services/handicap.go.
-function handicapStrokes(courseHandicap: number, strokeIndex: number, holeCount: number): number {
-  if (holeCount <= 0) return 0;
-  const base = Math.floor(courseHandicap / holeCount);
-  const remainder = courseHandicap % holeCount;
-  return base + (strokeIndex <= remainder ? 1 : 0);
-}
+// Stroke allocation and to-par formatting come from utils/ — this screen used to re-implement
+// BOTH, despite already importing twenty other things from the same modules.
+//
+// The handicapStrokes copy was not merely redundant, it was WRONG: it lacked the
+// `effHandicap <= 0` guard, so for a plus-handicap player (a negative handicap) it returned
+// NEGATIVE strokes where holeHandicapStrokes returns 0 — silently mis-scoring their net.
+// That is exactly the divergence a duplicated derivation invites.
 
 // emptyHoleStat is the default state for a hole with no stats entered yet.
 const emptyHoleStat: HoleStatEntry = {
@@ -133,6 +132,12 @@ const emptyHoleStat: HoleStatEntry = {
 // Formerly 0 (fire-per-tap), which on cellular kept many slow saves in flight, and each
 // resolution flipped statsSaveError → re-render churn that helped cancel the next tap.
 const STAT_TAP_DEBOUNCE_MS = 250;
+
+// POLL_GATE_RECHECK_MS is how often the merge effect re-asks the poll gate whether the
+// player has gone idle, when a snapshot is being held (utils/pollGate.ts). Short enough
+// that a deferred peer update lands promptly once they stop tapping, long enough that the
+// re-check itself is negligible. Only ever armed while a snapshot is actually pending.
+const POLL_GATE_RECHECK_MS = 750;
 
 // scoreColor returns a NativeWind class string for a score relative to par.
 // Used in both Basic and Advanced views to keep color logic in one place.
@@ -164,13 +169,6 @@ function scoreToPar(
   return count > 0 ? diff : null;
 }
 
-// formatToPar converts a numeric score differential to the standard display:
-// "E" for even, "+N" for over, "-N" for under.
-function formatToPar(diff: number): string {
-  if (diff === 0) return "E";
-  return diff > 0 ? `+${diff}` : String(diff);
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ScorecardScreen() {
@@ -186,10 +184,27 @@ export default function ScorecardScreen() {
   const t             = useTheme();
   const queryClient   = useQueryClient();
 
-  // Live score updates: a WebSocket pushes "scores_updated" → invalidate the scorecard
-  // query so it refetches instantly. The 60s poll below stays as the floor, so this is a
-  // pure latency win with no regression if the socket can't connect.
-  useRoundLiveUpdates(roundId);
+  // ── Interaction tracking (feeds the poll gate) ──────────────────────────────
+  // Merging a server snapshot re-renders this ~1900-line screen. If that reflow lands
+  // between a pill's onPressIn and its onPress, React Native drops the press — the pill
+  // dims and nothing happens. That is the "FIR/GIR undroppable" bug.
+  //
+  // These two refs are the gate's inputs (utils/pollGate.ts): a polled snapshot is applied
+  // only when no save is on the wire AND the player has been quiet. Refs, not state, so
+  // recording a tap never itself triggers a render.
+  const lastInteractionAtRef = useRef(0);
+  const inFlightSavesRef     = useRef(0);
+  // pendingSnapshotRef holds a snapshot the gate deferred, so it can be applied the moment
+  // the player goes idle instead of being dropped (the next poll is 60s away).
+  const pendingSnapshotRef   = useRef<ScorecardGroup | null>(null);
+  // Bumping this re-runs the merge effect when the deferred snapshot becomes applicable.
+  const [pollGateTick, setPollGateTick] = useState(0);
+
+  // noteInteraction is called on every pill tap, keystroke, and hole change. Stable
+  // identity (no deps) so it never invalidates a memoized child.
+  const noteInteraction = useCallback(() => {
+    lastInteractionAtRef.current = Date.now();
+  }, []);
 
   // ── View mode ───────────────────────────────────────────────────────────────
   // "basic": all players shown in columns (always available).
@@ -203,6 +218,11 @@ export default function ScorecardScreen() {
   const [scores,          setScores]          = useState<LocalScores>({});
   const [handicaps,         setHandicaps]         = useState<LocalHandicaps>({});
   const [savingHandicaps,   setSavingHandicaps]   = useState(false);
+  // handicapSaveError drives a non-blocking banner instead of the modal Alert this used to
+  // throw. A player standing on the first tee should never have to dismiss a dialog to keep
+  // going; the banner says what happened and offers Retry, and the typed handicaps stay on
+  // screen either way.
+  const [handicapSaveError, setHandicapSaveError] = useState(false);
   // handicapDismissed: user tapped "Skip" in the handicap entry section.
   // Hides the section for the rest of the session even if handicaps are missing.
   const [handicapDismissed, setHandicapDismissed] = useState(false);
@@ -226,11 +246,11 @@ export default function ScorecardScreen() {
 
   const fetchScorecard = useCallback(async (): Promise<Scorecard> => {
     const token = await getToken();
-    const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
-      headers: { Authorization: `Bearer ${token}` },
+    return apiGetJson<Scorecard>({
+      url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
+      token: token ?? "",
+      label: "scorecard",
     });
-    if (!res.ok) throw new Error("Failed to load scorecard");
-    return res.json();
   }, [roundId, getToken]);
 
   const {
@@ -243,10 +263,15 @@ export default function ScorecardScreen() {
     queryKey:       ["scorecard", roundId],
     queryFn:        fetchScorecard,
     enabled:        !!roundId,
-    // Poll every minute so other players' scores stay in sync without requiring a manual refresh.
-    // Average hole duration is ~13 min, so 60 s is frequent enough to catch updates mid-hole
-    // without hammering the API.
-    refetchInterval: 60_000,
+    // The poll is now the ONLY way other players' scores reach this screen — the live-score
+    // WebSocket is gone. It was never the thing keeping the card fresh anyway: it never
+    // completed a handshake on the league's cellular network, and when it DID connect it
+    // echoed every save back to this device, whose refetch reflowed the card mid-tap and
+    // swallowed FIR/GIR presses. Average hole takes ~13 min, so 60s catches peers well
+    // within a hole. refetchIntervalInBackground:false keeps a pocketed phone silent, and
+    // the merge itself is gated by utils/pollGate so a tick can never land under a finger.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   // Fetch the user's stat visibility preferences. Shares the same cache key as the
@@ -255,11 +280,11 @@ export default function ScorecardScreen() {
     queryKey: ["scorecardSettings"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/me/scorecard-settings`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<ScorecardSettings>({
+        url: `${API_URL}/api/v1/users/me/scorecard-settings`,
+        token: token ?? "",
+        label: "scorecard_settings",
       });
-      if (!res.ok) throw new Error("Failed to load scorecard settings");
-      return res.json();
     },
     enabled: !!user,
   });
@@ -284,6 +309,25 @@ export default function ScorecardScreen() {
   const saveTimers     = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // statSaveTimers debounces per-hole stat saves (key: "<rpId>-<holeNumber>").
   const statSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Clear every pending debounce on unmount. Without this, a player who types a score and
+  // immediately backs out of the scorecard left a timer armed: it fired against a dead
+  // component and called setSaveError / setStatsSaveError on it. React 18 no longer warns, so
+  // it was silent — a whole class of writes to a component nobody was looking at.
+  //
+  // Note this cancels the debounce, not an in-flight save: a save already on the wire still
+  // completes (savePut owns its own lifecycle), which is what we want — leaving the round
+  // must not discard the score you just entered.
+  useEffect(() => {
+    const scoreTimers = saveTimers.current;
+    const statTimers = statSaveTimers.current;
+    return () => {
+      scoreTimers.forEach(clearTimeout);
+      statTimers.forEach(clearTimeout);
+      scoreTimers.clear();
+      statTimers.clear();
+    };
+  }, []);
 
   // inputRefs: Basic view grid — key "<holeIndex>-<playerIndex>".
   const inputRefs      = useRef<Map<string, TextInput | null>>(new Map());
@@ -353,15 +397,22 @@ export default function ScorecardScreen() {
       holeChangeIsMount.current = false;
       return;
     }
+    // Changing holes IS an interaction: the player is mid-flow and about to start tapping
+    // the new hole's pills. Record it so the refetch this triggers can't merge straight
+    // back into their first tap.
+    noteInteraction();
     addScorecardRefetchBreadcrumb("hole_change", roundId);
     refetch();
-  }, [currentHole, refetch, roundId]);
+  }, [currentHole, refetch, roundId, noteInteraction]);
 
 
   // ── Auto-save ───────────────────────────────────────────────────────────────
 
   const autoSavePlayer = useCallback(
     (roundPlayerId: string) => {
+      // Called synchronously on every score keystroke — the cheapest honest signal that the
+      // player is actively editing. Feeds the poll gate.
+      noteInteraction();
       const existing = saveTimers.current.get(roundPlayerId);
       if (existing) clearTimeout(existing);
 
@@ -377,6 +428,11 @@ export default function ScorecardScreen() {
 
         if (entries.length === 0) return;
 
+        // Count this save as in flight for the whole savePut lifetime (including its
+        // retries). The poll gate holds any incoming snapshot while it's non-zero, so a
+        // merge can neither reflow the screen under the player's finger nor overwrite an
+        // edit with a server view that predates the write still on the wire.
+        inFlightSavesRef.current += 1;
         try {
           const token = await getToken();
           // savePut applies the BACKGROUND_SAVE profile: per-attempt AbortController
@@ -400,6 +456,10 @@ export default function ScorecardScreen() {
               const res = await apiGet({
                 url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
                 token: token ?? "",
+                // Label the phantom-save read-back so it's distinguishable in Sentry — this is
+                // the highest-value read in the app (it decides whether a "failed" save actually
+                // committed). Unlabeled, it was indistinguishable from any other read on failure.
+                label: "scorecard_reconcile_scores",
               });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;
@@ -415,12 +475,14 @@ export default function ScorecardScreen() {
           }
         } catch {
           setSaveError((prev) => ({ ...prev, [roundPlayerId]: true }));
+        } finally {
+          inFlightSavesRef.current = Math.max(0, inFlightSavesRef.current - 1);
         }
       }, 400);
 
       saveTimers.current.set(roundPlayerId, timer);
     },
-    [roundId, getToken]
+    [roundId, getToken, noteInteraction]
   );
 
   // ── Advanced stats auto-save ─────────────────────────────────────────────────
@@ -429,6 +491,8 @@ export default function ScorecardScreen() {
   // Used for both button taps (0ms = feels instant) and text inputs (400ms).
   const autoSaveStats = useCallback(
     (roundPlayerId: string, holeNumber: number, delay = 300) => {
+      // Called synchronously on every pill tap and stat keystroke — see autoSavePlayer.
+      noteInteraction();
       const key = `${roundPlayerId}-${holeNumber}`;
       const existing = statSaveTimers.current.get(key);
       if (existing) clearTimeout(existing);
@@ -461,6 +525,8 @@ export default function ScorecardScreen() {
         };
 
         setStatsSaveError(false);
+        // In flight for the whole savePut lifetime — see the score save above.
+        inFlightSavesRef.current += 1;
         try {
           const token = await getToken();
           // Same BACKGROUND_SAVE resilience as score saves; savePut throws on !res.ok
@@ -483,6 +549,9 @@ export default function ScorecardScreen() {
               const res = await apiGet({
                 url: `${API_URL}/api/v1/rounds/${roundId}/scorecard`,
                 token: token ?? "",
+                // Label the phantom-save read-back (see the scores reconcile above) so a stats
+                // ack-loss confirmation is distinguishable from an ordinary read in Sentry.
+                label: "scorecard_reconcile_stats",
               });
               if (!res.ok) return false;
               const fresh = (await res.json()) as Scorecard;
@@ -495,12 +564,14 @@ export default function ScorecardScreen() {
           setStatsSaveError(false);
         } catch {
           setStatsSaveError(true);
+        } finally {
+          inFlightSavesRef.current = Math.max(0, inFlightSavesRef.current - 1);
         }
       }, delay);
 
       statSaveTimers.current.set(key, timer);
     },
-    [roundId, getToken]
+    [roundId, getToken, noteInteraction]
   );
 
   // ── Pill-tap dispatchers (memoization bridge) ────────────────────────────────
@@ -557,31 +628,59 @@ export default function ScorecardScreen() {
     viewInitRef.current = true;
   }, [group, scorecard?.nine_hole_selection, scorecard?.caller_user_id]);
 
-  // Live re-sync: whenever the scorecard query data changes (WS "scores_updated" push,
-  // 60s poll, hole-change refetch, or pull-to-refresh) merge the fresh server snapshot
-  // into local state so OTHER players' scores/stats appear without leaving the screen —
-  // the bug this fixes. A 3-way merge against the LAST server snapshot (server*Ref)
-  // preserves any of THIS device's unsaved in-flight edits (see utils/scorecard.ts).
-  // `group` keeps a stable reference between refetches (React Query structural sharing),
-  // so this only runs when the data actually changed. The functional setState form reads
-  // the latest local state without putting `scores`/`stats` in the dep array (which would
-  // re-run the merge on every keystroke). Bases are captured BEFORE the refs are advanced
-  // so the deferred updaters merge against the correct snapshot.
+  // Live re-sync: whenever the scorecard query data changes (60s poll, hole-change refetch,
+  // or pull-to-refresh) merge the fresh server snapshot into local state so OTHER players'
+  // scores/stats appear without leaving the screen. A 3-way merge against the LAST server
+  // snapshot (server*Ref) preserves any of THIS device's unsaved in-flight edits (see
+  // utils/scorecard.ts). `group` keeps a stable reference between refetches (React Query
+  // structural sharing), so this only runs when the data actually changed. The functional
+  // setState form reads the latest local state without putting `scores`/`stats` in the dep
+  // array (which would re-run the merge on every keystroke). Bases are captured BEFORE the
+  // refs are advanced so the deferred updaters merge against the correct snapshot.
   const serverScoresRef    = useRef<LocalScores>({});
   const serverStatsRef     = useRef<LocalStats>({});
   const serverHandicapsRef = useRef<LocalHandicaps>({});
   useEffect(() => {
-    if (!group) return;
-    const incomingScores    = initScores(group.players);
-    const incomingStats     = initStats(group.players);
-    const incomingHandicaps = initHandicaps(group.players);
+    // A snapshot may be arriving fresh from the query, or may be one the gate deferred
+    // earlier and we're now retrying because the player went idle (pollGateTick).
+    const incoming = group ?? pendingSnapshotRef.current;
+    if (!incoming) return;
 
-    // Degraded-snapshot guard (Incident B): a failed/partial refetch or a thin WS push can
-    // deliver a snapshot that collapsed to empty. Feeding that to the 3-way merge would treat
-    // every unchanged cell as a peer deletion and blank out scores/stats the DB still has —
-    // the "stats disappeared after reactivate" bug. Guard scores and stats independently
-    // (a round can legitimately have scores but no stats), and read the live local counts
-    // from the refs so the check reflects what's actually on screen right now.
+    // ── Poll gate ─────────────────────────────────────────────────────────────
+    // The merge below runs three setStates and reflows the whole screen. If that lands
+    // mid-gesture it eats the player's pill tap. So: apply a snapshot ONLY while they are
+    // demonstrably not interacting. Anything held is applied moments later, when they go
+    // quiet — imperceptible on a 60s cadence, and no tap can ever be swallowed again.
+    if (
+      !shouldApplyPolledSnapshot({
+        inFlightSaves: inFlightSavesRef.current,
+        msSinceLastInteraction: Date.now() - lastInteractionAtRef.current,
+      })
+    ) {
+      pendingSnapshotRef.current = incoming;
+      reportPollDeferred({
+        roundId,
+        inFlightSaves: inFlightSavesRef.current,
+        msSinceLastInteraction: Date.now() - lastInteractionAtRef.current,
+      });
+      // Re-check once the quiet window can plausibly have elapsed. Cleared on unmount by
+      // the returned teardown, so a backgrounded screen leaves no timer behind.
+      const retry = setTimeout(() => setPollGateTick((n) => n + 1), POLL_GATE_RECHECK_MS);
+      return () => clearTimeout(retry);
+    }
+
+    pendingSnapshotRef.current = null;
+
+    const incomingScores    = initScores(incoming.players);
+    const incomingStats     = initStats(incoming.players);
+    const incomingHandicaps = initHandicaps(incoming.players);
+
+    // Degraded-snapshot guard (Incident B): a failed/partial refetch can deliver a snapshot
+    // that collapsed to empty. Feeding that to the 3-way merge would treat every unchanged
+    // cell as a peer deletion and blank out scores/stats the DB still has — the "stats
+    // disappeared after reactivate" bug. Guard scores and stats independently (a round can
+    // legitimately have scores but no stats), and read the live local counts from the refs
+    // so the check reflects what's actually on screen right now.
     const localScoreCells = countScoreCells(scoresRef.current);
     const localStatCells  = countStatCells(statsRef.current);
     const scoresDegraded  = incomingSnapshotIsDegraded(localScoreCells, countScoreCells(incomingScores));
@@ -589,7 +688,7 @@ export default function ScorecardScreen() {
 
     addScorecardLoadBreadcrumb({
       roundId,
-      players: group.players.length,
+      players: incoming.players.length,
       scoreCells: countScoreCells(incomingScores),
       statCells: countStatCells(incomingStats),
     });
@@ -613,7 +712,7 @@ export default function ScorecardScreen() {
     const baseHandicaps = serverHandicapsRef.current;
     setHandicaps((local) => threeWayMergeHandicaps(baseHandicaps, local, incomingHandicaps));
     serverHandicapsRef.current = incomingHandicaps;
-  }, [group, roundId]);
+  }, [group, roundId, pollGateTick]);
 
   // ── Handicap save ───────────────────────────────────────────────────────────
 
@@ -644,8 +743,9 @@ export default function ScorecardScreen() {
       // conditional display logic that depends on course_handicap being non-null.
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["round", roundId] });
+      setHandicapSaveError(false);
     } catch {
-      showAlert("Error", "Could not save handicaps. Check your connection and try again.");
+      setHandicapSaveError(true);
     } finally {
       setSavingHandicaps(false);
     }
@@ -676,8 +776,9 @@ export default function ScorecardScreen() {
       // Invalidate the round so the leaderboard reflects the updated handicap.
       await refetch();
       queryClient.invalidateQueries({ queryKey: ["round", roundId] });
+      setHandicapSaveError(false);
     } catch {
-      showAlert("Error", "Could not update handicap. Please try again.");
+      setHandicapSaveError(true);
     } finally {
       setSavingHandicap(false);
     }
@@ -696,7 +797,7 @@ export default function ScorecardScreen() {
   if (isError || !scorecard) {
     return (
       <View className={`flex-1 ${t.screen} items-center justify-center px-6 gap-4`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`text-base font-semibold text-center ${t.textPrimary}`}>
           Failed to load scorecard
         </Text>
@@ -870,7 +971,7 @@ export default function ScorecardScreen() {
         indivGrossCount++;
         if (showNetCol && selectedPlayer.effective_course_handicap != null && hole.stroke_index) {
           const nsi = normalizedSIMap.get(hole.hole_number) ?? 0;
-          indivNetTotal += g - handicapStrokes(selectedPlayer.effective_course_handicap, nsi, handicapHoleCount);
+          indivNetTotal += g - holeHandicapStrokes(selectedPlayer.effective_course_handicap, nsi, handicapHoleCount);
           indivNetCount++;
         }
       }
@@ -941,7 +1042,7 @@ export default function ScorecardScreen() {
         {/* ── Round completed notice ─────────────────────────────────────────── */}
         {isRoundLocked && (
           <View className="mx-4 mt-4 flex-row items-center gap-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3">
-            <Ionicons name="lock-closed-outline" size={16} color="#d97706" />
+            <Ionicons name="lock-closed-outline" size={16} color={t.colors.warning} />
             <Text className="flex-1 text-sm font-semibold text-amber-700">
               Round completed — scores are locked
             </Text>
@@ -994,6 +1095,13 @@ export default function ScorecardScreen() {
                   />
                 </View>
               ))}
+              {handicapSaveError && (
+                <SaveStatusBanner
+                  message="Handicaps didn't sync"
+                  onRetry={handleSaveHandicaps}
+                  retrying={savingHandicaps}
+                />
+              )}
               <TouchableOpacity
                 className={`rounded-xl py-3 items-center mt-1 ${savingHandicaps ? "bg-green-700/40" : "bg-green-700"}`}
                 onPress={handleSaveHandicaps}
@@ -1103,6 +1211,13 @@ export default function ScorecardScreen() {
                 </TouchableOpacity>
               </View>
             )}
+            {/* Handicap-edit failure — non-blocking, replaces the modal Alert. Rendered
+                outside the edit row so it survives the row closing on a failed save. */}
+            {handicapSaveError && editingHandicapFor === null && (
+              <View className="mt-2">
+                <SaveStatusBanner message="Handicap didn't sync" />
+              </View>
+            )}
           </View>
         )}
 
@@ -1209,7 +1324,7 @@ export default function ScorecardScreen() {
                       })()}
                       {/* Failure-only indicator; a spacer keeps the column height stable otherwise. */}
                       {hasSaveError
-                        ? <Ionicons name="alert-circle" size={10} color="#dc2626" />
+                        ? <Ionicons name="alert-circle" size={10} color={t.colors.danger} />
                         : <View style={{ height: 10 }} />}
                     </View>
                   );
@@ -1385,7 +1500,7 @@ export default function ScorecardScreen() {
               // matches what the server will store (allowance already applied).
               const hcp        = selectedPlayer.effective_course_handicap ?? null;
               const strokes    = (holeData.stroke_index && hcp != null)
-                ? handicapStrokes(hcp, normalizedSIMap.get(holeData.hole_number) ?? 0, handicapHoleCount)
+                ? holeHandicapStrokes(hcp, normalizedSIMap.get(holeData.hole_number) ?? 0, handicapHoleCount)
                 : 0;
               const net        = (!isNaN(gross) && gross >= 1) ? gross - strokes : null;
               const grossClr   = (holeData.par && !isNaN(gross) && gross >= 1)
@@ -1774,22 +1889,26 @@ export default function ScorecardScreen() {
                     }
                   })}
 
-                  {/* Stats save error — outside the stat loop so it's always visible */}
+                  {/* Stats save failure — non-blocking. Shown only after every retry AND the
+                      phantom-save reconcile failed, so the stat really isn't on the server.
+                      Retry re-runs the save immediately (0ms debounce) rather than making the
+                      player guess that re-tapping a pill would do it. */}
                   {statsSaveError && (
-                    <View className={`px-4 py-2 border-b ${t.divider}`}>
-                      <Text className="text-red-500 text-xs">Stats failed to save</Text>
-                    </View>
+                    <SaveStatusBanner
+                      message="Stats didn't sync"
+                      onRetry={() => autoSaveStats(rpId, currentHole, 0)}
+                    />
                   )}
 
                   {/* Score entry — after stats when score_position is "last" (default) */}
                   {settings.score_position !== "first" && renderScoreBlock()}
 
-                  {/* Save status — failure only; successful saves show nothing */}
+                  {/* Score save failure — non-blocking, same contract as the stats banner above. */}
                   {saveError[rpId] && (
-                    <View className={`flex-row items-center justify-center gap-2 py-2 border-t ${t.divider}`}>
-                      <Ionicons name="alert-circle" size={14} color="#dc2626" />
-                      <Text className="text-xs text-red-600">Save failed — tap score to retry</Text>
-                    </View>
+                    <SaveStatusBanner
+                      message="Scores didn't sync"
+                      onRetry={() => autoSavePlayer(rpId)}
+                    />
                   )}
 
                 </View>

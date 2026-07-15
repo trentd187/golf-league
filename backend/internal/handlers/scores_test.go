@@ -56,6 +56,23 @@ func TestGetRoundScorecard_InvalidUUID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ─── GetEventScorecards ───────────────────────────────────────────────────────
+//
+// One request for every completed round in the event, replacing the event screen's
+// useQueries() fan-out — which issued one /rounds/:id/scorecard request PER round and polled
+// every one of them every 60s.
+
+func TestGetEventScorecards_InvalidUUID(t *testing.T) {
+	app := newSingleRouteApp(http.MethodGet,
+		"/events/:id/scorecards",
+		handlers.GetEventScorecards(nil))
+
+	resp, err := app.Test(
+		httptest.NewRequest(http.MethodGet, "/events/not-a-uuid/scorecards", nil), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 // ─── SetPlayerHandicap ────────────────────────────────────────────────────────
 
 func TestSetPlayerHandicap_InvalidRoundUUID(t *testing.T) {
@@ -99,7 +116,7 @@ func TestSetPlayerHandicap_InvalidBody(t *testing.T) {
 func TestUpsertPlayerScores_InvalidRoundUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
-		handlers.UpsertPlayerScores(nil, nil))
+		handlers.UpsertPlayerScores(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/not-a-uuid/players/"+validUUID+"/scores",
@@ -110,7 +127,7 @@ func TestUpsertPlayerScores_InvalidRoundUUID(t *testing.T) {
 func TestUpsertPlayerScores_InvalidPlayerUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
-		handlers.UpsertPlayerScores(nil, nil))
+		handlers.UpsertPlayerScores(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/not-a-uuid/scores",
@@ -121,7 +138,7 @@ func TestUpsertPlayerScores_InvalidPlayerUUID(t *testing.T) {
 func TestUpsertPlayerScores_EmptyScores(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
-		handlers.UpsertPlayerScores(nil, nil))
+		handlers.UpsertPlayerScores(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/scores",
@@ -132,7 +149,7 @@ func TestUpsertPlayerScores_EmptyScores(t *testing.T) {
 func TestUpsertPlayerScores_MissingScoresField(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
-		handlers.UpsertPlayerScores(nil, nil))
+		handlers.UpsertPlayerScores(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/scores",
@@ -145,7 +162,7 @@ func TestUpsertPlayerScores_MissingScoresField(t *testing.T) {
 func TestUpsertHoleStats_InvalidRoundUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil, nil))
+		handlers.UpsertHoleStats(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/not-a-uuid/players/"+validUUID+"/hole-stats",
@@ -156,7 +173,7 @@ func TestUpsertHoleStats_InvalidRoundUUID(t *testing.T) {
 func TestUpsertHoleStats_InvalidPlayerUUID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil, nil))
+		handlers.UpsertHoleStats(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/not-a-uuid/hole-stats",
@@ -167,7 +184,7 @@ func TestUpsertHoleStats_InvalidPlayerUUID(t *testing.T) {
 func TestUpsertHoleStats_EmptyStats(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil, nil))
+		handlers.UpsertHoleStats(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
@@ -178,7 +195,7 @@ func TestUpsertHoleStats_EmptyStats(t *testing.T) {
 func TestUpsertHoleStats_MissingBody(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil, nil))
+		handlers.UpsertHoleStats(nil))
 
 	req := httptest.NewRequest(http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats", nil)
@@ -197,7 +214,7 @@ func TestUpsertHoleStats_MissingBody(t *testing.T) {
 func TestUpsertHoleStats_InvalidGIRValue(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nilScoreSvc(), nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
@@ -208,7 +225,7 @@ func TestUpsertHoleStats_InvalidGIRValue(t *testing.T) {
 func TestUpsertHoleStats_InvalidGIRMissDirection(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nilScoreSvc(), nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
@@ -219,7 +236,7 @@ func TestUpsertHoleStats_InvalidGIRMissDirection(t *testing.T) {
 func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nilScoreSvc(), nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	fir := false
 	resp := doJSON(t, app, http.MethodPut,
@@ -231,13 +248,30 @@ func TestUpsertHoleStats_InvalidFIRMissDirection(t *testing.T) {
 func TestUpsertHoleStats_InvalidTeeShotClub(t *testing.T) {
 	app := newEventAppWithAuth(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nilScoreSvc(), nil))
+		handlers.UpsertHoleStats(nilScoreSvc()))
 
 	club := "PW"
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
 		map[string]any{"stats": []map[string]any{{"hole_number": 1, "tee_shot_club": club}}})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestUpsertHoleStats_HoleNumberOutOfRange pins the hole_number bound. hole_stats has no
+// DB CHECK on hole_number (only NOT NULL + UNIQUE), so this Go-layer guard is the only thing
+// keeping a junk out-of-range hole row out of the table — the same gate UpsertScores applies.
+// Runs before the DB permission check, so nilScoreSvc() with auth injected reaches it.
+func TestUpsertHoleStats_HoleNumberOutOfRange(t *testing.T) {
+	app := newEventAppWithAuth(http.MethodPut,
+		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
+		handlers.UpsertHoleStats(nilScoreSvc()))
+
+	for _, hole := range []int{0, -1, 19, 99} {
+		resp := doJSON(t, app, http.MethodPut,
+			"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",
+			map[string]any{"stats": []map[string]any{{"hole_number": hole, "gir": "hit"}}})
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "hole_number %d must be rejected", hole)
+	}
 }
 
 // TestSetPlayerHandicap_NoUserID verifies that missing auth returns 401.
@@ -257,7 +291,7 @@ func TestSetPlayerHandicap_NoUserID(t *testing.T) {
 func TestUpsertPlayerScores_NoUserID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/scores",
-		handlers.UpsertPlayerScores(nil, nil))
+		handlers.UpsertPlayerScores(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/scores",
@@ -271,7 +305,7 @@ func TestUpsertPlayerScores_NoUserID(t *testing.T) {
 func TestUpsertHoleStats_NoUserID(t *testing.T) {
 	app := newSingleRouteApp(http.MethodPut,
 		"/rounds/:roundId/players/:roundPlayerId/hole-stats",
-		handlers.UpsertHoleStats(nil, nil))
+		handlers.UpsertHoleStats(nil))
 
 	resp := doJSON(t, app, http.MethodPut,
 		"/rounds/"+validUUID+"/players/"+validUUID+"/hole-stats",

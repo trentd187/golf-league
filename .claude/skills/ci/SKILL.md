@@ -18,6 +18,14 @@ Run every local quality gate before committing. Mirrors the GitHub Actions CI pi
 
 Stop at the first failure and report which step failed. Do not skip steps silently.
 
+> **What these gates canNOT catch — do not read a green run as "error handling is safe."** The
+> 7/14 audit's whole point was that its bugs passed every gate. `errcheck`/`golangci-lint` are blind
+> to a dropped GORM `*gorm.DB` error (it's not an `error`), and no gate flags a DB fault laundered
+> into a 2xx/4xx or a bare `fetch` upstream of the hardened layer. Those are **review-gated** against
+> CLAUDE.md § "Backend error-handling rules" and the mobile no-bare-fetch ESLint rule. If a diff
+> touches a service method, a `write<Domain>Error`, or an outbound call, eyeball it against those
+> rules — green CI is necessary, not sufficient.
+
 ## One-time setup
 
 ### SonarCloud scanner (Windows — already installed)

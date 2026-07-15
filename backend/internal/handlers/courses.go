@@ -304,7 +304,9 @@ func GetCourses(svc *services.CourseService) fiber.Handler {
 			State:    c.Query("state"),
 		})
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{jsonKeyError: "failed to fetch courses"})
+			// Route through the helper like every other handler: the inline 500 threw the
+			// cause away, so ErrorLogger reported it to Sentry with an empty "error" field.
+			return writeCourseError(c, err, "course.list", "failed to fetch courses")
 		}
 
 		out := make([]CourseSummaryResponse, 0, len(items))

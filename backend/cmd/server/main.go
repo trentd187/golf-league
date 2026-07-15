@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
 	"github.com/gofiber/fiber/v2"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
@@ -23,8 +24,14 @@ import (
 	"github.com/trentd187/golf-league/internal/middleware"
 	"github.com/trentd187/golf-league/internal/observability"
 	"github.com/trentd187/golf-league/internal/services"
-	"github.com/trentd187/golf-league/internal/websocket"
 )
+
+// fatal is observability.Fatal — slog.Error (→ Sentry) then an explicit Flush, because the
+// os.Exit inside skips `defer sentryShutdown()`. It lives in the observability package, not
+// here, so middleware.Auth (which must die if the JWKS is unreachable) can reach the same
+// path without an import cycle. Never call log.Fatal directly: it writes via the stdlib
+// logger, never touches slog, and so never reaches Sentry at all.
+var fatal = observability.Fatal
 
 func main() {
 	cfg := config.Load()
@@ -34,6 +41,7 @@ func main() {
 	// and shutdown is a no-op — server runs identically without telemetry.
 	logger, sentryShutdown, err := observability.Init(cfg)
 	if err != nil {
+		// The one failure that genuinely cannot be reported — Sentry itself is what failed.
 		log.Fatal("Failed to initialise Sentry:", err)
 	}
 	defer sentryShutdown()
@@ -46,24 +54,18 @@ func main() {
 		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
 	})
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		fatal("Failed to connect to database", err)
 	}
 	// sqlDB is the pooled *sql.DB behind GORM — used by the /health readiness ping.
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Fatal("Failed to access database handle:", err)
+		fatal("Failed to access database handle", err)
 	}
 
 	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatal("Failed to run migrations:", err)
+		fatal("Failed to run migrations", err)
 	}
 	fmt.Println("Migrations applied successfully")
-
-	// NewHub + supervised run starts the WebSocket broadcast loop as a background
-	// goroutine (so it doesn't block startup). RunHubSupervised recovers + restarts
-	// on panic so one bad broadcast can't permanently kill live updates.
-	hub := websocket.NewHub()
-	go websocket.RunHubSupervised(hub)
 
 	// GolfCourseAPIClient is created once and shared across requests.
 	// GOLF_COURSE_API_KEY may be empty — the service returns ErrExternalAPINotConfigured
@@ -92,11 +94,16 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName: "Golf League API",
 		// IdleTimeout closes idle keep-alive connections so a churn of half-open sockets
-		// (the cellular case) doesn't accumulate. ReadTimeout/WriteTimeout are intentionally
-		// left unset: WriteTimeout would break the long-lived live-score WebSocket, and the
-		// meaningful bound on slow work is the per-request context deadline (RequestTimeout
-		// on the /api/v1 group), which turns a hung DB query into a fast, logged 5xx.
+		// (the cellular case) doesn't accumulate.
 		IdleTimeout: 60 * time.Second,
+		// ReadTimeout/WriteTimeout bound a client that dribbles a request or stops reading
+		// its response — a real risk on the flaky cellular links this app runs on. They were
+		// deliberately unset while the live-score WebSocket existed, because WriteTimeout
+		// kills a long-lived connection; with the socket gone, every request is short and
+		// these are safe. They complement (not replace) the per-request context deadline in
+		// middleware.RequestTimeout, which is what turns a hung DB query into a logged 5xx.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	})
 
 	// fiberrecover catches any panics in middleware or handlers and returns 500 instead
@@ -132,12 +139,29 @@ func main() {
 
 	// GET /health — readiness probe for Railway and load balancers: no auth, but it pings the
 	// DB so a wedged connection pool surfaces as a 503 instead of a false 200 (the 7/3 mode).
-	app.Get("/health", handlers.HealthCheck(sqlDB))
+	// Readiness: the DB must be reachable AND we must hold Supabase verifying keys. Zero keys
+	// means every authenticated request 401s — an outage that used to report itself as 200.
+	app.Get("/health", handlers.HealthCheck(sqlDB, middleware.JWKSKeyCount))
+
+	// Retired live-score WebSocket — a tombstone answering 410 Gone. Builds already on
+	// players' phones still dial it; a definitive 410 lets their reconnect loop reach its
+	// give-up cap once and settle on the 60s poll instead of storming. See handlers/sunset.go.
+	//
+	// MUST be registered BEFORE the /api/v1 group below. app.Group mounts its middleware on
+	// the "/api/v1" PREFIX, so it runs for every request under that path — including routes
+	// added to `app` afterwards. Registered after the group, this handler is shadowed by
+	// middleware.Auth and an old client (which sends its JWT as ?token=, never as an
+	// Authorization header) gets a 401 instead of the 410, and ws.sunset_hit never fires.
+	// Verified against the live develop deploy. The old WSAuth was registered in exactly that
+	// shadowed position — which is very likely why the backend logged zero ws.connected and
+	// zero ws.upgrade_missing throughout the incidents, while clients logged hundreds of
+	// disconnects. Fiber matches the stack in registration order, so declaring it here means
+	// this route wins and terminates before any group middleware is reached.
+	app.Get("/api/v1/ws/rounds/:roundId", handlers.WSSunset())
 
 	// All routes under /api/v1 require a valid Supabase JWT. RequestTimeout runs first so
 	// every handler's context carries a deadline — a hung DB query fails fast into a logged
-	// 5xx instead of a silent 502. The live-score WebSocket is registered on `app` (below),
-	// outside this group, so its long-lived connection is exempt from the deadline.
+	// 5xx instead of a silent 502.
 	// app.Group applies the middleware to every route registered on the returned group.
 	api := app.Group("/api/v1", middleware.RequestTimeout(cfg.RequestTimeout), middleware.Auth(cfg, db))
 
@@ -176,6 +200,10 @@ func main() {
 	api.Patch("/events/:id/members/:userId/role", handlers.UpdateMemberRole(eventService))
 
 	api.Get("/events/:id/rounds", handlers.GetEventRounds(eventService))
+	// Every completed round's scorecard in ONE response. The event detail screen used to fan
+	// out one /rounds/:id/scorecard request per round via useQueries — AND poll every one of
+	// them every 60s. Same N+1 that GET /users/:id/scorecards already removed from stats.
+	api.Get("/events/:id/scorecards", handlers.GetEventScorecards(scoreService))
 	api.Post("/events/:id/rounds", durableIdempotency, handlers.ScheduleEventRound(roundService))
 
 	// request-join is a non-idempotent create (RequestJoin returns ErrMemberAlreadyExists on a
@@ -200,8 +228,15 @@ func main() {
 	api.Post("/rounds/:roundId/groups/:groupId/guests", durableIdempotency, handlers.AddGuestToGroup(roundService))
 	api.Delete("/rounds/:roundId/groups/:groupId/members/:userId", handlers.RemoveGroupMember(roundService))
 
-	// Las Vegas team routes — organizer-only partner assignment for las_vegas rounds.
+	// Team routes — organizer-only partner assignment for las_vegas / best_ball rounds.
+	//
+	// The PUT .../groups/:groupId/teams bulk replace is what the mobile modals now call: it
+	// swaps a group's whole team set in ONE transaction. They used to DELETE each team then
+	// POST + PUT the new ones as separate requests, so a create that failed after the deletes
+	// landed left the group with no teams at all — real data loss on a flaky course network.
+	// The finer-grained routes below remain for single-team edits.
 	api.Get("/rounds/:roundId/teams", handlers.ListTeams(roundService))
+	api.Put("/rounds/:roundId/groups/:groupId/teams", replayLog, handlers.ReplaceGroupTeams(roundService))
 	api.Post("/rounds/:roundId/teams", durableIdempotency, handlers.CreateTeam(roundService))
 	api.Put("/rounds/:roundId/teams/:teamId/members", replayLog, handlers.AssignTeamMembers(roundService))
 	api.Delete("/rounds/:roundId/teams/:teamId", handlers.DeleteTeam(roundService))
@@ -211,13 +246,8 @@ func main() {
 	// (idempotent) save into a server-side phantom-save signal.
 	api.Get("/rounds/:roundId/scorecard", handlers.GetRoundScorecard(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/handicap", handlers.SetPlayerHandicap(scoreService))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService, hub))
-	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService, hub))
-
-	// Live-score WebSocket. Registered on `app` (not the `api` group) because it uses
-	// query-param auth — a browser can't set an Authorization header on a WS upgrade.
-	// middleware.WSAuth validates ?token= and rejects non-upgrade requests with 426.
-	app.Get("/api/v1/ws/rounds/:roundId", middleware.WSAuth(cfg), websocket.ServeRoundWS(hub))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
+	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
 
 	// Course routes — GET open to any authenticated user; mutations restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))
@@ -267,12 +297,33 @@ func main() {
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
+		// A panic in a goroutine takes the whole process down, and without a recover it does
+		// so with no Sentry event — the crash would be invisible except as a Railway restart.
+		defer func() {
+			if r := recover(); r != nil {
+				sentry.CurrentHub().Recover(r)
+				sentry.Flush(2 * time.Second)
+				slog.Error("Server goroutine panicked",
+					"event_type_label", "server.panic",
+					"panic", fmt.Sprint(r))
+				quit <- syscall.SIGTERM
+			}
+		}()
+
 		slog.Info("Server starting",
 			"event_type_label", "server.startup",
 			"port", cfg.Port,
 			"env", cfg.Env)
+
 		if err := app.Listen(":" + cfg.Port); err != nil {
-			log.Printf("Server listen error: %v", err)
+			// This used to log.Printf and return, leaving main parked on <-quit forever: the
+			// container reported RUNNING AND HEALTHY with no listener at all. Signal quit so
+			// the process actually exits and Railway restarts it.
+			slog.Error("Server failed to listen",
+				"event_type_label", "server.listen_failed",
+				"port", cfg.Port,
+				"error", err.Error())
+			quit <- syscall.SIGTERM
 		}
 	}()
 

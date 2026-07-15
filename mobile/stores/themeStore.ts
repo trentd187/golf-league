@@ -24,6 +24,7 @@ import * as Sentry from "@sentry/react-native";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { platformStorage } from "@/utils/platformStorage";
+import { createPersistStorage } from "@/utils/persistStorage";
 import { Theme, ThemeName, THEMES } from "@/themes";
 
 // ─── Sync boot read ───────────────────────────────────────────────────────────
@@ -64,17 +65,11 @@ interface ThemeState {
 }
 
 // ─── Storage adapter ──────────────────────────────────────────────────────────
-// createJSONStorage expects { getItem, setItem, removeItem } with async signatures.
-// The .catch() guards handle the rare case where storage is unavailable — we fall
-// back to the default theme gracefully.
-const storageAdapter = createJSONStorage(() => ({
-  getItem: (key: string): Promise<string | null> =>
-    platformStorage.getItemAsync(key).catch(() => null),
-  setItem: (key: string, value: string): Promise<void> =>
-    platformStorage.setItemAsync(key, value).catch(() => {}),
-  removeItem: (key: string): Promise<void> =>
-    platformStorage.deleteItemAsync(key).catch(() => {}),
-}));
+// createPersistStorage (utils/persistStorage.ts) makes every operation non-throwing AND
+// reported. The hand-rolled `.catch(() => {})` this replaces degraded gracefully but
+// SILENTLY: a persistently failing write meant the user's theme never saved, reverting on
+// every launch, with no signal anywhere.
+const storageAdapter = createJSONStorage(() => createPersistStorage(platformStorage, "theme"));
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 

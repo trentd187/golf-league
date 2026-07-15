@@ -10,11 +10,11 @@ Project-wide rules and conventions. Reference docs live in [`mobile/docs/`](mobi
 | Modal sheets, badges, date inputs, picker components | [`mobile/docs/components.md`](mobile/docs/components.md) |
 | `package.json`, expo install, dependency upgrade, OAuth/Supabase setup | [`mobile/docs/dependencies.md`](mobile/docs/dependencies.md) |
 | Keyboard handling, TextInput chaining, file uploads, KeyboardAvoidingView | [`mobile/docs/keyboard-and-platform.md`](mobile/docs/keyboard-and-platform.md) |
-| Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy | [`backend/docs/testing.md`](backend/docs/testing.md) |
-| Sentry init, per-request hub, slog→Sentry routing, background goroutines | [`backend/docs/observability.md`](backend/docs/observability.md) |
+| Backend handler/middleware tests, coverage ratchet, Tier 1/Tier 2 strategy, **the GORM `*gorm.DB`-not-`error` trap**, injecting DB faults | [`backend/docs/testing.md`](backend/docs/testing.md) |
+| Sentry init, per-request hub, slog→Sentry routing, background goroutines, **startup death (`observability.Fatal`), JWKS outage, why 4xx≠Issue** | [`backend/docs/observability.md`](backend/docs/observability.md) |
 | Mobile/web Sentry init, `Sentry.logger`, error boundary, user context, source maps | [`mobile/docs/observability.md`](mobile/docs/observability.md) |
 | Scorecard saves/creates, retry/backoff, `savePut`/`savePost`, Idempotency-Key dedupe, phantom-write observability | [`mobile/docs/network-saves.md`](mobile/docs/network-saves.md) |
-| Live score updates, WebSocket hub/route, heartbeat/reconnect, `ws.*` observability | [`backend/docs/websockets.md`](backend/docs/websockets.md) |
+| Live score updates, 60s polling, the poll gate, the hardened read path (`apiGetJson`), no-bare-fetch rule | [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md) |
 | Data model, schema, foreign keys | [`DATA_MODEL.md`](DATA_MODEL.md) + `backend/internal/models/models.go` |
 
 ## Keeping This File Updated
@@ -39,7 +39,7 @@ Edit the relevant existing section rather than appending. Remove outdated info �
 ## Project Overview
 
 **Golf Stuff In Here** — mobile-first golf league and tournament management app.
-- **Backend:** Go + Fiber v2 API server with WebSockets, deployed on Railway (Docker-based)
+- **Backend:** Go + Fiber v2 REST API, deployed on Railway (Docker-based)
 - **Mobile:** React Native + Expo **SDK 54** (TypeScript), distributed via App Store / Google Play
 - **Database:** PostgreSQL 16 with golang-migrate SQL migrations
 - **Auth:** Supabase Auth (Google OAuth + Email OTP; sign-in and sign-up share one screen — Supabase handles both via `signInWithOtp`)
@@ -114,7 +114,6 @@ backend/
 ├── internal/middleware/       # auth.go (JWT) and roles.go (RBAC)
 ├── internal/models/           # All GORM models in models.go
 ├── internal/services/         # Business logic; handlers delegate here (thin HTTP layer)
-├── internal/websocket/        # WebSocket hub
 └── migrations/                # SQL migration files
 ```
 
@@ -138,6 +137,26 @@ func HandlerName(svc *services.DomainService) fiber.Handler {
     }
 }
 ```
+
+### Backend error-handling rules (the traps the 7/14 audit found)
+
+These recurred because the compiler and `errcheck` are blind to all four. Full detail + how to
+test each: [`backend/docs/testing.md`](backend/docs/testing.md) and [`backend/docs/observability.md`](backend/docs/observability.md).
+
+- **GORM `Count`/`Find`/`Scan`/`Pluck`/`Delete`/`Updates` return `*gorm.DB`, not `error`.** A dropped
+  DB error compiles clean and passes lint. Always append `.Error` and handle it. **Only
+  `gorm.ErrRecordNotFound` may collapse to a "not found / denied" result** — everything else wraps
+  with `%w` and becomes a 500. Best-effort background work (e.g. a cleanup sweep) may skip the 500
+  but must `slog.Warn` with a stable label, never silently discard the `*gorm.DB`.
+- **A DB fault must surface as a 5xx.** `ErrorLogger` only escalates **5xx** to a Sentry Issue, so a
+  DB error laundered into a 2xx (zeroed data) or 4xx (a fake 403/409) is *invisible*. That single
+  mistake defeats the whole phantom-save observability program. Keep `error_detail` populated.
+- **Multi-step mutations run in one `s.DB.Transaction(...)`.** A mid-loop failure that half-writes is
+  corruption. The mobile client must never delete-then-recreate across separate requests — expose a
+  transactional bulk-replace endpoint instead (see `ReplaceGroupTeams`).
+- **A process may only die at startup via `observability.Fatal`** — never `log.Fatal`/`os.Exit`
+  directly (they bypass `slog`→Sentry and skip the flush, so the crash is invisible). The sole
+  exception is a failure of Sentry init itself.
 
 ### Adding a New Model
 
@@ -213,17 +232,37 @@ Primary brand: **green-700** (`#15803d`). Secondary: gray. Errors: red-600.
 
 **Theme tokens are required for all surfaces, text, and borders.** See [`mobile/docs/themes.md`](mobile/docs/themes.md) for the slot table and JIT constraint.
 
-### API Calls — TanStack Query
+### API Calls — TanStack Query + the hardened primitives
+
+**A bare `fetch()` is an ESLint error** in `app/`, `components/`, `hooks/`, `stores/`, **and
+`utils/`** — allowlisted only in `apiGet.ts`, `saveWithRetry.ts`, and `supabaseFetch.ts`, which
+*are* the hardening. It has no timeout, no retry, and no telemetry — a read stuck on a dead
+cellular socket hangs forever and shows up in Sentry as nothing at all.
+
+- Reads → `apiGetJson` · Writes → `savePut` / `savePost`
+- **Supabase auth + storage are hardened globally** via `global.fetch` on the client
+  (`utils/supabaseFetch.ts`). This matters because `getToken()` → `getSession()` refreshes over
+  the network and runs in front of *every* call.
+
+Details: [`mobile/docs/live-updates.md`](mobile/docs/live-updates.md).
 
 ```tsx
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { API_URL } from "@/constants/api";
+import { apiGetJson } from "@/utils/apiGet";
 
 const { data } = useQuery({
   queryKey: ["events"],
-  queryFn: () => fetch(`${API_URL}/api/v1/events`).then(r => r.json()),
+  queryFn: async () => apiGetJson<Event[]>({
+    url: `${API_URL}/api/v1/events`,
+    token: (await getToken()) ?? "",
+    label: "events",   // tags the endpoint in Sentry (read_endpoint)
+  }),
 });
 ```
+
+Live views (scorecard, round, event leaderboard) poll on `LIVE_POLL_MS` (60s), focused +
+foregrounded only. **There is no WebSocket** — it was removed; see the doc above.
 
 ### State Management
 
@@ -275,6 +314,16 @@ Even if the destination doesn't exist yet — Expo Router's "Unmatched Route" pa
 ### Extract-first rule (coverage protection)
 
 **Any non-trivial logic added to a screen component MUST be extracted to `utils/` first as a pure function with its own test.** Then the component calls the utility. This is the only way coverage stays stable when screen files (which are excluded from coverage) get modified. Example: auto-fill calculations in `utils/scorecard.ts` rather than inline in `[roundId].tsx`.
+
+**This is not bookkeeping — here is what it costs when ignored.** `buildLeaderboard` and
+`buildEventLeaderboard` lived inside the component bodies of `rounds/[id].tsx` and
+`events/[id].tsx` for months. Both files are coverage-excluded, so **the code that decides who
+wins had zero tests and was invisible to the ratchet**: it could be changed freely and nothing
+would notice. The same drift put a *second, subtly wrong* copy of `handicapStrokes` in the
+scorecard screen — missing the `effHandicap <= 0` guard, so a plus-handicap player silently got
+**negative** strokes. Both now live in `utils/leaderboard.ts` and `utils/handicap.ts`, tested.
+
+If you catch yourself writing `function` inside a component body, that's the signal.
 
 ---
 
@@ -332,7 +381,7 @@ Player-entered per round — **no automatic WHS calculation.**
 
 ### Las Vegas (`scoring_format = 'las_vegas'`)
 
-2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables (organizer assigns two teams of two per group via `RoundService` team CRUD: `GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`); `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
+2v2 team betting game. Players enter individual scores as normal (Advanced scorecard unchanged); each twosome's two scores combine into a two-digit number (low digit first, single scores capped at 9), and the gap between the two teams' numbers is the hole's point differential. Two per-round toggles on `rounds`: `vegas_birdie_flip` (default true — a birdie flips the opponents' number high-digit-first) and `vegas_scoring_basis` (`gross`/`net`). Partnerships reuse the **`teams`/`team_members`** tables. **The mobile modals save via `PUT /rounds/:id/groups/:groupId/teams`, which replaces a group's whole team set in ONE transaction** — they used to DELETE each team then POST + PUT the new ones as separate requests, so a create that failed after the deletes landed left the group with *no teams at all* (real data loss on a flaky course network). The finer-grained routes (`GET/POST /rounds/:id/teams`, `PUT .../teams/:teamId/members`, `DELETE .../teams/:teamId`) remain for single-team edits. `team_scores` stays unused — all Vegas math is **derived client-side** in [`mobile/utils/vegas.ts`](mobile/utils/vegas.ts) (pure + Jest-tested). The scorecard response carries per-player `team_id`/`team_name` + the toggles. Individual leaderboards are unchanged; a **"Matches" tab** on the round and event detail screens (shown only for Vegas) surfaces team-vs-team results. The Basic scorecard becomes an editable combined view for Vegas.
 
 ### Best Ball (`scoring_format = 'best_ball'`)
 

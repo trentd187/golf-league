@@ -4,14 +4,14 @@
 package middleware
 
 import (
+	"context"
 	"errors"
-	"log"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 	sentryfiber "github.com/getsentry/sentry-go/fiber"
-	gofiberws "github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 
@@ -20,6 +20,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/trentd187/golf-league/internal/config"
 	"github.com/trentd187/golf-league/internal/models"
+	"github.com/trentd187/golf-league/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -42,23 +43,116 @@ type Claims struct {
 // bearerPrefix is the standard HTTP Authorization header prefix for JWTs.
 const bearerPrefix = "Bearer "
 
-// newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying
-// key function (keyfunc handles caching + automatic key rotation). Without the
-// JWKS we cannot verify any token, so a failure here is fatal at startup rather
-// than a silent per-request failure later.
-func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
-	jwks, err := keyfunc.NewDefault([]string{cfg.SupabaseJWKSURL})
+// authDBError returns a 500 for a database failure inside the auth middleware, stashing the
+// cause in c.Locals("error_detail") the way the handlers' write<Domain>Error helpers do.
+//
+// The two 500s here used to be built inline with no detail, so ErrorLogger emitted an
+// http.error event with an EMPTY "error" field — a 500 on user provisioning (a user's very
+// first sign-in) reached Sentry with the root cause thrown away.
+func authDBError(c *fiber.Ctx, tag string, err error, msg string) error {
+	c.Locals("error_detail", tag+": "+err.Error())
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
+}
+
+// jwksHTTPTimeout bounds the JWKS fetch. The library's default is a full MINUTE, which would
+// stall startup (and every background refresh) far longer than is useful.
+const jwksHTTPTimeout = 10 * time.Second
+
+// jwksRefreshInterval is how often the key set is re-fetched in the background. Shorter than
+// the library's 1-hour default so a rotated Supabase key is picked up promptly.
+const jwksRefreshInterval = 15 * time.Minute
+
+// newJWKSKeyfunc fetches Supabase's JWKS at startup and returns the verifying key function
+// (keyfunc handles caching + automatic key rotation). Without the JWKS we cannot verify any
+// token, so a failure here is fatal at startup — and, as of this change, ACTUALLY is.
+//
+// The bug this fixes. keyfunc.NewDefault builds its storage with
+// jwkset.HTTPClientStorageOptions{NoErrorReturnFirstHTTPReq: true} (jwkset/http.go), and
+// jwkset/storage.go then does `return s, nil` when the first fetch fails. So NewDefault NEVER
+// returned an error for an unreachable JWKS — the log.Fatalf below was dead code, and the old
+// comment claiming "a failure here is fatal at startup" asserted the exact opposite of the
+// truth.
+//
+// What actually happened: the server booted with an EMPTY key set, every authenticated request
+// failed validateToken and got a 401, and /health (which only pinged the DB) kept answering
+// 200 — so Railway happily routed traffic into a service where nothing worked, indefinitely.
+// A silent, total auth outage that looked healthy.
+//
+// NoErrorReturnFirstHTTPReq: false makes the fatal real: fail fast, let Railway restart, and
+// never serve a broken key set. RefreshErrorHandler covers the other half — a JWKS that goes
+// away AFTER a good boot, which no startup check can catch.
+// LoadJWKS fetches the key set and returns the verifying key function. Exported (and
+// error-returning rather than fatal) so a test can assert the contract that actually matters:
+// an UNREACHABLE JWKS MUST RETURN AN ERROR. Under keyfunc.NewDefault it did not — that is the
+// whole bug.
+func LoadJWKS(ctx context.Context, jwksURL string) (jwt.Keyfunc, error) {
+	noErrorReturnFirstHTTPReq := false
+
+	jwks, err := keyfunc.NewDefaultOverrideCtx(ctx,
+		[]string{jwksURL},
+		keyfunc.Override{
+			HTTPTimeout:               jwksHTTPTimeout,
+			NoErrorReturnFirstHTTPReq: &noErrorReturnFirstHTTPReq,
+			RefreshInterval:           jwksRefreshInterval,
+			RefreshErrorHandlerFunc: func(u string) func(ctx context.Context, err error) {
+				return func(ctx context.Context, err error) {
+					// A background refresh failed. The cached keys still work, so this is not
+					// fatal — but if it keeps failing through a key rotation, every token
+					// starts failing to verify. Give it a stable label so it is alertable.
+					slog.ErrorContext(ctx, "failed to refresh Supabase JWKS",
+						"event_type_label", "auth.jwks_refresh_failed",
+						"jwks_url", u,
+						"error", err.Error(),
+					)
+				}
+			},
+		},
+	)
 	if err != nil {
-		log.Fatalf("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set? %v", err)
+		return nil, err
 	}
-	return jwks.Keyfunc
+
+	jwksStore = jwks
+	return jwks.Keyfunc, nil
+}
+
+// newJWKSKeyfunc loads the key set at startup, or dies trying. Called once, from Auth.
+//
+// Dies via observability.Fatal, NOT log.Fatalf. That distinction is the whole point: making
+// the JWKS failure fatal (above) is only useful if the resulting crash is VISIBLE. log.Fatalf
+// writes through the stdlib logger, which never reaches slog and therefore never reaches
+// Sentry, and its os.Exit skips main's `defer sentryShutdown()` — so the fix for the silent
+// auth outage would itself have crashlooped Railway in silence.
+func newJWKSKeyfunc(cfg *config.Config) jwt.Keyfunc {
+	keyfn, err := LoadJWKS(context.Background(), cfg.SupabaseJWKSURL)
+	if err != nil {
+		observability.Fatal("Failed to load Supabase JWKS — is SUPABASE_JWKS_URL set?", err)
+	}
+	return keyfn
+}
+
+// jwksStore holds the live key set so /health can report whether we actually have keys.
+// A server with zero keys 401s every request; without this, that outage is invisible to
+// any readiness check.
+var jwksStore keyfunc.Keyfunc
+
+// JWKSKeyCount returns how many JWKs are currently cached, and whether the key set has been
+// initialised at all. handlers.HealthCheck uses it: zero keys means every authenticated
+// request will 401, which must not be reported as healthy.
+func JWKSKeyCount(ctx context.Context) (count int, ok bool) {
+	if jwksStore == nil {
+		return 0, false
+	}
+	jwkSet, err := jwksStore.Storage().KeyReadAll(ctx)
+	if err != nil {
+		return 0, false
+	}
+	return len(jwkSet), true
 }
 
 // validateToken parses and cryptographically verifies a Supabase JWT, returning its
-// claims. Shared by the header-based Auth middleware and the query-param WSAuth path
-// (browsers cannot set an Authorization header on a WebSocket upgrade, so the token
-// rides in ?token=). Any failure — bad signature/kid, expiry, malformed claims, or a
-// missing subject — collapses to errInvalidToken (all are 401s to the caller).
+// claims. Any failure — bad signature/kid, expiry, malformed claims, or a missing
+// subject — collapses to errInvalidToken (all are 401s to the caller).
 func validateToken(tokenStr string, keyfn jwt.Keyfunc) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, keyfn)
 	if err != nil || !token.Valid {
@@ -123,14 +217,20 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 			avatarURL = custom
 		}
 
+		// WithContext is not optional here: this middleware runs on EVERY authenticated
+		// request, and without it these queries ignore RequestTimeout — so a hung DB parks the
+		// goroutine indefinitely, which is the exact failure the timeout middleware exists to
+		// prevent. Every other DB call in the codebase already passes the context.
+		ctx := c.UserContext()
+
 		var user models.User
-		result := db.Where("auth_id = ?", authID).First(&user)
+		result := db.WithContext(ctx).Where("auth_id = ?", authID).First(&user)
 
 		if result.Error != nil {
-			if result.Error != gorm.ErrRecordNotFound {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "database error",
-				})
+			// errors.Is, not !=: a wrapped ErrRecordNotFound would otherwise be treated as a
+			// hard DB failure and 500 on every first-time sign-in.
+			if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return authDBError(c, "auth.lookup_user", result.Error, "database error")
 			}
 
 			// Truly new user — create the record. Role defaults to "user".
@@ -155,10 +255,8 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 					AvatarURL:   avatarURLPtr,
 					Role:        models.UserRoleUser,
 				}
-				if err := db.Create(&user).Error; err != nil {
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-						"error": "failed to create user record",
-					})
+				if err := db.WithContext(ctx).Create(&user).Error; err != nil {
+					return authDBError(c, "auth.create_user", err, "failed to create user record")
 				}
 			}
 		} else {
@@ -177,7 +275,18 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 				user.AvatarURL = &avatarURL
 			}
 			if len(updates) > 0 {
-				db.Model(&user).Updates(updates)
+				// The error used to be discarded. This is the write that keeps the display
+				// name, email, and avatar in sync — if it fails it fails on every request,
+				// forever, with no log and no Sentry event, and the user's name silently
+				// never persists. It is not worth 500ing the whole request over (the caller
+				// is authenticated and their data is merely stale), but it must be SEEN.
+				if err := db.WithContext(ctx).Model(&user).Updates(updates).Error; err != nil {
+					slog.WarnContext(ctx, "failed to sync user fields from JWT",
+						"event_type_label", "auth.user_sync_failed",
+						"user_id", user.ID.String(),
+						"error", err.Error(),
+					)
+				}
 			}
 		}
 
@@ -196,60 +305,4 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 
 		return c.Next()
 	}
-}
-
-// WSAuth returns a pre-upgrade middleware for the WebSocket route. WebSockets can't
-// carry an Authorization header from a browser, so the JWT rides in the ?token= query
-// param instead. This validates the token (no DB lookup — a live-score subscription is
-// read-only, so any authenticated user may watch) and stores the auth subject in Locals
-// for the connection handler. The JWKS keyfunc is fetched once at startup.
-func WSAuth(cfg *config.Config) fiber.Handler {
-	return MakeWSAuthHandler(newJWKSKeyfunc(cfg))
-}
-
-// MakeWSAuthHandler is the testable core of WSAuth. Exported so tests can supply a
-// keyfunc (or nil for the pre-parse paths that reject before JWT parsing).
-func MakeWSAuthHandler(keyfn jwt.Keyfunc) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Reject anything that isn't an actual WS upgrade so this route can't be hit
-		// as a plain GET (which would hang waiting for an upgrade that never comes).
-		// Log it: on 7/7 clients logged a WS storm while the backend logged NO ws.connected
-		// or ws.auth_failed — the sockets never became upgrades. If a proxy/carrier strips
-		// the Upgrade headers, every attempt lands here and 426s; this makes that visible
-		// (ws.upgrade_missing) instead of silent. Info, not Warn — bots/health checks also
-		// hit non-upgrade, so it belongs in searchable Logs, not the Issues stream.
-		if !gofiberws.IsWebSocketUpgrade(c) {
-			slog.InfoContext(c.UserContext(), "WebSocket route hit without an Upgrade — not a websocket handshake",
-				"event_type_label", "ws.upgrade_missing",
-				"path", c.Path())
-			return c.SendStatus(fiber.StatusUpgradeRequired) // 426
-		}
-
-		tokenStr := c.Query("token")
-		if tokenStr == "" {
-			logWSAuthFailed(c, "missing token")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing token"})
-		}
-
-		claims, err := validateToken(tokenStr, keyfn)
-		if err != nil {
-			logWSAuthFailed(c, "invalid token")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid token"})
-		}
-
-		// Subject is the Supabase user UUID — sufficient identity for a read-only
-		// subscription and for the connection-lifecycle logs.
-		c.Locals("userID", claims.Subject)
-		return c.Next()
-	}
-}
-
-// logWSAuthFailed records a rejected WebSocket upgrade. It's the first row of the WS
-// observability matrix — a spike here means clients can't subscribe (expired tokens,
-// a bad WS_URL, or an attack).
-func logWSAuthFailed(c *fiber.Ctx, reason string) {
-	slog.WarnContext(c.UserContext(), "WebSocket auth rejected",
-		"event_type_label", "ws.auth_failed",
-		"reason", reason,
-		"path", c.Path())
 }

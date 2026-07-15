@@ -24,7 +24,7 @@ import { useMe } from "@/hooks/useMe";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import ModalHeader from "@/components/ModalHeader";
@@ -69,11 +69,11 @@ export default function CourseDetailScreen() {
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchCourse = useCallback(async (): Promise<CourseDetail> => {
     const token = await getToken();
-    const res = await apiFetch(`${API_URL}/api/v1/courses/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    return apiGetJson<CourseDetail>({
+      url: `${API_URL}/api/v1/courses/${id}`,
+      token: token ?? "",
+      label: "course",
     });
-    if (!res.ok) throw new Error("Failed to load course");
-    return res.json();
   }, [id, getToken]);
 
   const {
@@ -296,7 +296,7 @@ export default function CourseDetailScreen() {
           {/* has_holes warning */}
           {!course.has_holes && (
             <View className="mt-3 flex-row items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3">
-              <Ionicons name="warning-outline" size={16} color="#d97706" />
+              <Ionicons name="warning-outline" size={16} color={t.colors.warning} />
               <Text className="text-xs text-amber-700 flex-1">
                 No hole data. Add tees and enter hole data before scheduling rounds.
               </Text>
@@ -368,9 +368,9 @@ export default function CourseDetailScreen() {
                       </TouchableOpacity>
                       <TouchableOpacity hitSlop={8} onPress={() => deleteTee(tee)} disabled={isDeleting}>
                         {isDeleting ? (
-                          <ActivityIndicator size="small" color="#dc2626" />
+                          <ActivityIndicator size="small" color={t.colors.danger} />
                         ) : (
-                          <Ionicons name="trash-outline" size={18} color="#dc2626" />
+                          <Ionicons name="trash-outline" size={18} color={t.colors.danger} />
                         )}
                       </TouchableOpacity>
                     </View>
@@ -509,7 +509,7 @@ export default function CourseDetailScreen() {
               disabled={deletingCourse || editCourseMutation.isPending}
             >
               {deletingCourse ? (
-                <ActivityIndicator color="#dc2626" />
+                <ActivityIndicator color={t.colors.danger} />
               ) : (
                 <Text className="text-red-600 font-semibold text-base">Delete Course</Text>
               )}

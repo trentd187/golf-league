@@ -7,6 +7,4 @@ package handlers
 const (
 	// jsonKeyError is the JSON response key used in every error body.
 	jsonKeyError = "error"
-	// msgUnauthorized is the message returned when a caller cannot be authenticated.
-	msgUnauthorized = "unauthorized"
 )

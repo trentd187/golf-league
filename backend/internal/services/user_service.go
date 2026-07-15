@@ -246,7 +246,9 @@ func (s *UserService) SearchUsers(ctx context.Context, callerID uuid.UUID, q str
 		like := "%" + q + "%"
 		query = query.Where("display_name ILIKE ? OR email ILIKE ?", like, like)
 	}
-	query.Find(&users)
+	if err := query.Find(&users).Error; err != nil {
+		return nil, fmt.Errorf("user.search: %w", err)
+	}
 
 	if len(users) == 0 {
 		return []UserSearchResult{}, nil
@@ -257,9 +259,11 @@ func (s *UserService) SearchUsers(ctx context.Context, callerID uuid.UUID, q str
 		ids = append(ids, u.ID)
 	}
 	var followedIDs []uuid.UUID
-	s.DB.WithContext(ctx).Model(&models.Follow{}).
+	if err := s.DB.WithContext(ctx).Model(&models.Follow{}).
 		Where("follower_id = ? AND followee_id IN ?", callerID, ids).
-		Pluck("followee_id", &followedIDs)
+		Pluck("followee_id", &followedIDs).Error; err != nil {
+		return nil, fmt.Errorf("user.search_follows: %w", err)
+	}
 
 	followSet := make(map[uuid.UUID]bool, len(followedIDs))
 	for _, fid := range followedIDs {
@@ -291,21 +295,27 @@ func (s *UserService) GetUserProfile(ctx context.Context, callerID, targetID uui
 	}
 
 	var roundsPlayed int64
-	s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+	if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
 		Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
 		Joins("JOIN rounds ON rounds.id = round_players.round_id").
 		Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
-		Count(&roundsPlayed)
+		Count(&roundsPlayed).Error; err != nil {
+		return nil, fmt.Errorf("user.profile_rounds: %w", err)
+	}
 
 	var eventsPlayed int64
-	s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
+	if err := s.DB.WithContext(ctx).Model(&models.EventPlayer{}).
 		Where("user_id = ?", targetID).
-		Count(&eventsPlayed)
+		Count(&eventsPlayed).Error; err != nil {
+		return nil, fmt.Errorf("user.profile_events: %w", err)
+	}
 
 	var followCount int64
-	s.DB.WithContext(ctx).Model(&models.Follow{}).
+	if err := s.DB.WithContext(ctx).Model(&models.Follow{}).
 		Where("follower_id = ? AND followee_id = ?", callerID, targetID).
-		Count(&followCount)
+		Count(&followCount).Error; err != nil {
+		return nil, fmt.Errorf("user.profile_follow: %w", err)
+	}
 
 	return &UserProfileData{
 		ID:           target.ID.String(),
@@ -326,34 +336,52 @@ func (s *UserService) FollowUser(ctx context.Context, callerID, targetID uuid.UU
 	}
 	follow := models.Follow{FollowerID: callerID, FolloweeID: targetID}
 	if err := s.DB.WithContext(ctx).Create(&follow).Error; err != nil {
-		return ErrAlreadyFollowing
+		// ONLY a duplicate key means "already following". This used to map every error to
+		// ErrAlreadyFollowing → 409, so a pool exhaustion or a context deadline on this
+		// endpoint was reported to the client as a benign conflict — a 4xx, which ErrorLogger
+		// skips, so a database outage here was completely invisible.
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return ErrAlreadyFollowing
+		}
+		return fmt.Errorf("user.follow: %w", err)
 	}
 	return nil
 }
 
-// UnfollowUser removes the follow relationship from caller to target. Idempotent.
+// UnfollowUser removes the follow relationship from caller to target. Idempotent (deleting a
+// row that isn't there is a no-op success), but a genuine DB failure must surface: the method
+// used to discard the *gorm.DB entirely and `return nil`, which made it structurally
+// incapable of failing — the client saw 204 "unfollowed" while the row was still there.
 func (s *UserService) UnfollowUser(ctx context.Context, callerID, targetID uuid.UUID) error {
-	s.DB.WithContext(ctx).Delete(&models.Follow{}, "follower_id = ? AND followee_id = ?", callerID, targetID)
+	if err := s.DB.WithContext(ctx).
+		Delete(&models.Follow{}, "follower_id = ? AND followee_id = ?", callerID, targetID).
+		Error; err != nil {
+		return fmt.Errorf("user.unfollow: %w", err)
+	}
 	return nil
 }
 
 // GetFollowing returns the list of users the caller follows, with completed-round counts.
 func (s *UserService) GetFollowing(ctx context.Context, callerID uuid.UUID) ([]FollowingUserData, error) {
 	var follows []models.Follow
-	s.DB.WithContext(ctx).Preload("Followee").
+	if err := s.DB.WithContext(ctx).Preload("Followee").
 		Where("follower_id = ?", callerID).
 		Order("created_at DESC").
-		Find(&follows)
+		Find(&follows).Error; err != nil {
+		return nil, fmt.Errorf("user.following: %w", err)
+	}
 
 	results := make([]FollowingUserData, 0, len(follows))
 	for _, f := range follows {
 		u := f.Followee
 		var roundsPlayed int64
-		s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+		if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
 			Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
 			Joins("JOIN rounds ON rounds.id = round_players.round_id").
 			Where("ep.user_id = ? AND rounds.status = ?", u.ID, models.RoundStatusCompleted).
-			Count(&roundsPlayed)
+			Count(&roundsPlayed).Error; err != nil {
+			return nil, fmt.Errorf("user.following_rounds: %w", err)
+		}
 
 		results = append(results, FollowingUserData{
 			ID:           u.ID.String(),
@@ -385,8 +413,13 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 	if filter == "last_20" {
 		rpQuery = rpQuery.Limit(20)
 	}
+	// Every query below is checked. They used to drop their errors, so a total DB failure
+	// returned 200 OK with a zeroed UserStatsData — the user saw an empty stats screen and
+	// Sentry saw nothing at all. An empty result and a broken database must not look alike.
 	var rpRows []rpRow
-	rpQuery.Scan(&rpRows)
+	if err := rpQuery.Scan(&rpRows).Error; err != nil {
+		return nil, fmt.Errorf("user.stats_round_players: %w", err)
+	}
 
 	empty := &UserStatsData{Filter: filter}
 	if len(rpRows) == 0 {
@@ -406,12 +439,14 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 		Par        int
 	}
 	var parRows []parRow
-	s.DB.WithContext(ctx).Raw(`
+	if err := s.DB.WithContext(ctx).Raw(`
 		SELECT r.id AS round_id, h.hole_number, h.par
 		FROM rounds r
 		JOIN holes h ON h.tee_id = r.default_tee_id
 		WHERE r.id IN ?
-	`, roundIDs).Scan(&parRows)
+	`, roundIDs).Scan(&parRows).Error; err != nil {
+		return nil, fmt.Errorf("user.stats_pars: %w", err)
+	}
 
 	parMap := make(map[uuid.UUID]map[int]int)
 	for _, p := range parRows {
@@ -432,10 +467,12 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 		GrossScore    int
 	}
 	var scoreRows []scoreRow
-	s.DB.WithContext(ctx).Model(&models.Score{}).
+	if err := s.DB.WithContext(ctx).Model(&models.Score{}).
 		Select("round_player_id, hole_number, gross_score").
 		Where("round_player_id IN ?", rpIDs).
-		Scan(&scoreRows)
+		Scan(&scoreRows).Error; err != nil {
+		return nil, fmt.Errorf("user.stats_scores: %w", err)
+	}
 
 	roundTotals := make(map[uuid.UUID]int)
 	var eagles, birdies, pars, bogeys, doublePlus int
@@ -490,10 +527,12 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 		Putts         *int
 	}
 	var holeStatRows []holeStatRow
-	s.DB.WithContext(ctx).Model(&models.HoleStat{}).
+	if err := s.DB.WithContext(ctx).Model(&models.HoleStat{}).
 		Select("round_player_id, fir, gir, putts").
 		Where("round_player_id IN ?", rpIDs).
-		Scan(&holeStatRows)
+		Scan(&holeStatRows).Error; err != nil {
+		return nil, fmt.Errorf("user.stats_hole_stats: %w", err)
+	}
 
 	var firApplicable, firHit int
 	var girApplicable, girHit int
@@ -544,7 +583,7 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 		SlopeRating   *int
 	}
 	var hcRows []hcRound
-	s.DB.WithContext(ctx).Raw(`
+	if err := s.DB.WithContext(ctx).Raw(`
 		SELECT rp.id AS round_player_id, t.course_rating, t.slope_rating
 		FROM round_players rp
 		JOIN event_players ep ON ep.id = rp.event_player_id
@@ -553,7 +592,9 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 		WHERE ep.user_id = ? AND r.status = ?
 		ORDER BY rp.created_at DESC
 		LIMIT 20
-	`, targetID, models.RoundStatusCompleted).Scan(&hcRows)
+	`, targetID, models.RoundStatusCompleted).Scan(&hcRows).Error; err != nil {
+		return nil, fmt.Errorf("user.stats_handicap_rounds: %w", err)
+	}
 
 	hcRPIDs := make([]uuid.UUID, 0, len(hcRows))
 	hcTeeByRP := make(map[uuid.UUID]struct {
@@ -573,10 +614,12 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 	var hcDiffs []float64
 	if len(hcRPIDs) > 0 {
 		var hcScores []scoreRow
-		s.DB.WithContext(ctx).Model(&models.Score{}).
+		if err := s.DB.WithContext(ctx).Model(&models.Score{}).
 			Select("round_player_id, hole_number, gross_score").
 			Where("round_player_id IN ?", hcRPIDs).
-			Scan(&hcScores)
+			Scan(&hcScores).Error; err != nil {
+			return nil, fmt.Errorf("user.stats_handicap_scores: %w", err)
+		}
 
 		hcTotals := make(map[uuid.UUID]int)
 		for _, sc := range hcScores {
@@ -614,14 +657,16 @@ func (s *UserService) GetUserStats(ctx context.Context, targetID uuid.UUID, filt
 // GetUserRounds returns the last 20 completed rounds the target user participated in.
 func (s *UserService) GetUserRounds(ctx context.Context, targetID uuid.UUID) ([]UserRoundRef, error) {
 	var results []UserRoundRef
-	s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+	if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
 		Select("rounds.id, rounds.scheduled_date").
 		Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
 		Joins("JOIN rounds ON rounds.id = round_players.round_id").
 		Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
 		Order("rounds.scheduled_date DESC").
 		Limit(20).
-		Scan(&results)
+		Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("user.rounds: %w", err)
+	}
 
 	if results == nil {
 		results = []UserRoundRef{}

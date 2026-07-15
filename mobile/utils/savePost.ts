@@ -18,6 +18,7 @@
 // screens stay coverage-excluded (the extract-first rule). See mobile/docs/network-saves.md.
 
 import { runSaveWithRetry, type RetryProfile } from "@/utils/saveWithRetry";
+import { apiGet, RECONCILE_GET } from "@/utils/apiGet";
 import { type NetInfoStateLike } from "@/utils/connectionSnapshot";
 import {
   reportCreateFailure,
@@ -114,10 +115,26 @@ export async function savePost<T = unknown>(opts: SavePostOptions<T>): Promise<T
     // Deterministic create-side recovery: on transport exhaustion, GET /idempotency/:key
     // and replay the committed create body. A 404 (not committed / expired / foreign) or a
     // parse failure returns null so the caller's normal error path still runs.
+    //
+    // This MUST go through apiGet, not a bare fetch. It runs only after every attempt has
+    // already died on the transport — i.e. on exactly the degraded cellular link that just
+    // exhausted the create's retries — and runSaveWithRetry AWAITS it. A bare fetch has no
+    // timeout, so on a dead okhttp keep-alive socket this never settled: the create promise
+    // hung forever, opts.report() was never reached, and the user watched a spinner with
+    // nothing in Sentry. (The surrounding catch swallows a THROW; a hang is not a throw.)
+    // Same bug, same fix as the scorecard's read-back in ff78640 — the create path was missed.
     recoverByKey: opts.recoverUrl
       ? async (key) => {
-          const res = await (opts.fetchImpl ?? fetch)(opts.recoverUrl!(key), {
-            headers: { Authorization: `Bearer ${opts.token}` },
+          const res = await apiGet({
+            url: opts.recoverUrl!(key),
+            token: opts.token,
+            profile: RECONCILE_GET,
+            label: "idempotency_recover",
+            fetchImpl: opts.fetchImpl,
+            netInfoFetch: opts.netInfoFetch,
+            sleep: opts.sleep,
+            rng: opts.rng,
+            now: opts.now,
           });
           if (!res.ok) return null;
           try {

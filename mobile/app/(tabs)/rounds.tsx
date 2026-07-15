@@ -28,12 +28,10 @@ import {
   RefreshControl,
 } from "react-native";
 
-import { useAuth } from "@/hooks/useAuth";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMyRounds, MY_ROUNDS_KEY } from "@/hooks/useMyRounds";
+import { useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
 import { useTheme } from "@/hooks/useTheme";
 import { RoundStatusChip } from "@/components/badges";
 import { apiToDisplay } from "@/components/DateInput";
@@ -161,7 +159,6 @@ function SectionLabel({ label }: { label: string }) {
 export default function RoundsScreen() {
   const t = useTheme();
   const router = useRouter();
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   // Filter / sort selection is persisted across sessions in the shared list-prefs
@@ -177,17 +174,9 @@ export default function RoundsScreen() {
     isLoading,
     isError,
     refetch,
-  } = useQuery<MyRound[]>({
-    queryKey: ["my-rounds"],
-    queryFn: async () => {
-      const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
-    },
-  });
+    // Shares ONE cache key with the Stats tab via hooks/useMyRounds.ts. They used to use
+    // different keys for the same endpoint, so an invalidation here never reached Stats.
+  } = useMyRounds<MyRound>();
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -201,7 +190,7 @@ export default function RoundsScreen() {
   // changes made on other screens without refetching on every render.
   useFocusEffect(
     useCallback(() => {
-      if (queryClient.getQueryState(["my-rounds"])?.isInvalidated) {
+      if (queryClient.getQueryState(MY_ROUNDS_KEY)?.isInvalidated) {
         refetch();
       }
     }, [queryClient, refetch])
@@ -265,7 +254,7 @@ export default function RoundsScreen() {
           </View>
         ) : isError || !rounds ? (
           <View className="flex-1 items-center justify-center gap-3 px-8">
-            <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+            <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
             <Text className={`font-semibold text-center ${t.textPrimary}`}>
               Failed to load rounds
             </Text>

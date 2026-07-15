@@ -30,11 +30,13 @@ import {
   RefreshControl,
 } from "react-native";
 import { useAuth } from "@/hooks/useAuth";
+import { useMyRounds } from "@/hooks/useMyRounds";
+import { useMe } from "@/hooks/useMe";
 import { useQuery } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { findMyPlayer, buildRoundStats, buildMyStats, buildGirByBand, buildScoreHistory, scoreTextColor } from "@/utils/stats";
 import ScoreHistoryChart from "@/components/ScoreHistoryChart";
 import ModalHeader from "@/components/ModalHeader";
@@ -508,47 +510,23 @@ export default function StatsScreen() {
   const [selectedRound, setSelectedRound] = useState<RoundSummary | null>(null);
   const [openModal, setOpenModal] = useState<"stats" | "scorecard" | null>(null);
 
-  // GET /api/v1/me is shared with the Profile tab — React Query serves it from cache.
-  // We need the DB UUID (me.id) to call the stats endpoint for handicap data.
-  const { data: me } = useQuery<{ id: string }>({
-    queryKey: ["me"],
-    queryFn: async () => {
-      const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch me: ${res.status}`);
-      return res.json();
-    },
-  });
+  // We need the DB UUID (me.id) to call the scorecards endpoint. useMe() (hooks/useMe.ts) owns
+  // the ["me"] key — this screen used to hand-roll the query, which four other screens already
+  // had a hook for.
+  const { data: me } = useMe();
 
   // Handicap index and anti-handicap are hidden pending GHIN integration review.
-  // Re-enable by restoring the useQuery call and <HandicapSection /> render below.
-  // const { data: hcStats, isLoading: hcLoading } = useQuery<UserHandicapStats>({
-  //   queryKey: ["userStats", me?.id],
-  //   queryFn: async () => {
-  //     const token = await getToken();
-  //     const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/stats`, {
-  //       headers: { Authorization: `Bearer ${token}` },
-  //     });
-  //     if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
-  //     return res.json();
-  //   },
-  //   enabled: !!me?.id,
-  // });
+  // Re-enable by restoring a ["userStats", me?.id] query against
+  // GET /api/v1/users/:id/stats and the <HandicapSection /> render below.
 
-  // GET /api/v1/rounds is shared with the Rounds tab — React Query serves it from cache.
-  const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } = useQuery<RoundSummary[]>({
-    queryKey: ["rounds"],
-    queryFn: async () => {
-      const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
-    },
-  });
+  // GET /api/v1/rounds, shared with the Rounds tab through ONE cache key (hooks/useMyRounds.ts).
+  //
+  // This screen used to hand-roll the same query under the key ["rounds"] while the Rounds tab
+  // used ["my-rounds"] — two cache entries, two requests for identical data, and a genuinely
+  // stale Stats tab, because rounds/create.tsx invalidates only ["my-rounds"]. The old comment
+  // here claimed React Query served it from cache; it never did.
+  const { data: allRounds, isLoading: roundsLoading, isError: roundsError, refetch } =
+    useMyRounds<RoundSummary>();
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -596,11 +574,11 @@ export default function StatsScreen() {
     queryKey: ["userScorecards", me?.id, last],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/${me!.id}/scorecards?last=${last}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<Scorecard[]>({
+        url: `${API_URL}/api/v1/users/${me!.id}/scorecards?last=${last}`,
+        token: token ?? "",
+        label: "user_scorecards",
       });
-      if (!res.ok) throw new Error(`Failed to fetch scorecards: ${res.status}`);
-      return res.json();
     },
     enabled: !!me?.id && completedRounds.length > 0,
   });
@@ -648,7 +626,7 @@ export default function StatsScreen() {
   if (roundsError) {
     return (
       <View className={`flex-1 items-center justify-center gap-3 ${t.screen}`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`font-semibold ${t.textPrimary}`}>Failed to load stats</Text>
       </View>
     );

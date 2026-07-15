@@ -33,11 +33,11 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "@/hooks/useAuth";
 import { useUser } from "@/hooks/useUser";
-import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Scorecard } from "@/types/scorecard";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { API_URL, LIVE_POLL_MS } from "@/constants/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 
@@ -61,6 +61,7 @@ import { useRoundForm } from "@/hooks/useRoundForm";
 import { buildRoundCoursePayload } from "@/utils/roundPayload";
 import UserAvatar from "@/components/UserAvatar";
 import { formatLabel, formatToPar } from "@/utils/scoringFormats";
+import { buildEventLeaderboard } from "@/utils/leaderboard";
 import { buildStats } from "@/utils/stats";
 import { buildEventTally } from "@/utils/vegas";
 import { buildBestBallEventTally } from "@/utils/bestBall";
@@ -172,13 +173,19 @@ export default function EventDetailScreen() {
     queryKey: ["event", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<EventDetail>({
+        url: `${API_URL}/api/v1/events/${id}`,
+        token: token ?? "",
+        label: "event",
       });
-      if (!res.ok) throw new Error(`Failed to fetch event: ${res.status}`);
-      return res.json();
     },
     enabled: !!id, // Expo Router may render before params are populated
+    // Poll while the screen is focused and the app is foregrounded, so an event left open
+    // reflects new rounds/members without a manual pull-to-refresh. Replaces nothing —
+    // this screen never had live updates — but the socket's removal makes polling the one
+    // mechanism, so it should be applied consistently. See mobile/docs/live-updates.md.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const {
@@ -188,30 +195,32 @@ export default function EventDetailScreen() {
     queryKey: ["event", id, "rounds"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/rounds`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<RoundSummary[]>({
+        url: `${API_URL}/api/v1/events/${id}/rounds`,
+        token: token ?? "",
+        label: "event_rounds",
       });
-      if (!res.ok) throw new Error(`Failed to fetch rounds: ${res.status}`);
-      return res.json();
     },
     enabled: !!id,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   const { data: allUsers } = useQuery<UserSummary[]>({
     queryKey: ["users"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<UserSummary[]>({
+        url: `${API_URL}/api/v1/users`,
+        token: token ?? "",
+        label: "users",
       });
-      if (!res.ok) throw new Error("Failed to fetch users");
-      return res.json();
     },
     enabled: addMemberModalVisible, // only fetch when the Add Member modal is open
   });
 
   // completedRoundIds: IDs of rounds to aggregate for leaderboard/stats.
-  // Empty array while rounds are still loading — useQueries handles the empty case gracefully.
+  // Empty array while rounds are still loading; the batched scorecards query stays disabled.
   const completedRoundIds = (rounds ?? [])
     .filter((r) => r.status === "completed")
     .map((r) => r.id);
@@ -221,30 +230,45 @@ export default function EventDetailScreen() {
   // hasBestBallRound gates the event-level Teams tab (any Best Ball round in the event).
   const hasBestBallRound = (rounds ?? []).some((r) => r.scoring_format === "best_ball");
 
-  // scorecardQueries: one query per completed round.
-  // Lazy — only enabled when the user opens the Leaderboard or Stats tab to avoid
-  // fetching N scorecard payloads while just browsing Members or Rounds.
-  const scorecardQueries = useQueries({
-    queries: completedRoundIds.map((roundId) => ({
-      queryKey: ["scorecard", roundId],
-      queryFn: async () => {
-        const token = await getToken();
-        const res = await apiFetch(`${API_URL}/api/v1/rounds/${roundId}/scorecard`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-        return res.json() as Promise<Scorecard>;
-      },
-      enabled: !!id && (activeTab === "leaderboard" || activeTab === "stats" || activeTab === "matches" || activeTab === "teams"),
-    })),
+  // Every completed round's scorecard in ONE request.
+  //
+  // This was a useQueries() fan-out — one /rounds/:id/scorecard request per completed round —
+  // and it polled EVERY one of them on the 60s live interval. A 20-round league meant 20
+  // concurrent requests on tab open and 20 more every single minute, over the same cellular
+  // links the whole save path was hardened for. It is the identical N+1 that
+  // GET /users/:id/scorecards already removed from the Stats screen; the event screen just
+  // never got the same treatment. GET /events/:id/scorecards now returns them all at once.
+  //
+  // Still lazy: only fetched once the user opens a tab that actually needs scorecards, so
+  // browsing Members or Rounds costs nothing.
+  const needsScorecards =
+    activeTab === "leaderboard" ||
+    activeTab === "stats" ||
+    activeTab === "matches" ||
+    activeTab === "teams";
+
+  const {
+    data: scorecardsData,
+    isLoading: scorecardsLoading,
+    isError: scorecardsError,
+  } = useQuery<Scorecard[]>({
+    queryKey: ["event", id, "scorecards"],
+    queryFn: async () => {
+      const token = await getToken();
+      return apiGetJson<Scorecard[]>({
+        url: `${API_URL}/api/v1/events/${id}/scorecards`,
+        token: token ?? "",
+        label: "event_scorecards",
+      });
+    },
+    enabled: !!id && needsScorecards && completedRoundIds.length > 0,
+    // The leaderboard is the one place a spectator watches scores land, so it polls on the
+    // same 60s cadence as the scorecard — but now that is ONE request, not N.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
-  const scorecardsLoading = scorecardQueries.some((q) => q.isLoading);
-  const scorecardsError   = scorecardQueries.some((q) => q.isError);
-  // Only include scorecards that have fully loaded — partial results would skew the aggregate.
-  const scorecards        = scorecardQueries
-    .map((q) => q.data)
-    .filter((sc): sc is Scorecard => sc !== undefined);
+  const scorecards = scorecardsData ?? [];
 
   // Join requests — only fetched when the organizer opens the Requests tab.
   const {
@@ -254,11 +278,11 @@ export default function EventDetailScreen() {
     queryKey: ["event", id, "join-requests"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/${id}/join-requests`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<MemberResponse[]>({
+        url: `${API_URL}/api/v1/events/${id}/join-requests`,
+        token: token ?? "",
+        label: "event_join_requests",
       });
-      if (!res.ok) throw new Error(`Failed to fetch join requests: ${res.status}`);
-      return res.json();
     },
     enabled: !!id && activeTab === "requests",
   });
@@ -565,85 +589,11 @@ export default function EventDetailScreen() {
 
   // --- Leaderboard + stats helpers ---
 
-  // EventLeaderboardEntry: per-player aggregate across all completed rounds.
-  type EventLeaderboardEntry = {
-    user_id: string;
-    display_name: string;
-    rank: string;
-    roundsPlayed: number;    // completed rounds the player participated in
-    grossTotal: number;      // sum of gross scores across all completed rounds
-    netTotal: number;        // sum of net scores across all completed rounds
-    grossToPar: number | null; // null when any round lacks hole par data
-    netToPar: number | null;
-  };
-
-  // buildEventLeaderboard: aggregates scores across all completed scorecards by user_id,
-  // sorts by net (lowest first), and assigns rank strings.
-  function buildEventLeaderboard(scs: Scorecard[]): EventLeaderboardEntry[] {
-    const map = new Map<string, Omit<EventLeaderboardEntry, "rank">>();
-
-    for (const sc of scs) {
-      const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-      const hasHoles = sc.holes.length > 0;
-
-      for (const group of sc.groups) {
-        for (const p of group.players) {
-          if (p.scores.length === 0) continue;
-          const gross = p.scores.reduce((s, x) => s + x.gross_score, 0);
-          const net   = p.scores.reduce((s, x) => s + x.net_score, 0);
-          const parPlayed = hasHoles
-            ? p.scores.reduce((s, x) => s + (holeMap.get(x.hole_number) ?? 0), 0)
-            : 0;
-          const roundGross = hasHoles ? gross - parPlayed : null;
-          const roundNet   = hasHoles ? net   - parPlayed : null;
-
-          const existing = map.get(p.user_id);
-          if (existing) {
-            existing.roundsPlayed++;
-            existing.grossTotal += gross;
-            existing.netTotal   += net;
-            // If any round lacks hole par data, toPar becomes unavailable for the whole aggregate.
-            if (existing.grossToPar !== null && roundGross !== null) {
-              existing.grossToPar += roundGross;
-              existing.netToPar = (existing.netToPar ?? 0) + roundNet!;
-            } else {
-              existing.grossToPar = null;
-              existing.netToPar   = null;
-            }
-          } else {
-            map.set(p.user_id, {
-              user_id: p.user_id,
-              display_name: p.display_name,
-              roundsPlayed: 1,
-              grossTotal: gross,
-              netTotal: net,
-              grossToPar: roundGross,
-              netToPar: roundNet,
-            });
-          }
-        }
-      }
-    }
-
-    const entries = [...map.values()].sort((a, b) => {
-      const aScore = a.netToPar ?? a.netTotal;
-      const bScore = b.netToPar ?? b.netTotal;
-      return aScore - bScore;
-    });
-
-    // Assign rank strings: tied players share a "T1" prefix.
-    let rank = 1;
-    return entries.map((e, i, arr) => {
-      if (i > 0) {
-        const prev = arr[i - 1];
-        if ((e.netToPar ?? e.netTotal) !== (prev.netToPar ?? prev.netTotal)) rank = i + 1;
-      }
-      const isTied = entries.filter(
-        (x) => (x.netToPar ?? x.netTotal) === (e.netToPar ?? e.netTotal)
-      ).length > 1;
-      return { ...e, rank: isTied ? `T${rank}` : `${rank}` };
-    });
-  }
+  // buildEventLeaderboard used to be declared right here, inside the component body — in a
+  // file excluded from the coverage set, so the event standings math had zero tests and was
+  // invisible to the ratchet. Extracted to utils/leaderboard.ts (pure + tested), where it now
+  // shares its ranking and par-accumulation logic with the round leaderboard rather than
+  // duplicating it.
 
   // --- Loading / error states ---
 
@@ -658,7 +608,7 @@ export default function EventDetailScreen() {
   if (eventError || !event) {
     return (
       <View className={`flex-1 ${t.screen} items-center justify-center gap-3 px-8`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`font-semibold text-center ${t.textPrimary}`}>Failed to load event</Text>
         <TouchableOpacity
           className={`${t.primaryBg} rounded-xl px-6 py-3`}
@@ -684,7 +634,7 @@ export default function EventDetailScreen() {
         </Text>
         {isOrganizer && (
           <TouchableOpacity onPress={openEditModal} hitSlop={8}>
-            <Ionicons name="pencil-outline" size={20} color="#2563eb" />
+            <Ionicons name="pencil-outline" size={20} color={t.colors.info} />
           </TouchableOpacity>
         )}
       </View>
@@ -699,7 +649,7 @@ export default function EventDetailScreen() {
             <StatusChip status={event.status} />
             {event.is_public && (
               <View className="flex-row items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200">
-                <Ionicons name="globe-outline" size={11} color="#2563eb" />
+                <Ionicons name="globe-outline" size={11} color={t.colors.info} />
                 <Text className="text-xs font-semibold text-blue-700">Public</Text>
               </View>
             )}
@@ -1267,8 +1217,8 @@ export default function EventDetailScreen() {
                   <Switch
                     value={editIsPublic}
                     onValueChange={setEditIsPublic}
-                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                    thumbColor="#ffffff"
+                    trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                    thumbColor={t.colors.onPrimary}
                     disabled={updateEventMutation.isPending}
                   />
                 </View>
@@ -1300,7 +1250,7 @@ export default function EventDetailScreen() {
                   disabled={deleteEventMutation.isPending}
                 >
                   {deleteEventMutation.isPending ? (
-                    <ActivityIndicator color="#dc2626" />
+                    <ActivityIndicator color={t.colors.danger} />
                   ) : (
                     <Text className="text-sm font-semibold text-red-600">Delete Event</Text>
                   )}

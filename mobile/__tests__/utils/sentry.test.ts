@@ -29,15 +29,19 @@ import {
   reportCreateFailure,
   reportCreateReconciled,
   addCreateBreadcrumb,
-  reportWsLifecycle,
-  reportWsError,
   addSaveBreadcrumb,
   addStatFocusBreadcrumb,
   reportScorecardMergeSkipped,
   addScorecardLoadBreadcrumb,
   addScorecardRefetchBreadcrumb,
+  reportSupabaseFailure,
+  addSupabaseBreadcrumb,
+  reportAuthFailure,
+  reportStorageFailure,
+  reportReadFailure,
   initSentry,
 } from "@/utils/sentry";
+import { ApiError } from "@/utils/apiError";
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -184,6 +188,22 @@ describe("syncSentryUser", () => {
   it("clears the Sentry user on sign-out", () => {
     syncSentryUser(null);
     expect(Sentry.setUser).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("reportQueryError — no double-reporting", () => {
+  it("skips an ApiError the read path already reported", () => {
+    // apiGet reports its own failures with an endpoint label and a connection snapshot —
+    // detail this generic handler cannot reconstruct. Without the `reported` guard every
+    // failed read would produce TWO Sentry events.
+    reportQueryError(new ApiError("Network request failed", { reported: true, label: "scorecard" }));
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("still reports an ApiError that was NOT already reported", () => {
+    reportQueryError(new ApiError("something else", { reported: false }));
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 });
 
@@ -505,79 +525,6 @@ describe("addCreateBreadcrumb", () => {
   });
 });
 
-describe("reportWsLifecycle", () => {
-  it("drops an info breadcrumb on connect (no Issue/log noise)", () => {
-    reportWsLifecycle("connected", { roundId: "r1" });
-    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
-      expect.objectContaining({ category: "ws", level: "info" }),
-    );
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
-  });
-
-  it("drops a warning breadcrumb on a reconnect attempt with attempt + delay", () => {
-    reportWsLifecycle("reconnect_attempt", {
-      roundId: "r1",
-      attempt: 2,
-      delayMs: 1500,
-    });
-    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "ws",
-        level: "warning",
-        data: expect.objectContaining({ attempt: 2, delayMs: 1500 }),
-      }),
-    );
-  });
-
-  it("logs a warning (not an Issue) on disconnect with code + reason", () => {
-    reportWsLifecycle("disconnected", {
-      roundId: "r1",
-      code: 1006,
-      reason: "abnormal",
-    });
-    expect(Sentry.logger.warn).toHaveBeenCalledWith(
-      "ws disconnected",
-      expect.objectContaining({ event: "ws.disconnected", code: 1006 }),
-    );
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
-  });
-
-  it("logs a warning (not an Issue) tagged ws.gave_up when reconnects are exhausted", () => {
-    reportWsLifecycle("gave_up", { roundId: "r1", attempt: 8 });
-    // The user loses nothing (the 60s poll is the floor), so gave_up is a searchable
-    // log, not an Issue — alert on the ws.gave_up facet instead.
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
-    expect(Sentry.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("gave up"),
-      expect.objectContaining({
-        event: "ws.gave_up",
-        error_source: "ws",
-        ws_state: "gave_up",
-        roundId: "r1",
-        attempts: 8,
-      }),
-    );
-  });
-});
-
-describe("reportWsError", () => {
-  it("captures an Error as an Issue tagged error_source:ws", () => {
-    reportWsError(new Error("bad frame"), "r1");
-    expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        tags: { error_source: "ws" },
-        extra: { roundId: "r1" },
-      }),
-    );
-  });
-
-  it("ignores non-Error values", () => {
-    reportWsError("just a string", "r1");
-    expect(Sentry.captureException).not.toHaveBeenCalled();
-  });
-});
-
 describe("addSaveBreadcrumb", () => {
   it("adds a save breadcrumb at warning level when a retry follows", () => {
     addSaveBreadcrumb({
@@ -666,17 +613,17 @@ describe("addScorecardLoadBreadcrumb", () => {
 describe("addScorecardRefetchBreadcrumb", () => {
   it("records a source-tagged breadcrumb and a sampled scorecard.refetch log", () => {
     // First call for this source → sampled log fires (n <= 3).
-    addScorecardRefetchBreadcrumb("ws_open", "r1");
+    addScorecardRefetchBreadcrumb("poll", "r1");
     expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
       expect.objectContaining({
         category: "scorecard",
         level: "info",
-        data: { source: "ws_open", roundId: "r1" },
+        data: { source: "poll", roundId: "r1" },
       }),
     );
     expect(Sentry.logger.info).toHaveBeenCalledWith(
       "scorecard refetch",
-      expect.objectContaining({ event: "scorecard.refetch", source: "ws_open", roundId: "r1" }),
+      expect.objectContaining({ event: "scorecard.refetch", source: "poll", roundId: "r1" }),
     );
   });
 
@@ -687,6 +634,199 @@ describe("addScorecardRefetchBreadcrumb", () => {
     for (let i = 0; i < 10; i++) addScorecardRefetchBreadcrumb("hole_change", "r1");
     expect(Sentry.addBreadcrumb).toHaveBeenCalledTimes(10); // breadcrumb every time
     expect((Sentry.logger.info as jest.Mock).mock.calls.length).toBeLessThan(10); // log is sampled
+  });
+});
+
+describe("reportSupabaseFailure", () => {
+  const conn = {
+    connectionType: "cellular",
+    cellularGeneration: "4g",
+    isInternetReachable: false,
+  };
+
+  it("captures a 5xx as an Issue — Supabase itself is broken", () => {
+    reportSupabaseFailure(new Error("Supabase auth.otp failed: HTTP 503"), {
+      label: "auth.otp",
+      kind: "auth",
+      attempts: 1,
+      elapsedMs: 800,
+      httpStatus: 503,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Supabase auth.otp failed: HTTP 503" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "auth",
+          supabase_endpoint: "auth.otp",
+          supabase_kind: "http",
+        }),
+      }),
+    );
+  });
+
+  // The token refresh is special: when it exhausts, every API call afterwards goes out with
+  // an empty Bearer and 401s — which reads as ordinary 4xx noise. Escalate it so a fleet-wide
+  // auth outage doesn't hide inside the warn logs.
+  it("captures an exhausted token refresh as an Issue even on a transport failure", () => {
+    reportSupabaseFailure(new Error("Network request failed"), {
+      label: "auth.token_refresh",
+      kind: "auth",
+      attempts: 3,
+      elapsedMs: 45000,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Network request failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          supabase_endpoint: "auth.token_refresh",
+          supabase_kind: "network",
+        }),
+      }),
+    );
+    expect(Sentry.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs (does not file an Issue for) an ordinary transport failure on a storage upload", () => {
+    reportSupabaseFailure(new Error("Network request failed"), {
+      label: "storage.upload",
+      kind: "storage",
+      attempts: 1,
+      elapsedMs: 30000,
+      ...conn,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "supabase request failed",
+      expect.objectContaining({
+        event: "supabase.request_failed",
+        error_source: "storage",
+        supabase_endpoint: "storage.upload",
+      }),
+    );
+  });
+});
+
+describe("addSupabaseBreadcrumb", () => {
+  it("marks a retryable attempt warning and the final give-up error", () => {
+    addSupabaseBreadcrumb({
+      label: "auth.token_refresh",
+      attempt: 1,
+      nextDelayMs: 400,
+      message: "timeout",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ category: "supabase", level: "warning" }),
+    );
+
+    addSupabaseBreadcrumb({
+      label: "auth.token_refresh",
+      attempt: 3,
+      nextDelayMs: null,
+      message: "timeout",
+    });
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({ category: "supabase", level: "error" }),
+    );
+  });
+});
+
+describe("reportAuthFailure", () => {
+  // A thrown getSession used to strand the app on a permanent blank screen — exceptional,
+  // and worth an Issue.
+  it("files an Issue for a fatal session failure, tagged with the stage", () => {
+    reportAuthFailure(new Error("SecureStore read failed"), {
+      stage: "root_session_restore",
+      fatal: true,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "SecureStore read failed" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "auth",
+          auth_stage: "root_session_restore",
+        }),
+      }),
+    );
+  });
+
+  // An expired refresh token after a long absence is routine: the user re-signs in.
+  it("logs a non-fatal session failure instead of alarming", () => {
+    reportAuthFailure({ message: "Invalid Refresh Token" }, { stage: "get_token" });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "auth session unavailable",
+      expect.objectContaining({
+        event: "auth.session_unavailable",
+        auth_stage: "get_token",
+      }),
+    );
+  });
+});
+
+describe("reportReadFailure", () => {
+  const conn = { connectionType: "wifi", cellularGeneration: null, isInternetReachable: true };
+
+  // Routing is deliberately asymmetric. A 5xx is a real backend defect → Issue.
+  it("files an Issue for a 5xx, tagged with the endpoint", () => {
+    reportReadFailure(new ApiError("Request failed: HTTP 500", { status: 500 }), {
+      label: "scorecard",
+      attempts: 1,
+      elapsedMs: 300,
+      httpStatus: 500,
+      ...conn,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Request failed: HTTP 500" }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          error_source: "read",
+          read_kind: "http",
+          read_endpoint: "scorecard",
+        }),
+      }),
+    );
+  });
+
+  // A dropped GET on cellular is routine and the poll will repaint — an Issue per occurrence
+  // would recreate exactly the alert flood the WebSocket used to produce.
+  it("logs (does not file an Issue for) a transport failure", () => {
+    reportReadFailure(new Error("Network request failed"), {
+      label: "events",
+      attempts: 3,
+      elapsedMs: 12000,
+      ...conn,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "read failed after retries",
+      expect.objectContaining({ event: "read.failed", read_kind: "network", read_endpoint: "events" }),
+    );
+  });
+});
+
+describe("reportStorageFailure", () => {
+  // Never an Issue — the store falls back to defaults and the app keeps working. But never
+  // silent either: a persistently failing write means the user's theme and list prefs revert
+  // on every launch, and the old `.catch(() => {})` said nothing at all.
+  it("logs a failed write with the area and operation, without filing an Issue", () => {
+    reportStorageFailure(new Error("QuotaExceededError"), {
+      area: "list_prefs",
+      operation: "write",
+      key: "list-prefs-storage",
+    });
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.logger.warn).toHaveBeenCalledWith(
+      "persisted storage operation failed",
+      expect.objectContaining({
+        event: "storage.failed",
+        error_source: "storage",
+        storage_area: "list_prefs",
+        storage_operation: "write",
+      }),
+    );
   });
 });
 

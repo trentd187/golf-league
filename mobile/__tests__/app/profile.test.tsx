@@ -24,6 +24,9 @@ const mockUseQuery = jest.fn();
 // mockMutate is the mutate function returned by useMutation — spy on calls in tests.
 const mockMutate = jest.fn();
 const mockUseMutation = jest.fn();
+let mockCapturedOnError: ((err: Error) => void) | undefined;
+
+jest.mock("@/utils/alerts", () => ({ showAlert: jest.fn() }));
 // mockCapturedQueryFns and mockCapturedMutationFn allow tests to invoke the actual async
 // function bodies (queryFn, mutationFn, onSuccess) for coverage purposes. They are
 // populated on every render since useMutation/useQuery are called synchronously.
@@ -42,9 +45,11 @@ jest.mock("@tanstack/react-query", () => ({
     const opts = args[0] as {
       mutationFn?: (s: unknown) => Promise<unknown>;
       onSuccess?: (data: unknown, vars: unknown) => void;
+      onError?: (err: Error) => void;
     };
     mockCapturedMutationFn = opts?.mutationFn;
     mockCapturedOnSuccess = opts?.onSuccess;
+    mockCapturedOnError = opts?.onError;
     return mockUseMutation(...args);
   },
   useQueryClient: () => ({ setQueryData: jest.fn(), invalidateQueries: jest.fn() }),
@@ -67,8 +72,8 @@ jest.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ signOut: mockSignOut, getToken: jest.fn().mockResolvedValue("test-token") }),
 }));
 
-jest.mock("@/utils/api", () => ({
-  apiFetch: jest.fn(),
+jest.mock("@/utils/apiGet", () => ({
+  apiGetJson: jest.fn(),
 }));
 
 jest.mock("@/constants/api", () => ({
@@ -343,12 +348,9 @@ it("calls settings mutation when a stat toggle is switched", async () => {
   expect(mockMutate).toHaveBeenCalledWith({ ...knownSettings, fir_enabled: false });
 });
 
-it("settings queryFn fetches from the correct endpoint with auth header", async () => {
-  const { apiFetch } = require("@/utils/api");
-  apiFetch.mockResolvedValue({
-    ok: true,
-    json: jest.fn().mockResolvedValue({ fir_enabled: true, gir_enabled: true }),
-  });
+it("settings queryFn reads through the hardened apiGetJson (timeout + retry + telemetry)", async () => {
+  const { apiGetJson } = require("@/utils/apiGet");
+  apiGetJson.mockResolvedValue({ fir_enabled: true, gir_enabled: true });
 
   render(<ProfileScreen />);
   // mockCapturedQueryFns[0] is the scorecard-settings queryFn (the only query profile renders).
@@ -358,9 +360,14 @@ it("settings queryFn fetches from the correct endpoint with auth header", async 
   expect(settingsQueryFn).toBeDefined();
 
   const result = await settingsQueryFn!();
-  expect(apiFetch).toHaveBeenCalledWith(
-    expect.stringContaining("scorecard-settings"),
-    expect.objectContaining({ headers: expect.objectContaining({ Authorization: expect.stringContaining("Bearer") }) })
+  // The label is what tags this read in Sentry (read_endpoint) — the read path had no
+  // telemetry at all before the WebSocket removal.
+  expect(apiGetJson).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: expect.stringContaining("scorecard-settings"),
+      token: "test-token",
+      label: "scorecard_settings",
+    }),
   );
   expect(result).toEqual({ fir_enabled: true, gir_enabled: true });
 });
@@ -373,7 +380,7 @@ it("settings mutationFn PATCHes settings via savePut and onSuccess updates the q
     stat_order: ["fir", "gir", "putts", "first_putt_distance", "putt_distance_made", "approach_yds", "tee_shot_club", "tee_shot_distance"],
     score_position: "last" as const,
   };
-  // The settings save now routes through savePut, which uses the global fetch (not apiFetch)
+  // The settings save routes through savePut, which uses the global fetch (not the read path)
   // and attaches a stable Idempotency-Key. Mock fetch ok so the single attempt resolves.
   const mockFetch = jest.fn().mockResolvedValue({
     ok: true, status: 200, json: jest.fn().mockResolvedValue(nextSettings),
@@ -676,4 +683,22 @@ describe("web sign-out (Platform.OS = web)", () => {
       expect(mockWindowAlert).toHaveBeenCalledWith("Could not sign out. Please try again.");
     });
   });
+});
+
+// ─── A failed settings save must not silently snap the toggle back ───────────
+//
+// settingsMutation had no onError. On failure, onSuccess never ran, so the optimistic cache
+// update never happened and the toggle just flipped back — with no error and no explanation.
+// It simply looked broken.
+it("tells the user when the scorecard-settings save fails", () => {
+  const { showAlert } = jest.requireMock("@/utils/alerts") as { showAlert: jest.Mock };
+
+  render(<ProfileScreen />);
+
+  expect(mockCapturedOnError).toBeDefined();
+  act(() => {
+    mockCapturedOnError?.(new Error("Save failed: HTTP 500"));
+  });
+
+  expect(showAlert).toHaveBeenCalledWith("Couldn't save settings", "Save failed: HTTP 500");
 });

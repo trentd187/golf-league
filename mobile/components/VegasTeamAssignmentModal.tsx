@@ -1,8 +1,8 @@
 // components/VegasTeamAssignmentModal.tsx
 // Organizer modal for assigning a Las Vegas group's players into two teams of two.
-// Each player is toggled onto Team 1 or Team 2 (capped at two per side). Saving
-// deletes the group's existing teams and recreates them from the chosen split —
-// idempotent and simpler than reconciling individual membership changes. The team
+// Each player is toggled onto Team 1 or Team 2 (capped at two per side). Saving sends the
+// whole desired set to PUT .../groups/:groupId/teams, which replaces the group's teams in ONE
+// backend transaction — so a failed save leaves the previous partnerships intact. The team
 // bookkeeping math lives in utils/vegasTeams.ts; this component renders + persists.
 
 import { useEffect, useState } from "react";
@@ -11,7 +11,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
-import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE } from "@/utils/saveRequest";
 import { showAlert } from "@/utils/alerts";
 import ModalHeader from "@/components/ModalHeader";
@@ -81,44 +80,32 @@ export default function VegasTeamAssignmentModal({
   const saveMutation = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-
-      // 1. Remove the group's current teams (cascades team_members). savePut(DELETE) is
-      // 404-tolerant, so a phantom delete (commit + lost ack) converges on retry.
-      for (const tm of groupTeams) {
-        await savePut({
-          url: `${API_URL}/api/v1/rounds/${roundId}/teams/${tm.id}`,
-          token: token ?? "",
-          method: "DELETE",
-          body: undefined,
-          label: "team-delete",
-          retry: FOREGROUND_SAVE,
-        });
-      }
-
-      // 2. Create + populate each non-empty side.
       const { team1, team2 } = partitionAssignment(assignment);
-      const createSide = async (rpIds: string[]) => {
-        if (rpIds.length === 0) return;
-        // savePost: retry-safe team create — the backend replays the original response on a
-        // cellular phantom (commit + lost ack) so a retry can't create a duplicate team.
-        const team = await savePost<{ id: string }>({
-          url: `${API_URL}/api/v1/rounds/${roundId}/teams`,
-          token: token ?? "",
-          body: { name: firstNames(rpIds, nameByRp) || "Team" },
-          label: "team",
-        });
-        // savePut: membership replace is idempotent (delete-all + insert-set), so it's safe
-        // to retry with a stable Idempotency-Key.
-        await savePut({
-          url: `${API_URL}/api/v1/rounds/${roundId}/teams/${team.id}/members`,
-          token: token ?? "",
-          body: { round_player_ids: rpIds },
-          label: "team-members",
-          retry: FOREGROUND_SAVE,
-        });
-      };
-      await createSide(team1);
-      await createSide(team2);
+
+      // ONE atomic request. This used to be a loop: DELETE every existing team, then POST
+      // each new team and PUT its members — separate calls. Each was individually hardened,
+      // but the SEQUENCE was not atomic: if a create failed after the deletes landed (a
+      // cellular drop past the retry budget, a 5xx), the group was left with NO TEAMS AT ALL
+      // and the previous partnerships were gone. Real data loss, mid-round, on exactly the
+      // network this app is built for.
+      //
+      // PUT .../groups/:groupId/teams replaces the group's whole team set in a single backend
+      // transaction, so any failure leaves the old teams intact. It's a set-replace, hence
+      // idempotent, hence safe for savePut's retry + Idempotency-Key.
+      await savePut({
+        url: `${API_URL}/api/v1/rounds/${roundId}/groups/${group.id}/teams`,
+        token: token ?? "",
+        body: {
+          teams: [team1, team2]
+            .filter((rpIds) => rpIds.length > 0)
+            .map((rpIds) => ({
+              name: firstNames(rpIds, nameByRp) || "Team",
+              round_player_ids: rpIds,
+            })),
+        },
+        label: "group-teams",
+        retry: FOREGROUND_SAVE,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["round-teams", roundId] });

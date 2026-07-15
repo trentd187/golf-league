@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { API_URL } from "@/constants/api";
 import { savePost } from "@/utils/savePost";
+import { apiGet, apiGetJson } from "@/utils/apiGet";
 import ModalHeader from "@/components/ModalHeader";
 
 // ─── Exported types ────────────────────────────────────────────────────────────
@@ -123,6 +124,10 @@ export default function CoursePickerModal({
   const [selectingId, setSelectingId]             = useState<string | null>(null);
   // showExternal: true once the user has tapped "Search Online" for the current query.
   const [showExternal, setShowExternal]           = useState(false);
+  // listError: the course list or search FAILED, as opposed to genuinely returning nothing.
+  // Without this the two are indistinguishable — a 500 rendered as "No courses found", so the
+  // user retyped a course name that was there all along, on the screen that gates round creation.
+  const [listError, setListError]                 = useState(false);
 
   // debounceRef holds the pending timeout id so we can cancel it on the next keystroke.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,17 +150,41 @@ export default function CoursePickerModal({
     }
 
     // On open: load all courses alphabetically so the list is immediately browsable.
+    //
+    // This used to be a .then() chain with `res.ok ? res.json() : []`, an empty `.catch(() => {})`,
+    // and no .catch() on the outer getToken() at all. Three failures in one: a 500 became an
+    // empty course list, a transport failure became an empty course list, and a rejected
+    // getToken() was an unhandled rejection whose .finally() never ran — leaving the spinner up
+    // forever. On the screen that gates round creation, "no courses" and "the server is broken"
+    // looked identical, and neither reached Sentry.
+    let cancelled = false;
     setAllCoursesLoading(true);
-    getToken().then((token) =>
-      fetch(`${API_URL}/api/v1/courses`, { headers: { Authorization: `Bearer ${token}` } })
-        .then((res) => (res.ok ? res.json() : []))
-        .then((data: LocalCourseSummary[]) => {
-          const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name));
-          setAllCourses(sorted);
-        })
-        .catch(() => {})
-        .finally(() => setAllCoursesLoading(false)),
-    );
+    setListError(false);
+
+    void (async () => {
+      try {
+        const token = await getToken();
+        // apiGetJson reports a non-2xx as well as a transport exhaustion — apiGet alone
+        // returns the failed Response for the caller to (previously, silently) discard.
+        const data = await apiGetJson<LocalCourseSummary[]>({
+          url: `${API_URL}/api/v1/courses`,
+          token: token ?? "",
+          label: "courses_list",
+        });
+        if (cancelled) return;
+        setAllCourses([...data].sort((a, b) => a.name.localeCompare(b.name)));
+      } catch {
+        // Already reported by apiGetJson with the endpoint label and a connection snapshot.
+        // Here we only need to tell the user, so an empty list can't masquerade as "no courses".
+        if (!cancelled) setListError(true);
+      } finally {
+        if (!cancelled) setAllCoursesLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
     // getToken is intentionally excluded from deps — same reasoning as the search effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
@@ -183,6 +212,7 @@ export default function CoursePickerModal({
     setExternalResults([]);
 
     debounceRef.current = setTimeout(async () => {
+      setListError(false);
       try {
         const token = await getToken();
         // Build URL from whichever fields are filled.
@@ -190,17 +220,20 @@ export default function CoursePickerModal({
         const params = new URLSearchParams();
         if (query.trim())        params.set("name",     query.trim());
         if (locationQuery.trim()) params.set("location", locationQuery.trim());
-        let url = `${API_URL}/api/v1/courses?${params.toString()}`;
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-        if (res.ok) {
-          const data: LocalCourseSummary[] = await res.json();
-          const sorted = Array.isArray(data)
-            ? [...data].sort((a, b) => a.name.localeCompare(b.name))
-            : [];
-          setLocalResults(sorted);
-        }
+        const url = `${API_URL}/api/v1/courses?${params.toString()}`;
+        const data = await apiGetJson<LocalCourseSummary[]>({
+          url,
+          token: token ?? "",
+          label: "courses_search",
+        });
+        setLocalResults(
+          Array.isArray(data) ? [...data].sort((a, b) => a.name.localeCompare(b.name)) : [],
+        );
       } catch {
-        // Network error — show empty results; user can try again or search online.
+        // Reported by apiGetJson. Surface it: a failed search used to render as "no results",
+        // which is indistinguishable from a genuinely empty result set — so the user would
+        // keep retyping a course name that was there all along.
+        setListError(true);
       } finally {
         setLocalLoading(false);
       }
@@ -222,16 +255,20 @@ export default function CoursePickerModal({
     setShowExternal(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/api/v1/courses/search-external`, {
+      // A READ-shaped POST: /courses/search-external is a query in everything but HTTP verb
+      // (it creates nothing — importing is a separate call). Routing it through apiGet gives
+      // it the timeout + jittered retry + read telemetry every other read has, and skips the
+      // Idempotency-Key a real create needs. It was the last bare fetch() in the app: an
+      // external course search over a hotel/clubhouse wifi could hang forever with no signal.
+      const res = await apiGet({
+        url: `${API_URL}/api/v1/courses/search-external`,
+        token: token ?? "",
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+        body: {
           search: query.trim(),
           location: locationQuery.trim() || undefined,
-        }),
+        },
+        label: "course_search_external",
       });
       if (res.ok) {
         const data = await res.json();
@@ -253,13 +290,15 @@ export default function CoursePickerModal({
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
   // fetchCourseDetail: called after selecting a local result to get tees.
-  const fetchCourseDetail = async (courseId: string): Promise<PickedCourse | null> => {
+  // Throws (a reported ApiError) on failure rather than returning null on a non-2xx, so the
+  // caller can't confuse "the course has no tees" with "the request failed".
+  const fetchCourseDetail = async (courseId: string): Promise<PickedCourse> => {
     const token = await getToken();
-    const res = await fetch(`${API_URL}/api/v1/courses/${courseId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const data = await apiGetJson<CourseDetailResponse>({
+      url: `${API_URL}/api/v1/courses/${courseId}`,
+      token: token ?? "",
+      label: "course_detail",
     });
-    if (!res.ok) return null;
-    const data: CourseDetailResponse = await res.json();
     return {
       id: data.id,
       name: data.name,
@@ -272,15 +311,17 @@ export default function CoursePickerModal({
   };
 
   // selectLocal: user tapped a result from the local DB.
+  //
+  // The catch is load-bearing: fetchCourseDetail throws on a transport exhaustion, and this
+  // runs from an onPress — so without it the rejection escaped as an unhandled promise, the
+  // row simply stopped spinning, and the user was told nothing at all.
   const selectLocal = async (course: LocalCourseSummary) => {
     setSelectingId(course.id);
     try {
-      const detail = await fetchCourseDetail(course.id);
-      if (detail) {
-        onSelect(detail);
-      } else {
-        Alert.alert("Error", "Could not load course details. Please try again.");
-      }
+      onSelect(await fetchCourseDetail(course.id));
+    } catch {
+      // Already reported by apiGetJson (labelled + connection snapshot); just tell the user.
+      Alert.alert("Error", "Could not load course details. Please try again.");
     } finally {
       setSelectingId(null);
     }
@@ -322,7 +363,8 @@ export default function CoursePickerModal({
   const hasSearch      = query.trim().length >= 3 || locationQuery.trim().length >= 2;
   // canSearchOnline: external API requires a course name (location-only searches aren't supported).
   const canSearchOnline = query.trim().length >= 3;
-  const noLocalResults = hasSearch && !localLoading && localResults.length === 0;
+  // A failed search is NOT "no results" — listError gates this so the two never look alike.
+  const noLocalResults = hasSearch && !localLoading && !listError && localResults.length === 0;
   const busy           = !!importingId || !!selectingId;
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -402,8 +444,14 @@ export default function CoursePickerModal({
                   style={{ marginVertical: 20 }}
                 />
               )}
+              {/* The request FAILED — say so, rather than rendering it as "no courses". */}
+              {listError && !allCoursesLoading && !localLoading && (
+                <Text className="text-sm text-center mt-10 text-red-600">
+                  Couldn&apos;t load courses. Check your connection and try again.
+                </Text>
+              )}
               {/* Hint text — only shown after initial load when no courses exist at all */}
-              {!allCoursesLoading && !hasSearch && allCourses.length === 0 && (
+              {!listError && !allCoursesLoading && !hasSearch && allCourses.length === 0 && (
                 <Text className={`text-sm text-center mt-10 ${t.textTertiary}`}>
                   No courses yet. Type a name to search online.
                 </Text>

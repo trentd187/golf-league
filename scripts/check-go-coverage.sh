@@ -26,7 +26,6 @@
 #
 # Packages excluded from coverage (require live infra or have no logic):
 #   - internal/database  (requires a real PostgreSQL connection)
-#   - internal/websocket (requires live WebSocket clients)
 #   - internal/models    (struct definitions — no executable statements)
 #   - internal/testutil  (test helpers — circular to test these)
 #   - cmd/server         (main() entry point — just wires things together)
@@ -85,8 +84,8 @@ echo ""
 
 # Build a comma-separated list of packages for -coverpkg.
 # -coverpkg limits which packages are instrumented for coverage while
-# ./... still runs every test in the repo, so failures in websocket,
-# database, etc. are caught in the same pass.
+# ./... still runs every test in the repo, so failures in database, services,
+# etc. are caught in the same pass.
 COVERPKG=$(IFS=,; echo "${PACKAGES[*]}")
 
 # Run the full test suite with coverage instrumented only for PACKAGES.

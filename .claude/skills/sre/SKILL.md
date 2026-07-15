@@ -31,6 +31,23 @@ One vendor for errors, logs, traces, and profiles ([backend/docs/observability.m
 
 Use the `mcp__sentry__*` tools — pass the org slug and region URL above. Datasets that matter here: **`errors`** (grouped into Issues), **`logs`** (searchable, `event:`/`event_type_label` facets), **`spans`** (per-operation latency for performance work), **`profiles`** (frontend CPU/wall-time samples — backend profiling isn't shipped yet).
 
+## Silent-failure signatures (read this before concluding "no signal, no bug")
+
+The 7/14 full-codebase audit ([memory `project-full-codebase-audit`], CLAUDE.md § "Backend
+error-handling rules") found a class of failures whose defining trait is that **Sentry shows
+nothing** — which is exactly when this skill is most likely to give up too early. If a user reports a
+failure but Issues are empty, match the symptom here *before* declaring it unreproducible:
+
+| Symptom | Likely cause | Where to look / confirm |
+|---|---|---|
+| A save/create "didn't work" but there is **no Issue and no error Log** | An outbound call *upstream of* the hardened layer (a bare `fetch`, or a Supabase `getSession()` token refresh) hung or threw before its `AbortController` existed | Grep the reporting user's breadcrumbs for a `savePut`/`savePost` that never emitted its terminal `save.*` event; confirm no bare `fetch` was added outside the ESLint allowlist |
+| An inexplicable **403/409** on an action the user is clearly allowed to do | A **laundered DB fault**: a service returned `false, nil` / a fake conflict instead of a wrapped 500, so `ErrorLogger` (5xx-only) skipped it | Backend Logs for the request's `http.request` line — a 4xx with a DB-ish `latency_ms` spike; check the service method for a dropped `*gorm.DB` (`.Error` missing) |
+| **200 with zeroed / blank data** during a suspected outage | A dropped `*gorm.DB` error returned an empty result as success | Same — the GORM trap. `Count`/`Find`/`Scan` return `*gorm.DB`, not `error` |
+| **Every** authenticated request 401s but `/health` is 200 | Empty JWKS key set at boot (now fatal + health-gated, but this is the fingerprint if it regresses) | `/health` JSON — `jwks:"empty"` → 503; Logs for `server.startup_failed` / `auth.jwks_refresh_failed` |
+
+The through-line: **a 2xx or 4xx never becomes a Sentry Issue.** When the evidence is "it broke and
+Sentry is silent," suspect a response that *looks* successful, not the absence of a bug.
+
 ---
 
 ## Web investigation

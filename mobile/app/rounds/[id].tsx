@@ -46,8 +46,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useUser } from "@/hooks/useUser";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { API_URL, LIVE_POLL_MS } from "@/constants/api";
+import { apiGet, apiGetJson, RECONCILE_GET } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { savePut, FOREGROUND_SAVE, readApiErrorMessage } from "@/utils/saveRequest";
 import { roundStatusReconciled } from "@/utils/roundReconcile";
@@ -63,6 +63,7 @@ import { chunk } from "@/utils/array";
 import CoursePickerModal, { PickedCourse } from "@/components/CoursePickerModal";
 import { showAlert, showConfirm } from "@/utils/alerts";
 import { SCORING_FORMATS, formatLabel, formatToPar } from "@/utils/scoringFormats";
+import { buildRoundLeaderboard, formatThru } from "@/utils/leaderboard";
 import TimeInput from "@/components/TimeInput";
 import { parseFormattedTeeTime } from "@/utils/teeTime";
 import type { Scorecard } from "@/types/scorecard";
@@ -173,13 +174,17 @@ export default function RoundDetailScreen() {
     queryKey: ["round", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<RoundDetail>({
+        url: `${API_URL}/api/v1/rounds/${id}`,
+        token: token ?? "",
+        label: "round",
       });
-      if (!res.ok) throw new Error(`Failed to fetch round: ${res.status}`);
-      return res.json();
     },
     enabled: !!id,
+    // Poll while focused/foregrounded so a round left open picks up status changes and
+    // new players. Polling is the only live mechanism now — see mobile/docs/live-updates.md.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   // availablePlayersQuery: fetches the pool of users that can be added to the round.
@@ -193,11 +198,11 @@ export default function RoundDetailScreen() {
     queryFn: async () => {
       const token = await getToken();
       if (round!.event_id) {
-        const res = await apiFetch(`${API_URL}/api/v1/events/${round!.event_id}/members`, {
-          headers: { Authorization: `Bearer ${token}` },
+        const members = await apiGetJson<EventMember[]>({
+          url: `${API_URL}/api/v1/events/${round!.event_id}/members`,
+          token: token ?? "",
+          label: "event_members",
         });
-        if (!res.ok) throw new Error("Failed to fetch event members");
-        const members: EventMember[] = await res.json();
         return members.map((m) => ({
           id: m.user_id,
           display_name: m.display_name,
@@ -206,11 +211,13 @@ export default function RoundDetailScreen() {
         }));
       } else {
         // Eventless round — use the following list.
-        const res = await apiFetch(`${API_URL}/api/v1/users/following`, {
-          headers: { Authorization: `Bearer ${token}` },
+        const following = await apiGetJson<
+          { id: string; display_name: string; avatar_url?: string | null }[]
+        >({
+          url: `${API_URL}/api/v1/users/following`,
+          token: token ?? "",
+          label: "users_following",
         });
-        if (!res.ok) throw new Error("Failed to fetch following list");
-        const following: Array<{ id: string; display_name: string; avatar_url?: string | null }> = await res.json();
         return following.map((u) => ({
           id: u.id,
           display_name: u.display_name,
@@ -234,13 +241,16 @@ export default function RoundDetailScreen() {
     queryKey: ["scorecard", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/scorecard`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<Scorecard>({
+        url: `${API_URL}/api/v1/rounds/${id}/scorecard`,
+        token: token ?? "",
+        label: "scorecard",
       });
-      if (!res.ok) throw new Error(`Failed to fetch scorecard: ${res.status}`);
-      return res.json();
     },
     enabled: !!id && activeTab !== "groups",
+    // The leaderboard/stats tabs are where a player watches the group's scores come in.
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 
   // isVegasRound / isBestBallRound gate their respective result tabs and team UI.
@@ -256,11 +266,13 @@ export default function RoundDetailScreen() {
     queryKey: ["round-teams", id],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}/teams`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const data = await apiGetJson<
+        { id: string; name: string; members: { round_player_id: string }[] }[]
+      >({
+        url: `${API_URL}/api/v1/rounds/${id}/teams`,
+        token: token ?? "",
+        label: "round_teams",
       });
-      if (!res.ok) throw new Error(`Failed to fetch teams: ${res.status}`);
-      const data = (await res.json()) as { id: string; name: string; members: { round_player_id: string }[] }[];
       return data.map((tm) => ({
         id: tm.id,
         name: tm.name,
@@ -475,8 +487,15 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read: the read-back runs on the SAME degraded link that just
+          // exhausted the write's retries, so without its own timeout + retry budget it
+          // usually fails too — reporting a false "couldn't end round" for a round the
+          // server already completed. (Same bug ff78640 fixed on the scorecard.)
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           return roundStatusReconciled(await res.json(), "completed");
@@ -520,8 +539,12 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read — see the end-round reconcile above.
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           return roundStatusReconciled(await res.json(), "active");
@@ -566,8 +589,12 @@ export default function RoundDetailScreen() {
         label: "round-status",
         retry: FOREGROUND_SAVE,
         reconcile: async () => {
-          const res = await apiFetch(`${API_URL}/api/v1/rounds/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+          // apiGet, not a bare read — see the end-round reconcile above.
+          const res = await apiGet({
+            url: `${API_URL}/api/v1/rounds/${id}`,
+            token: token ?? "",
+            profile: RECONCILE_GET,
+            label: "round_reconcile",
           });
           if (!res.ok) return false;
           const fresh = await res.json();
@@ -679,78 +706,12 @@ export default function RoundDetailScreen() {
     );
   };
 
-  // --- Leaderboard helpers ---
-
-  // LeaderboardEntry: per-player aggregate for the Leaderboard tab.
-  type LeaderboardEntry = {
-    round_player_id: string;
-    display_name: string;
-    rank: string;
-    holesPlayed: number;
-    grossTotal: number;
-    netTotal: number;
-    grossToPar: number | null; // null when scorecard has no hole par data
-    netToPar: number | null;
-  };
-
-  // buildLeaderboard: flattens all players from the scorecard, computes running
-  // totals vs par, sorts by net score, and assigns rank strings (T1, T1, T3…).
-  function buildLeaderboard(sc: Scorecard): LeaderboardEntry[] {
-    const holeMap = new Map(sc.holes.map((h) => [h.hole_number, h.par]));
-    const hasHoles = sc.holes.length > 0;
-
-    const entries = sc.groups.flatMap((g) =>
-      g.players.map((p) => {
-        const grossTotal = p.scores.reduce((s, x) => s + x.gross_score, 0);
-        const netTotal   = p.scores.reduce((s, x) => s + x.net_score, 0);
-        const parPlayed  = hasHoles
-          ? p.scores.reduce((s, x) => s + (holeMap.get(x.hole_number) ?? 0), 0)
-          : 0;
-        return {
-          round_player_id: p.round_player_id,
-          display_name: p.display_name,
-          rank: "—",
-          holesPlayed: p.scores.length,
-          grossTotal,
-          netTotal,
-          grossToPar: hasHoles ? grossTotal - parPlayed : null,
-          netToPar:   hasHoles ? netTotal   - parPlayed : null,
-        };
-      })
-    ).sort((a, b) => {
-      // Players with 0 holes sink to the bottom of the board.
-      if (a.holesPlayed === 0 && b.holesPlayed !== 0) return 1;
-      if (b.holesPlayed === 0 && a.holesPlayed !== 0) return -1;
-      const aScore = a.netToPar ?? a.netTotal;
-      const bScore = b.netToPar ?? b.netTotal;
-      if (aScore !== bScore) return aScore - bScore;
-      // Tiebreaker: more holes played ranks higher (further along = precedence in a live round).
-      return b.holesPlayed - a.holesPlayed;
-    });
-
-    // Assign rank strings: solo leader → "1"; tied → "T1", "T1", "T3"…
-    let rank = 1;
-    return entries.map((e, i, arr) => {
-      if (e.holesPlayed === 0) return { ...e, rank: "—" };
-      if (i > 0 && arr[i - 1].holesPlayed > 0) {
-        const prev = arr[i - 1];
-        const prevScore = prev.netToPar ?? prev.netTotal;
-        const curScore  = e.netToPar   ?? e.netTotal;
-        if (curScore !== prevScore) rank = i + 1;
-      }
-      const isTied =
-        entries.filter(
-          (x) => x.holesPlayed > 0 && (x.netToPar ?? x.netTotal) === (e.netToPar ?? e.netTotal)
-        ).length > 1;
-      return { ...e, rank: isTied ? `T${rank}` : `${rank}` };
-    });
-  }
-
-  // formatThru: holes played → "F" (finished), hole number, or "—" (not started).
-  function formatThru(holesPlayed: number, holeCount: number): string {
-    if (holesPlayed === 0) return "—";
-    return holesPlayed >= holeCount ? "F" : `${holesPlayed}`;
-  }
+  // --- Leaderboard ---
+  //
+  // buildRoundLeaderboard and formatThru used to be declared right here, inside the component
+  // body — in a file excluded from the coverage set. The code that decides WHO WINS therefore
+  // had zero tests and was invisible to the ratchet. Extracted to utils/leaderboard.ts (pure +
+  // tested), per the extract-first rule.
 
   // --- Loading / error states ---
 
@@ -765,7 +726,7 @@ export default function RoundDetailScreen() {
   if (roundError || !round) {
     return (
       <View className={`flex-1 ${t.screen} items-center justify-center gap-3 px-8`}>
-        <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+        <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
         <Text className={`font-semibold text-center ${t.textPrimary}`}>
           Failed to load round
         </Text>
@@ -795,7 +756,7 @@ export default function RoundDetailScreen() {
         </Text>
         {round.is_organizer && (
           <TouchableOpacity onPress={openEditModal} hitSlop={8}>
-            <Ionicons name="pencil-outline" size={20} color="#2563eb" />
+            <Ionicons name="pencil-outline" size={20} color={t.colors.info} />
           </TouchableOpacity>
         )}
       </View>
@@ -962,14 +923,14 @@ export default function RoundDetailScreen() {
                       hitSlop={8}
                       disabled={updateGroupMutation.isPending}
                     >
-                      <Ionicons name="pencil-outline" size={16} color="#2563eb" />
+                      <Ionicons name="pencil-outline" size={16} color={t.colors.info} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => handleDeleteGroup(group)}
                       hitSlop={8}
                       disabled={deleteGroupMutation.isPending}
                     >
-                      <Ionicons name="trash-outline" size={16} color="#dc2626" />
+                      <Ionicons name="trash-outline" size={16} color={t.colors.danger} />
                     </TouchableOpacity>
                   </>
                 )}
@@ -1143,7 +1104,7 @@ export default function RoundDetailScreen() {
                 Failed to load scores.
               </Text>
             ) : (() => {
-              const entries = buildLeaderboard(scorecard);
+              const entries = buildRoundLeaderboard(scorecard);
               if (entries.every((e) => e.holesPlayed === 0)) {
                 return (
                   <View
@@ -1542,7 +1503,7 @@ export default function RoundDetailScreen() {
                 disabled={updateRoundMutation.isPending || deleteRoundMutation.isPending}
               >
                 {deleteRoundMutation.isPending ? (
-                  <ActivityIndicator color="#dc2626" />
+                  <ActivityIndicator color={t.colors.danger} />
                 ) : (
                   <Text className="text-red-600 font-semibold text-base">Delete Round</Text>
                 )}

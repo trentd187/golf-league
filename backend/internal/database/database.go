@@ -2,6 +2,8 @@
 package database
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -23,9 +25,24 @@ type PoolConfig struct {
 	ConnMaxIdleTime time.Duration
 }
 
+// GormConfig returns the GORM configuration used for EVERY connection — production and the
+// Tier 2 testcontainers DB alike (internal/testutil/db.go calls this). It exists so the two
+// cannot drift: a test database configured differently from production is a test that lies.
+func GormConfig() *gorm.Config {
+	return &gorm.Config{
+		// TranslateError converts driver-specific errors into GORM's sentinels
+		// (gorm.ErrDuplicatedKey, gorm.ErrForeignKeyViolated, ...). Without it a unique
+		// violation arrives as an opaque *pq.Error, which is why services could not tell a
+		// genuine conflict apart from a real DB fault and defaulted to reporting BOTH as a
+		// benign 4xx — hiding outages. Services now branch on the sentinels; this is what
+		// makes that possible.
+		TranslateError: true,
+	}
+}
+
 // Connect opens a GORM database handle using the given DSN and applies the pool bounds.
 func Connect(dsn string, pool PoolConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), GormConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +65,22 @@ func RunMigrations(dsn string) error {
 		return err
 	}
 
+	// A DIRTY version means a previous migration died partway through and the schema is in an
+	// unknown state. migrate refuses to proceed, and every subsequent boot fails the same way —
+	// so without this branch the operator sees a generic error and no hint of the real problem,
+	// while the container crashloops. Say exactly what's wrong and what fixes it.
+	if version, dirty, verr := m.Version(); verr == nil && dirty {
+		return fmt.Errorf(
+			"migration %d is DIRTY: a previous run failed partway through and the schema is in an "+
+				"unknown state. Inspect it, then force the version with `migrate force %d` once the "+
+				"schema matches",
+			version, version-1,
+		)
+	}
+
 	// ErrNoChange means all migrations are already applied — not an error.
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	// errors.Is, not !=: a wrapped ErrNoChange would otherwise be treated as fatal.
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
 

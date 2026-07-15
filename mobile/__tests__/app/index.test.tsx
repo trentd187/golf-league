@@ -32,10 +32,13 @@ jest.mock("expo-router", () => ({
   },
 }));
 
+jest.mock("@/utils/sentry", () => ({ reportAuthFailure: jest.fn() }));
+
 // --- Imports (after mocks) ---
 
 import Index from "@/app/index";
 import { supabase } from "@/utils/supabase";
+import { reportAuthFailure } from "@/utils/sentry";
 
 const getSessionMock = supabase.auth.getSession as jest.Mock;
 const signOutMock = supabase.auth.signOut as jest.Mock;
@@ -91,6 +94,24 @@ it("calls signOut and redirects to /sign-in on a stale refresh token error", asy
     expect(signOutMock).toHaveBeenCalled();
     expect(mockRedirect).toHaveBeenCalledWith("/sign-in");
   });
+});
+
+// Regression: getSession() REJECTING (not returning { error }) used to leave `loading` true
+// forever, so the app's entry route sat on a blank <View> permanently — with no Sentry event,
+// because the .then() had no .catch(). Falling back to sign-in is always escapable; a white
+// screen is not.
+it("falls back to /sign-in and reports when getSession rejects, instead of hanging forever", async () => {
+  getSessionMock.mockRejectedValue(new Error("SecureStore read failed"));
+
+  render(<Index />);
+
+  await waitFor(() => {
+    expect(mockRedirect).toHaveBeenCalledWith("/sign-in");
+  });
+  expect(reportAuthFailure).toHaveBeenCalledWith(
+    expect.any(Error),
+    expect.objectContaining({ stage: "root_session_restore", fatal: true }),
+  );
 });
 
 it("renders a stable view (not null) during the loading state", () => {

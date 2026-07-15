@@ -510,8 +510,12 @@ func (s *RoundService) Schedule(ctx context.Context, eventID, callerID uuid.UUID
 			return &ValidationError{Field: colNineHoleSelection, Message: "nine_hole_selection is only valid for 18-hole courses"}
 		}
 
+		// Unchecked, a failed Count leaves roundCount at 0 and every round in the event is
+		// numbered "Round 1".
 		var roundCount int64
-		tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount)
+		if err := tx.Model(&models.Round{}).Where("event_id = ?", eventID).Count(&roundCount).Error; err != nil {
+			return fmt.Errorf("count event rounds: %w", err)
+		}
 		nextRoundNumber := int(roundCount) + 1
 
 		roundName := in.Name
@@ -730,8 +734,11 @@ func (s *RoundService) Update(ctx context.Context, roundID, callerID uuid.UUID, 
 		return RoundUpdateResult{}, fmt.Errorf("save round: %w", err)
 	}
 
-	// Reload for the fresh course name after a potential course change.
-	s.DB.WithContext(ctx).Preload("Course").First(&round, "id = ?", roundID)
+	// Reload for the fresh course name after a potential course change. A failure here would
+	// silently return a stale/empty course_name in the PATCH response.
+	if err := s.DB.WithContext(ctx).Preload("Course").First(&round, "id = ?", roundID).Error; err != nil {
+		return RoundUpdateResult{}, fmt.Errorf("reload round after update: %w", err)
+	}
 
 	statusChanged := in.Status != nil && oldStatus != round.Status
 	if statusChanged {
@@ -796,11 +803,14 @@ func (s *RoundService) CreateGroup(ctx context.Context, roundID, callerID uuid.U
 		return GroupMutationResult{}, ErrRoundForbidden
 	}
 
+	// Unchecked, a failed Scan leaves maxGroupNum at 0 and the new group collides on "Group 1".
 	var maxGroupNum int
-	s.DB.WithContext(ctx).Model(&models.Group{}).
+	if err := s.DB.WithContext(ctx).Model(&models.Group{}).
 		Where("round_id = ?", roundID).
 		Select("COALESCE(MAX(group_number), 0)").
-		Scan(&maxGroupNum)
+		Scan(&maxGroupNum).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("max group number: %w", err)
+	}
 
 	group := models.Group{
 		RoundID:      roundID,
@@ -942,65 +952,86 @@ func (s *RoundService) AddGroupMember(ctx context.Context, roundID, groupID, cal
 		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
 	}
 
+	// This Count is the ONLY thing enforcing the 4-player cap. Unchecked, any DB error left
+	// currentCount at 0, the `>= 4` test passed, and the cap was silently bypassed — a
+	// 5-player group with no error anywhere.
 	var currentCount int64
-	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if err := s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).
+		Where("group_id = ?", groupID).Count(&currentCount).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("count group players: %w", err)
+	}
 	if currentCount >= 4 {
 		return GroupMutationResult{}, ErrGroupFull
 	}
 
-	// Find-or-create RoundPlayer — a player has exactly one RoundPlayer record per round.
-	var roundPlayer models.RoundPlayer
-	if round.EventID != nil {
-		// Event-linked round: target must be an event member.
-		var eventPlayer models.EventPlayer
-		if err := s.DB.WithContext(ctx).Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
-			First(&eventPlayer).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return GroupMutationResult{}, ErrPlayerNotEventMember
+	// One transaction for the two inserts. Adding a player means creating a RoundPlayer AND a
+	// GroupPlayer; if the second failed, the orphan RoundPlayer persisted — the player was
+	// "in the round" but in no group, showing up on the leaderboard with no scores. Note
+	// AddGuestToGroup below already used a transaction for the identical shape, so this was
+	// drift, not a considered exception.
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Find-or-create RoundPlayer — a player has exactly one RoundPlayer record per round.
+		var roundPlayer models.RoundPlayer
+		if round.EventID != nil {
+			// Event-linked round: target must be an event member.
+			var eventPlayer models.EventPlayer
+			if err := tx.Where("event_id = ? AND user_id = ?", *round.EventID, targetUserID).
+				First(&eventPlayer).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrPlayerNotEventMember
+				}
+				return fmt.Errorf("load event player: %w", err)
 			}
-			return GroupMutationResult{}, fmt.Errorf("load event player: %w", err)
+			epID := eventPlayer.ID
+			if err := tx.Where("round_id = ? AND event_player_id = ?", roundID, epID).
+				First(&roundPlayer).Error; err != nil {
+				roundPlayer = models.RoundPlayer{
+					RoundID:       roundID,
+					UserID:        targetUserID,
+					EventPlayerID: &epID,
+					Status:        models.RoundPlayerStatusRegistered,
+				}
+				if err := tx.Create(&roundPlayer).Error; err != nil {
+					return fmt.Errorf("create round player: %w", err)
+				}
+			}
+		} else {
+			// Eventless round: create RoundPlayer by user_id directly.
+			if err := tx.Where("round_id = ? AND user_id = ?", roundID, targetUserID).
+				First(&roundPlayer).Error; err != nil {
+				roundPlayer = models.RoundPlayer{
+					RoundID: roundID,
+					UserID:  targetUserID,
+					Status:  models.RoundPlayerStatusRegistered,
+				}
+				if err := tx.Create(&roundPlayer).Error; err != nil {
+					return fmt.Errorf("create round player: %w", err)
+				}
+			}
 		}
-		epID := eventPlayer.ID
-		if err := s.DB.WithContext(ctx).Where("round_id = ? AND event_player_id = ?", roundID, epID).
-			First(&roundPlayer).Error; err != nil {
-			roundPlayer = models.RoundPlayer{
-				RoundID:       roundID,
-				UserID:        targetUserID,
-				EventPlayerID: &epID,
-				Status:        models.RoundPlayerStatusRegistered,
-			}
-			if err := s.DB.WithContext(ctx).Create(&roundPlayer).Error; err != nil {
-				return GroupMutationResult{}, fmt.Errorf("create round player: %w", err)
-			}
-		}
-	} else {
-		// Eventless round: create RoundPlayer by user_id directly.
-		if err := s.DB.WithContext(ctx).Where("round_id = ? AND user_id = ?", roundID, targetUserID).
-			First(&roundPlayer).Error; err != nil {
-			roundPlayer = models.RoundPlayer{
-				RoundID: roundID,
-				UserID:  targetUserID,
-				Status:  models.RoundPlayerStatusRegistered,
-			}
-			if err := s.DB.WithContext(ctx).Create(&roundPlayer).Error; err != nil {
-				return GroupMutationResult{}, fmt.Errorf("create round player: %w", err)
-			}
-		}
-	}
 
-	// Prevent a player from being in two groups for the same round.
-	var existing models.GroupPlayer
-	alreadyAssigned := s.DB.WithContext(ctx).
-		Joins("JOIN groups g ON g.id = group_players.group_id").
-		Where("group_players.round_player_id = ? AND g.round_id = ?", roundPlayer.ID, roundID).
-		First(&existing).Error == nil
-	if alreadyAssigned {
-		return GroupMutationResult{}, ErrPlayerAlreadyInGroup
-	}
+		// Prevent a player from being in two groups for the same round. `== nil` meant
+		// "assigned", so ANY error — including a DB fault — read as "not assigned" and let the
+		// duplicate through. Only a genuine ErrRecordNotFound may mean not-assigned.
+		var existing models.GroupPlayer
+		assignedErr := tx.
+			Joins("JOIN groups g ON g.id = group_players.group_id").
+			Where("group_players.round_player_id = ? AND g.round_id = ?", roundPlayer.ID, roundID).
+			First(&existing).Error
+		switch {
+		case assignedErr == nil:
+			return ErrPlayerAlreadyInGroup
+		case !errors.Is(assignedErr, gorm.ErrRecordNotFound):
+			return fmt.Errorf("check existing group assignment: %w", assignedErr)
+		}
 
-	gp := models.GroupPlayer{GroupID: groupID, RoundPlayerID: roundPlayer.ID}
-	if err := s.DB.WithContext(ctx).Create(&gp).Error; err != nil {
-		return GroupMutationResult{}, fmt.Errorf("add group player: %w", err)
+		gp := models.GroupPlayer{GroupID: groupID, RoundPlayerID: roundPlayer.ID}
+		if err := tx.Create(&gp).Error; err != nil {
+			return fmt.Errorf("add group player: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return GroupMutationResult{}, err
 	}
 
 	players, err := s.loadGroupPlayers(ctx, group.ID)
@@ -1043,8 +1074,14 @@ func (s *RoundService) AddGuestToGroup(ctx context.Context, roundID, groupID, ca
 		return GroupMutationResult{}, fmt.Errorf("load group: %w", err)
 	}
 
+	// This Count is the ONLY thing enforcing the 4-player cap. Unchecked, any DB error left
+	// currentCount at 0, the `>= 4` test passed, and the cap was silently bypassed — a
+	// 5-player group with no error anywhere.
 	var currentCount int64
-	s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+	if err := s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).
+		Where("group_id = ?", groupID).Count(&currentCount).Error; err != nil {
+		return GroupMutationResult{}, fmt.Errorf("count group players: %w", err)
+	}
 	if currentCount >= 4 {
 		return GroupMutationResult{}, ErrGroupFull
 	}
@@ -1157,18 +1194,23 @@ func (s *RoundService) RemoveGroupMember(ctx context.Context, roundID, groupID, 
 		}
 	}
 
-	// Deleting RoundPlayer cascades to GroupPlayer via ON DELETE CASCADE.
-	if err := s.DB.WithContext(ctx).Delete(&roundPlayer).Error; err != nil {
-		return fmt.Errorf("delete round player: %w", err)
-	}
-
-	// A guest user exists only for this one round_player, so remove the orphan row too.
-	if targetUser.IsGuest {
-		if err := s.DB.WithContext(ctx).Delete(&models.User{}, "id = ?", targetUserID).Error; err != nil {
-			return fmt.Errorf("delete guest user: %w", err)
+	// One transaction: the two deletes are a single logical removal. If the guest-user delete
+	// failed after the round_player delete committed, the guest's users row was orphaned
+	// forever — invisible in the UI and unreachable by any code path that could clean it up.
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Deleting RoundPlayer cascades to GroupPlayer via ON DELETE CASCADE.
+		if err := tx.Delete(&roundPlayer).Error; err != nil {
+			return fmt.Errorf("delete round player: %w", err)
 		}
-	}
-	return nil
+
+		// A guest user exists only for this one round_player, so remove the orphan row too.
+		if targetUser.IsGuest {
+			if err := tx.Delete(&models.User{}, "id = ?", targetUserID).Error; err != nil {
+				return fmt.Errorf("delete guest user: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // ─── Las Vegas teams ──────────────────────────────────────────────────────────
@@ -1260,11 +1302,15 @@ func (s *RoundService) AssignTeamMembers(ctx context.Context, roundID, teamID, c
 		return TeamResult{}, fmt.Errorf("load team: %w", err)
 	}
 
-	// Every target round_player must belong to this round.
+	// Every target round_player must belong to this round. Unchecked, a failed Count left
+	// validCount at 0 and the mismatch test rejected a legitimate assignment — or, worse,
+	// reported a DB fault to the client as ErrPlayerNotInRound.
 	if len(roundPlayerIDs) > 0 {
 		var validCount int64
-		s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
-			Where("round_id = ? AND id IN ?", roundID, roundPlayerIDs).Count(&validCount)
+		if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
+			Where("round_id = ? AND id IN ?", roundID, roundPlayerIDs).Count(&validCount).Error; err != nil {
+			return TeamResult{}, fmt.Errorf("validate round players: %w", err)
+		}
 		if int(validCount) != len(roundPlayerIDs) {
 			return TeamResult{}, ErrPlayerNotInRound
 		}
@@ -1325,6 +1371,168 @@ func (s *RoundService) DeleteTeam(ctx context.Context, roundID, teamID, callerID
 		return fmt.Errorf("delete team: %w", err)
 	}
 	return nil
+}
+
+// TeamSpec is one desired team in a ReplaceGroupTeams request: a name and the exact set of
+// round_players who should be on it.
+type TeamSpec struct {
+	Name           string
+	RoundPlayerIDs []uuid.UUID
+}
+
+// ReplaceGroupTeams atomically replaces ALL of a group's teams with the given set.
+// Organizer-only.
+//
+// Why this endpoint exists. The mobile team-assignment modals used to do this client-side:
+// DELETE every existing team in the group, then POST each new team and PUT its members —
+// separate network calls. Each call was individually hardened (retry, idempotency), but the
+// SEQUENCE was not atomic. If a create failed after the deletes had landed — a cellular drop
+// past the retry budget, a 5xx — the round was left with NO TEAMS AT ALL and the previous
+// partnerships were gone. That is real data loss, on exactly the flaky network this app is
+// built for, in the middle of a round.
+//
+// One transaction, one request: either the group's teams are fully replaced, or nothing
+// changes and the old teams are still there.
+//
+// "The group's teams" are the round's teams having any member in this group — teams are
+// round-scoped (models.Team has no group_id); the client derives the grouping from
+// membership, and so do we.
+func (s *RoundService) ReplaceGroupTeams(
+	ctx context.Context,
+	roundID, groupID, callerID uuid.UUID,
+	callerRole string,
+	specs []TeamSpec,
+) ([]TeamResult, error) {
+	isOrg, err := s.requireRoundOrganizer(ctx, roundID, callerID, callerRole)
+	if err != nil {
+		return nil, err
+	}
+	if !isOrg {
+		return nil, ErrRoundForbidden
+	}
+
+	var round models.Round
+	if err := s.DB.WithContext(ctx).Select("scoring_format").First(&round, "id = ?", roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRoundNotFound
+		}
+		return nil, fmt.Errorf("load round: %w", err)
+	}
+
+	// The 2-per-team cap is Las Vegas-specific (twosomes). Best Ball allows free-form sizes.
+	if round.ScoringFormat == models.ScoringFormatLasVegas {
+		for _, spec := range specs {
+			if len(spec.RoundPlayerIDs) > 2 {
+				return nil, ErrTeamFull
+			}
+		}
+	}
+
+	// Every named player must actually be in this group — otherwise an organizer could pull a
+	// player out of another group's teams by naming them here.
+	groupRPIDs, err := s.groupRoundPlayerIDs(ctx, roundID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	inGroup := make(map[uuid.UUID]bool, len(groupRPIDs))
+	for _, id := range groupRPIDs {
+		inGroup[id] = true
+	}
+	seen := make(map[uuid.UUID]bool)
+	for _, spec := range specs {
+		for _, rpID := range spec.RoundPlayerIDs {
+			if !inGroup[rpID] {
+				return nil, ErrPlayerNotInRound
+			}
+			if seen[rpID] {
+				return nil, &ValidationError{
+					Field:   "round_player_ids",
+					Message: "a player cannot be on two teams",
+				}
+			}
+			seen[rpID] = true
+		}
+	}
+
+	createdIDs := make([]uuid.UUID, 0, len(specs))
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Drop the group's current teams. team_members cascades.
+		if len(groupRPIDs) > 0 {
+			var staleTeamIDs []uuid.UUID
+			if err := tx.Model(&models.TeamMember{}).
+				Distinct("team_id").
+				Where("round_player_id IN ?", groupRPIDs).
+				Pluck("team_id", &staleTeamIDs).Error; err != nil {
+				return fmt.Errorf("find group teams: %w", err)
+			}
+			if len(staleTeamIDs) > 0 {
+				if err := tx.Where("id IN ? AND round_id = ?", staleTeamIDs, roundID).
+					Delete(&models.Team{}).Error; err != nil {
+					return fmt.Errorf("delete group teams: %w", err)
+				}
+			}
+		}
+
+		// Recreate. An empty side is simply omitted, so a caller can clear a group's teams by
+		// sending no specs (or only empty ones).
+		for _, spec := range specs {
+			if len(spec.RoundPlayerIDs) == 0 {
+				continue
+			}
+			name := spec.Name
+			if name == "" {
+				name = "Team"
+			}
+			team := models.Team{RoundID: roundID, Name: name}
+			if err := tx.Create(&team).Error; err != nil {
+				return fmt.Errorf("create team: %w", err)
+			}
+			members := make([]models.TeamMember, len(spec.RoundPlayerIDs))
+			for i, rpID := range spec.RoundPlayerIDs {
+				members[i] = models.TeamMember{TeamID: team.ID, RoundPlayerID: rpID}
+			}
+			if err := tx.Create(&members).Error; err != nil {
+				return fmt.Errorf("add team members: %w", err)
+			}
+			createdIDs = append(createdIDs, team.ID)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	out := make([]TeamResult, 0, len(createdIDs))
+	for _, id := range createdIDs {
+		var team models.Team
+		if err := s.DB.WithContext(ctx).First(&team, "id = ?", id).Error; err != nil {
+			return nil, fmt.Errorf("reload team: %w", err)
+		}
+		members, err := s.loadTeamMembers(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, TeamResult{Team: team, Members: members})
+	}
+	return out, nil
+}
+
+// groupRoundPlayerIDs returns the round_player ids belonging to one group of a round.
+func (s *RoundService) groupRoundPlayerIDs(ctx context.Context, roundID, groupID uuid.UUID) ([]uuid.UUID, error) {
+	var group models.Group
+	if err := s.DB.WithContext(ctx).First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrGroupNotFound
+		}
+		return nil, fmt.Errorf("load group: %w", err)
+	}
+
+	var ids []uuid.UUID
+	if err := s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).
+		Where("group_id = ?", groupID).
+		Pluck("round_player_id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("load group players: %w", err)
+	}
+	return ids, nil
 }
 
 // requireRoundOrganizer wraps IsRoundOrganizer, normalizing the not-found error so

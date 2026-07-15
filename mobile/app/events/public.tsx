@@ -21,7 +21,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { useTheme } from "@/hooks/useTheme";
 import { EventTypeBadge } from "@/components/badges";
@@ -64,11 +64,11 @@ export default function PublicEventsScreen() {
     queryKey: ["events", "public"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events/public`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<PublicEvent[]>({
+        url: `${API_URL}/api/v1/events/public`,
+        token: token ?? "",
+        label: "events_public",
       });
-      if (!res.ok) throw new Error(`Failed to fetch public events: ${res.status}`);
-      return res.json();
     },
   });
 
@@ -208,7 +208,7 @@ export default function PublicEventsScreen() {
 
                     {isPending ? (
                       <View className="flex-row items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200">
-                        <Ionicons name="time-outline" size={13} color="#d97706" />
+                        <Ionicons name="time-outline" size={13} color={t.colors.warning} />
                         <Text className="text-xs font-semibold text-amber-700">Pending</Text>
                       </View>
                     ) : (

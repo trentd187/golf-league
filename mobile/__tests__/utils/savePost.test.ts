@@ -328,6 +328,45 @@ describe("savePost — recover-by-key (create-side phantom recovery)", () => {
     expect(opts.report).toHaveBeenCalledTimes(1);
   });
 
+  // ─── Regression: the recovery read must be BOUNDED ───────────────────────────
+  //
+  // recoverByKey used to be a bare fetch() with no AbortController. It runs only after every
+  // create attempt has already died on the transport — i.e. on exactly the dead cellular
+  // socket that just exhausted the retries — and runSaveWithRetry AWAITS it. So a hung
+  // recovery read never settled: the savePost promise never resolved AND never rejected,
+  // opts.report() was never reached, and the user watched a create spinner forever with
+  // nothing in Sentry. The surrounding catch swallows a THROW; a hang is not a throw.
+  //
+  // It now goes through apiGet, which bounds every attempt. This test would hang forever
+  // against the old implementation.
+  it("bounds a stalled recovery read instead of hanging the create forever", async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest.fn((url: string, init?: { method?: string; signal?: AbortSignal }) => {
+        if (init?.method === "POST") return Promise.reject(new Error("Network request failed"));
+        // The recovery GET: a socket that is open but dead. It settles ONLY if aborted —
+        // which is precisely what a real fetch on a stale okhttp keep-alive does.
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+        });
+      });
+      const opts = baseOpts({
+        fetchImpl,
+        recoverUrl: (key: string) => `http://localhost:8080/api/v1/idempotency/${key}`,
+      });
+
+      const settled = expect(savePost(opts)).rejects.toThrow("Network request failed");
+      // Drive apiGet's per-attempt timeouts. Without them, nothing here ever fires.
+      await jest.advanceTimersByTimeAsync(120_000);
+      await settled;
+
+      // The real point: the create FAILED loudly and was reported, rather than hanging.
+      expect(opts.report).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("does NOT attempt key recovery on an HTTP non-2xx (server rejected the create)", async () => {
     const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 422, json: () => Promise.resolve({}) });
     const opts = baseOpts({

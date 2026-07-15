@@ -208,11 +208,24 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		return false, ErrRoundNotActive
 	}
 
+	// Every lookup below distinguishes "the row genuinely isn't there" (a real permission
+	// denial) from "the database failed" (a 500).
+	//
+	// This used to be `return false, nil` on ANY error. A connection blip, a pool timeout, a
+	// context deadline — all of them became a 403 "not authorized to modify scores for this
+	// player". And 403 is a 4xx, which ErrorLogger deliberately skips, so a DB fault mid-round
+	// produced NO Sentry Issue and looked to the player like a permissions bug. That single
+	// shortcut defeated the whole phantom-save observability program: "my score wouldn't save"
+	// with nothing in Sentry is exactly the report we chased for weeks.
+
 	// Find which group the target player belongs to.
 	var targetGP models.GroupPlayer
 	if err := s.DB.WithContext(ctx).First(&targetGP, "round_player_id = ?", targetRoundPlayerID).Error; err != nil {
-		// Target not in any group — deny without leaking why.
-		return false, nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Target genuinely isn't in a group — deny without leaking why.
+			return false, nil
+		}
+		return false, fmt.Errorf("load target group player: %w", err)
 	}
 
 	// Resolve caller → RoundPlayer → GroupPlayer.
@@ -223,25 +236,40 @@ func (s *ScoreService) canModifyScores(ctx context.Context, roundID, targetRound
 		if err := s.DB.WithContext(ctx).
 			Where("event_id = ? AND user_id = ?", *round.EventID, callerID).
 			First(&callerEP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in the event
+			}
+			return false, fmt.Errorf("load caller event player: %w", err)
 		}
 		if err := s.DB.WithContext(ctx).
 			Where("round_id = ? AND event_player_id = ?", roundID, callerEP.ID).
 			First(&callerRP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in this round
+			}
+			return false, fmt.Errorf("load caller round player: %w", err)
 		}
 	} else {
 		if err := s.DB.WithContext(ctx).
 			Where("round_id = ? AND user_id = ?", roundID, callerID).
 			First(&callerRP).Error; err != nil {
-			return false, nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil // caller isn't in this round
+			}
+			return false, fmt.Errorf("load caller round player: %w", err)
 		}
 	}
+
 	var callerGP models.GroupPlayer
-	err2 := s.DB.WithContext(ctx).
+	if err := s.DB.WithContext(ctx).
 		Where("round_player_id = ? AND group_id = ?", callerRP.ID, targetGP.GroupID).
-		First(&callerGP).Error
-	return err2 == nil, nil
+		First(&callerGP).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil // caller is in the round, but not in the target's group
+		}
+		return false, fmt.Errorf("load caller group player: %w", err)
+	}
+	return true, nil
 }
 
 // ─── GetScorecard ─────────────────────────────────────────────────────────────
@@ -288,6 +316,27 @@ func (s *ScoreService) GetUserScorecards(ctx context.Context, targetID, callerID
 		Limit(last).
 		Scan(&roundIDs).Error; err != nil {
 		return nil, fmt.Errorf("list user rounds: %w", err)
+	}
+	return s.GetScorecardsForRounds(ctx, roundIDs, callerID, callerRole)
+}
+
+// GetEventScorecards returns the scorecards for every COMPLETED round in an event, in one
+// response.
+//
+// Backs GET /events/:eventId/scorecards. The event detail screen used to build its leaderboard
+// with a useQueries() fan-out — one /rounds/:id/scorecard request per completed round — AND it
+// polled every one of them on the 60s live interval. A 20-round league meant 20 concurrent
+// requests on tab open and 20 more every minute, on the same cellular links the whole save
+// path was hardened for. Exactly the N+1 that GET /users/:id/scorecards already removed from
+// the stats screen; the event screen simply never got the same treatment.
+func (s *ScoreService) GetEventScorecards(ctx context.Context, eventID, callerID uuid.UUID, callerRole string) ([]*ScorecardData, error) {
+	var roundIDs []uuid.UUID
+	if err := s.DB.WithContext(ctx).Model(&models.Round{}).
+		Select("id").
+		Where("event_id = ? AND status = ?", eventID, models.RoundStatusCompleted).
+		Order("scheduled_date ASC").
+		Scan(&roundIDs).Error; err != nil {
+		return nil, fmt.Errorf("list event rounds: %w", err)
 	}
 	return s.GetScorecardsForRounds(ctx, roundIDs, callerID, callerRole)
 }
@@ -419,18 +468,54 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 		return nil, fmt.Errorf("load group players: %w", err)
 	}
 
+	if len(rows) == 0 {
+		return []ScorecardPlayerData{}, nil
+	}
+
+	// Batch the scores and hole stats: TWO queries for the whole group, not two PER PLAYER.
+	//
+	// This loop used to issue `Find(&dbScores)` and `Find(&dbStats)` per player — and it sits
+	// inside a per-group loop, inside a per-round loop (GetScorecardsForRounds). The stats
+	// screen requests ?last=200, so a heavy user's stats load was on the order of TWO THOUSAND
+	// queries in a single 30s request. The comment on GetScorecardsForRounds calls it the fix
+	// for "the FRONTEND-2 N+1" — it removed the client's fan-out by moving the fan-out into
+	// the server. Same pattern as round_service.go's batched group loads.
+	rpIDs := make([]uuid.UUID, 0, len(rows))
+	for _, pr := range rows {
+		if rpID, err := uuid.Parse(pr.RoundPlayerID); err == nil {
+			rpIDs = append(rpIDs, rpID)
+		}
+	}
+
+	var allScores []models.Score
+	if err := s.DB.WithContext(ctx).
+		Where("round_player_id IN ?", rpIDs).
+		Order("hole_number ASC").
+		Find(&allScores).Error; err != nil {
+		return nil, fmt.Errorf("load group scores: %w", err)
+	}
+	scoresByRP := make(map[uuid.UUID][]models.Score, len(rpIDs))
+	for _, sc := range allScores {
+		scoresByRP[sc.RoundPlayerID] = append(scoresByRP[sc.RoundPlayerID], sc)
+	}
+
+	var allStats []models.HoleStat
+	if err := s.DB.WithContext(ctx).
+		Where("round_player_id IN ?", rpIDs).
+		Order("hole_number ASC").
+		Find(&allStats).Error; err != nil {
+		return nil, fmt.Errorf("load group hole stats: %w", err)
+	}
+	statsByRP := make(map[uuid.UUID][]models.HoleStat, len(rpIDs))
+	for _, st := range allStats {
+		statsByRP[st.RoundPlayerID] = append(statsByRP[st.RoundPlayerID], st)
+	}
+
 	players := make([]ScorecardPlayerData, 0, len(rows))
 	for _, pr := range rows {
 		rpID, _ := uuid.Parse(pr.RoundPlayerID)
 
-		var dbScores []models.Score
-		if err := s.DB.WithContext(ctx).
-			Where("round_player_id = ?", rpID).
-			Order("hole_number ASC").
-			Find(&dbScores).Error; err != nil {
-			return nil, fmt.Errorf("load scores for player %s: %w", rpID, err)
-		}
-
+		dbScores := scoresByRP[rpID]
 		scores := make([]ScorecardScoreData, 0, len(dbScores))
 		totalGross, totalNet := 0, 0
 		for _, sc := range dbScores {
@@ -445,14 +530,7 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 			tg, tn = &totalGross, &totalNet
 		}
 
-		var dbStats []models.HoleStat
-		if err := s.DB.WithContext(ctx).
-			Where("round_player_id = ?", rpID).
-			Order("hole_number ASC").
-			Find(&dbStats).Error; err != nil {
-			return nil, fmt.Errorf("load stats for player %s: %w", rpID, err)
-		}
-
+		dbStats := statsByRP[rpID]
 		holeStats := make([]ScorecardHoleStatData, 0, len(dbStats))
 		for _, st := range dbStats {
 			holeStats = append(holeStats, ScorecardHoleStatData{
@@ -496,59 +574,66 @@ func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, 
 		return ErrScoreForbidden
 	}
 
-	var rp models.RoundPlayer
-	if err := s.DB.WithContext(ctx).First(&rp, "id = ? AND round_id = ?", roundPlayerID, roundID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrRoundPlayerNotFound
+	// One transaction. Saving the handicap and re-deriving every net score are a single
+	// logical change: without the transaction, a failure partway through the per-hole UPDATE
+	// loop (say at hole 12 of 18) committed the new handicap but left the card half
+	// recomputed — a permanently wrong leaderboard that no retry repairs, because the retry
+	// recalculates from the ALREADY-SAVED handicap and sees nothing to fix.
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rp models.RoundPlayer
+		if err := tx.First(&rp, "id = ? AND round_id = ?", roundPlayerID, roundID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRoundPlayerNotFound
+			}
+			return fmt.Errorf("load round player: %w", err)
 		}
-		return fmt.Errorf("load round player: %w", err)
-	}
 
-	rp.CourseHandicap = &handicap
-	if err := s.DB.WithContext(ctx).Save(&rp).Error; err != nil {
-		return fmt.Errorf("save handicap: %w", err)
-	}
-
-	// Back-fill net_score for every score this player has already entered.
-	// Mirrors RecalculateEventScores but scoped to a single round_player.
-	var round models.Round
-	if err := s.DB.WithContext(ctx).
-		Preload("Event").
-		Preload("DefaultTee.Holes").
-		First(&round, "id = ?", roundID).Error; err != nil {
-		return fmt.Errorf("load round for recalc: %w", err)
-	}
-	eff := EffectiveCourseHandicap(handicap, roundHandicapAllowance(&round))
-
-	played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
-	siMap := NormalizeStrokeIndexes(played)
-	holeCount := len(played)
-	if holeCount == 0 {
-		holeCount = 18
-	}
-
-	type scoreRow struct {
-		ScoreID    uuid.UUID
-		GrossScore int
-		HoleNumber int
-	}
-	var rows []scoreRow
-	if err := s.DB.WithContext(ctx).Table("scores s").
-		Select("s.id as score_id, s.gross_score, s.hole_number").
-		Where("s.round_player_id = ?", roundPlayerID).
-		Scan(&rows).Error; err != nil {
-		return fmt.Errorf("load scores for recalc: %w", err)
-	}
-
-	for _, row := range rows {
-		netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
-		if err := s.DB.WithContext(ctx).Model(&models.Score{}).
-			Where("id = ?", row.ScoreID).
-			Update("net_score", netScore).Error; err != nil {
-			return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+		rp.CourseHandicap = &handicap
+		if err := tx.Save(&rp).Error; err != nil {
+			return fmt.Errorf("save handicap: %w", err)
 		}
-	}
-	return nil
+
+		// Back-fill net_score for every score this player has already entered.
+		// Mirrors RecalculateEventScores but scoped to a single round_player.
+		var round models.Round
+		if err := tx.
+			Preload("Event").
+			Preload("DefaultTee.Holes").
+			First(&round, "id = ?", roundID).Error; err != nil {
+			return fmt.Errorf("load round for recalc: %w", err)
+		}
+		eff := EffectiveCourseHandicap(handicap, roundHandicapAllowance(&round))
+
+		played := filterPlayedHoles(round.DefaultTee.Holes, round.NineHoleSelection)
+		siMap := NormalizeStrokeIndexes(played)
+		holeCount := len(played)
+		if holeCount == 0 {
+			holeCount = 18
+		}
+
+		type scoreRow struct {
+			ScoreID    uuid.UUID
+			GrossScore int
+			HoleNumber int
+		}
+		var rows []scoreRow
+		if err := tx.Table("scores s").
+			Select("s.id as score_id, s.gross_score, s.hole_number").
+			Where("s.round_player_id = ?", roundPlayerID).
+			Scan(&rows).Error; err != nil {
+			return fmt.Errorf("load scores for recalc: %w", err)
+		}
+
+		for _, row := range rows {
+			netScore := row.GrossScore - HandicapStrokes(eff, siMap[row.HoleNumber], holeCount)
+			if err := tx.Model(&models.Score{}).
+				Where("id = ?", row.ScoreID).
+				Update("net_score", netScore).Error; err != nil {
+				return fmt.Errorf("update score %s: %w", row.ScoreID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // roundHandicapAllowance returns the event's handicap allowance, or nil for
@@ -675,6 +760,13 @@ func (s *ScoreService) UpsertScores(ctx context.Context, roundID, roundPlayerID,
 // tests can reach the validation error path via nilScoreSvc() with auth injected.
 func (s *ScoreService) UpsertHoleStats(ctx context.Context, roundID, roundPlayerID, callerID uuid.UUID, callerRole string, stats []HoleStatInput) (int, error) {
 	for _, st := range stats {
+		// hole_number has no DB CHECK (only NOT NULL + UNIQUE), so this is the only guard
+		// against a junk out-of-range hole row — the same gate UpsertScores applies. 18 is the
+		// max across every layout (front 1–9, back 10–18, full 1–18), so a constant bound needs
+		// no round load and keeps this whole validation block reachable without a DB (Tier 1).
+		if st.HoleNumber < 1 || st.HoleNumber > 18 {
+			return 0, &ValidationError{Field: "hole_number", Message: "hole_number must be between 1 and 18"}
+		}
 		if st.GIR != nil && !validGIR[*st.GIR] {
 			return 0, &ValidationError{Field: "gir", Message: "gir must be one of: hit, miss, na"}
 		}

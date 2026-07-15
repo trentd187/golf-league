@@ -32,7 +32,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { API_URL } from "@/constants/api";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { savePost } from "@/utils/savePost";
 import { showAlert } from "@/utils/alerts";
 import DateInput, { apiToDisplay, displayToApi } from "@/components/DateInput";
@@ -192,11 +192,11 @@ export default function EventsScreen() {
     queryKey: ["events"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/events`, {
-        headers: { Authorization: `Bearer ${token}` },
+      return apiGetJson<EventResponse[]>({
+        url: `${API_URL}/api/v1/events`,
+        token: token ?? "",
+        label: "events",
       });
-      if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
-      return res.json();
     },
   });
 
@@ -355,7 +355,7 @@ export default function EventsScreen() {
           </View>
         ) : isError ? (
           <View className="flex-1 items-center justify-center gap-3">
-            <Ionicons name="alert-circle-outline" size={48} color="#dc2626" />
+            <Ionicons name="alert-circle-outline" size={48} color={t.colors.danger} />
             <Text className={`font-semibold ${t.textPrimary}`}>Failed to load events</Text>
             <TouchableOpacity className={`${t.primaryBg} rounded-xl px-6 py-3`} onPress={() => refetch()}>
               <Text className="text-white font-semibold">Retry</Text>
@@ -602,8 +602,8 @@ export default function EventsScreen() {
                   <Switch
                     value={newIsPublic}
                     onValueChange={setNewIsPublic}
-                    trackColor={{ false: "#d1d5db", true: t.colors.tabBarActive }}
-                    thumbColor="#ffffff"
+                    trackColor={{ false: t.colors.switchTrackOff, true: t.colors.tabBarActive }}
+                    thumbColor={t.colors.onPrimary}
                     disabled={createEventMutation.isPending}
                   />
                 </View>

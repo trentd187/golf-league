@@ -118,6 +118,65 @@ New domains follow the layered pattern: handlers parse HTTP and delegate to a se
 
 Sentinel errors (e.g. `services.ErrCourseNotFound`, `services.ErrCourseInUse`) and `*ValidationError` are the contract between the two layers — handlers map them to HTTP statuses via a `writeCourseError`-style helper. **Note:** that helper returns `bool` (handled / not-handled), not `error`. Fiber's `c.Status().JSON()` returns `nil` on success, so an `error`-returning helper can't distinguish "wrote a response" from "fell through".
 
+## The GORM trap: `errcheck` will NOT save you
+
+**`Count`, `Find`, `Scan`, `Pluck`, `Delete`, and `Updates` return `*gorm.DB`, not `error`.**
+So this compiles clean, passes `golangci-lint`, and is a bug:
+
+```go
+var currentCount int64
+s.DB.WithContext(ctx).Model(&models.GroupPlayer{}).Where("group_id = ?", groupID).Count(&currentCount)
+if currentCount >= 4 { return ErrGroupFull }   // ← on ANY DB error, currentCount is 0. Cap bypassed.
+```
+
+`errcheck` sees a used return value and says nothing. A full-codebase audit found ~25 of these.
+The consequences were not subtle: `UserService` returned **200 OK with zeroed stats** during a DB
+outage; `canModifyScores` turned a connection blip into a **403 "not authorized"**; the 4-player
+group cap was silently bypassed. Every one of those is a 2xx or a 4xx, and `ErrorLogger` only
+escalates **5xx** to a Sentry Issue — so the failures that mattered most were exactly the ones we
+could not see.
+
+**The rule: append `.Error` and handle it. Only `gorm.ErrRecordNotFound` may collapse into a
+"not found / denied" result — everything else wraps with `%w` and becomes a 500.**
+
+```go
+if err := ...Count(&currentCount).Error; err != nil {
+    return fmt.Errorf("count group players: %w", err)
+}
+```
+
+**"Handle it" is not always "become a 500."** A genuinely best-effort query — one whose failure must
+*not* fail the request it piggybacks on — still may not discard its `.Error`; it degrades *loudly*.
+The expired-idempotency-key sweep (`middleware/idempotency.go maybeCleanup`) is the canonical case:
+a failed sweep just leaves rows for the next pass, so it returns no error to the caller — but it
+`slog.WarnContext`s with `event_type_label:idempotency.cleanup_failed`, because a *permanently*
+failing sweep grows that table without bound and the dropped `*gorm.DB` would have told nobody. The
+test is "if this failed forever, would anyone see it?" — Warn for best-effort, wrapped-500 for
+everything on the request's critical path. **The one thing never allowed is a silently discarded
+`*gorm.DB`.**
+
+`gorm.Config{TranslateError: true}` is set in `database.GormConfig()` (shared with the
+testcontainers DB via `testutil`, so the two cannot drift) — that is what makes
+`errors.Is(err, gorm.ErrDuplicatedKey)` work. Without it a unique violation arrives as an opaque
+`*pq.Error` and a service **cannot** tell a genuine conflict from a real fault, which is precisely
+why `FollowUser` used to report a database outage as a benign 409.
+
+### Testing it: inject a real DB fault
+
+`internal/services/dbfault_test.go` holds the pattern. Two techniques, each chosen for what it can
+prove:
+
+- **A cancelled context** fails the very next query. Use when the unchecked query is the *first*
+  one a method runs.
+- **Renaming a table** (`breakTable`) fails only the queries that touch it, letting earlier ones
+  succeed. Necessary when the unchecked query sits mid-method behind correctly-checked ones — a
+  cancelled context would trip those first and prove nothing.
+- **A `BEFORE INSERT` trigger** when you need only *writes* to fail while reads still work (used to
+  prove `ReplaceGroupTeams` rolls its deletes back).
+
+A `queryCounter` GORM logger (same file) counts executed SQL, which is how the N+1 regression is
+pinned: a 4-player group must issue exactly as many queries as a 2-player one.
+
 ## Coverage ratchet
 
 Baseline in `.go-coverage-baseline` (repo root, committed). Auto-updates upward when coverage improves; never decreases. Measured: `internal/handlers`, `internal/middleware`, `internal/services`.

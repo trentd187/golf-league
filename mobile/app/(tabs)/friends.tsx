@@ -4,7 +4,7 @@
 
 import { useUser } from "@/hooks/useUser";
 import { useAuth } from "@/hooks/useAuth";
-import { apiFetch } from "@/utils/api";
+import { apiGetJson } from "@/utils/apiGet";
 import { API_URL } from "@/constants/api";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -29,13 +29,13 @@ export default function FriendsScreen() {
     queryKey: ["users", "following"],
     queryFn: async () => {
       const token = await getToken();
-      const res = await apiFetch(`${API_URL}/api/v1/users/following`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to load following list");
-      return res.json() as Promise<
+      return apiGetJson<
         { id: string; display_name: string; avatar_url: string | null; rounds_played: number }[]
-      >;
+      >({
+        url: `${API_URL}/api/v1/users/following`,
+        token: token ?? "",
+        label: "users_following",
+      });
     },
     // Only fetch once the Supabase session is ready (user is truthy).
     enabled: !!user,

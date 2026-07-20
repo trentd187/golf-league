@@ -102,6 +102,7 @@ were the *only* ones with no Sentry signal at all.
 | `server.panic` | `cmd/server/main.go` | the listener goroutine panicked (it had no `recover`, so a panic there died silently) |
 | `auth.jwks_refresh_failed` | `middleware.LoadJWKS` | a background JWKS refresh failed. The cached keys still work, so it isn't fatal — but if it keeps failing through a key rotation, every token stops verifying. |
 | `auth.user_sync_failed` | `middleware.MakeAuthHandler` (**warn**) | the JWT→DB user sync write failed. Not worth a 500 (the caller is authenticated, their data is merely stale) but it fails *forever, silently* if left unreported. |
+| `auth.create_user_race_resolved` | `middleware.findOrCreateUser` (**info**) | a new user's parallel first-load requests raced to INSERT the same `auth_id`; a loser hit `gorm.ErrDuplicatedKey` and was **absorbed** by re-reading the winner's row instead of 500ing. This is the *success* signal of the fix for GOLF-LEAGUE-BACKEND-4 (2026-07-20). A rise here is benign; a `auth.create_user` 5xx returning means the refetch itself failed (a genuine fault, e.g. an email collision with a different `auth_id`). |
 | `health.db_unreachable` | `handlers.HealthCheck` | the DB ping failed → 503 |
 | `health.jwks_empty` | `handlers.HealthCheck` | **zero verifying keys** → 503 |
 

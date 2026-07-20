@@ -260,6 +260,46 @@ describe("savePost — HTTP non-2xx", () => {
   });
 });
 
+describe("savePost — 401 token refresh (expired mid-loop)", () => {
+  it("refreshes the bearer after a 401 and retries with the new token, resolving the row", async () => {
+    const created = { id: "round-1" };
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValue(okJson(created));
+    const getFreshToken = jest.fn().mockResolvedValue("new-token");
+    const reportAuthRefresh = jest.fn();
+    const opts = baseOpts({ fetchImpl, getFreshToken, reportAuthRefresh });
+
+    await expect(savePost(opts)).resolves.toEqual(created);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Bearer jwt-123");
+    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe("Bearer new-token");
+    expect(getFreshToken).toHaveBeenCalledTimes(1);
+    expect(reportAuthRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "round", attempt: 2 }),
+    );
+    expect(opts.report).not.toHaveBeenCalled();
+  });
+});
+
+describe("savePost — fail-fast on definitive 4xx", () => {
+  it.each([400, 403, 409])(
+    "fails immediately on %i with exactly one attempt and no backoff sleep",
+    async (status) => {
+      const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status });
+      const opts = baseOpts({ fetchImpl }); // CREATE_SAVE budget = 3, but a 4xx must not retry
+
+      await expect(savePost(opts)).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(noSleep).not.toHaveBeenCalled();
+      const [, ctx] = (opts.report as jest.Mock).mock.calls[0];
+      expect(ctx).toMatchObject({ httpStatus: status, attempts: 1 });
+    },
+  );
+});
+
 describe("savePost — per-attempt timeout", () => {
   it("aborts a hung attempt and retries with a fresh connection", async () => {
     // A fetch that only settles when its abort signal fires — models a dead socket.

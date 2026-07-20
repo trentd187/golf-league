@@ -31,6 +31,7 @@ import {
   reportSaveFailure,
   reportSaveReconciled,
   addSaveBreadcrumb,
+  addSaveAuthRefreshBreadcrumb,
   type SaveFailureContext,
   type SaveReconciledContext,
 } from "@/utils/sentry";
@@ -87,11 +88,15 @@ export interface SavePutOptions {
   parseErrorMessage?: (res: Response) => Promise<string | undefined>;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
+  // getFreshToken re-resolves the bearer between attempts after a 401 (default:
+  // getFreshAccessToken, applied in the core). Injected in tests.
+  getFreshToken?: () => Promise<string | null>;
   genKey?: () => string; // mints the Idempotency-Key; default is a v4 UUID
   netInfoFetch?: () => Promise<NetInfoStateLike>;
   report?: (error: unknown, ctx: SaveFailureContext) => void;
   reportReconciled?: (ctx: SaveReconciledContext) => void;
   breadcrumb?: typeof addSaveBreadcrumb;
+  reportAuthRefresh?: typeof addSaveAuthRefreshBreadcrumb;
   sleep?: (ms: number) => Promise<void>;
   rng?: () => number;
   now?: () => number;
@@ -120,7 +125,9 @@ export async function savePut(opts: SavePutOptions): Promise<void> {
     report: opts.report ?? reportSaveFailure,
     reportReconciled: opts.reportReconciled ?? reportSaveReconciled,
     breadcrumb: opts.breadcrumb ?? addSaveBreadcrumb,
+    reportAuthRefresh: opts.reportAuthRefresh ?? addSaveAuthRefreshBreadcrumb,
     fetchImpl: opts.fetchImpl,
+    getFreshToken: opts.getFreshToken,
     genKey: opts.genKey,
     netInfoFetch: opts.netInfoFetch,
     sleep: opts.sleep,

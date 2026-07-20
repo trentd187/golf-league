@@ -12,6 +12,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -115,18 +116,59 @@ func (f *fanout) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (f *fanout) Handle(ctx context.Context, r slog.Record) error {
+	// Detach every string attr from its backing array before dispatch. Fiber's
+	// c.Method()/c.Path()/c.Get() return zero-copy strings that alias fasthttp's
+	// reused request buffers. The stdout handler serializes synchronously (safe),
+	// but the sentry-go handler batches and serializes asynchronously — by then the
+	// next request has recycled the buffer, so the logged method/path mutate into
+	// garbage (observed in Sentry Logs as "GETT", "/api/v1/meunds/…"). This also
+	// taints the 5xx→Issue tags in errorlog.go. strings.Clone copies the bytes into
+	// a fresh allocation owned by us, breaking the alias; it runs once here so every
+	// current and future producer is covered without touching any call site.
+	safe := cloneRecordStrings(r)
 	var firstErr error
 	for _, h := range f.handlers {
-		if !h.Enabled(ctx, r.Level) {
+		if !h.Enabled(ctx, safe.Level) {
 			continue
 		}
 		// Clone so downstream handlers that mutate attrs (e.g. via WithAttrs chains)
 		// don't see each other's modifications.
-		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+		if err := h.Handle(ctx, safe.Clone()); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// cloneRecordStrings returns a copy of r whose string attribute values are
+// reallocated via strings.Clone, so none of them alias a caller-owned mutable
+// buffer. Non-string values are carried over unchanged; group values recurse.
+func cloneRecordStrings(r slog.Record) slog.Record {
+	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		out.AddAttrs(cloneAttrStrings(a))
+		return true
+	})
+	return out
+}
+
+// cloneAttrStrings deep-copies the string leaves of a single attr. Only KindString
+// and KindGroup can hold or contain fasthttp-backed strings; every other kind is
+// returned as-is.
+func cloneAttrStrings(a slog.Attr) slog.Attr {
+	switch a.Value.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, strings.Clone(a.Value.String()))
+	case slog.KindGroup:
+		group := a.Value.Group()
+		cloned := make([]slog.Attr, len(group))
+		for i, ga := range group {
+			cloned[i] = cloneAttrStrings(ga)
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(cloned...)}
+	default:
+		return a
+	}
 }
 
 func (f *fanout) WithAttrs(attrs []slog.Attr) slog.Handler {

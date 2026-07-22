@@ -365,11 +365,24 @@ Score-only participants with no account, for tracking scores of people who don't
 
 Player-entered per round — **no automatic WHS calculation.**
 
-- Stored in `round_players.course_handicap` (int) — playing handicap for that round
+- Stored in `round_players.course_handicap` (signed int) — playing handicap for that round
 - `round_players.handicap_index` (decimal) is optional and unused in any calculation
 - `rounds.requires_handicap = true` → score entry is blocked until `course_handicap` is set
-- Enforced at the API layer on score mutation routes
+- Enforced at the API layer on score mutation routes; bounded to `-10..54`
+  (`validateCourseHandicap`) so a fat-fingered entry can't allocate phantom strokes
 - Do **not** implement the WHS formula (`handicap_index × slope / 113 + rating - par`) — replaced
+
+**Plus handicaps (golf `+N`).** A player better than scratch is entered/displayed in golf
+notation as `+N` and stored as a **negative** `course_handicap` (`+2` → `-2`) — no separate flag,
+no migration. Entry: `parseCourseHandicapInput` (a leading `+` negates; plain digits are a regular
+handicap; `-N` and decimals are rejected); display: `formatCourseHandicap` / `formatCourseHandicapWithAllowance`
+(all in [`mobile/utils/handicap.ts`](mobile/utils/handicap.ts), reused by guest entry via
+`parseGuestHandicap`). Allocation (`holeHandicapStrokes` client / `HandicapStrokes` backend —
+**must stay identical**): a plus handicap returns **negative** strokes, *given back* starting at the
+**easiest** hole (highest normalized stroke index) and working down — the USGA mirror of receiving.
+Net is always `gross - strokes`, so a given stroke *raises* net by one on that hole. The scorecard
+shows this as a signed adjustment (`−1` received, `+1` given) via `formatHoleStrokeAdjustment`; the
+raw→effective allowance conversion lives in the C.H. header, not the per-hole box.
 
 ### Finish Position
 

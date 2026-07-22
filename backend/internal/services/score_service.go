@@ -568,6 +568,9 @@ func (s *ScoreService) assembleGroupPlayers(ctx context.Context, groupID uuid.UU
 // leaderboard reflects the updated handicap without requiring re-entry.
 // Caller must share a tee-time group with the target player, or be an organizer/admin.
 func (s *ScoreService) SetHandicap(ctx context.Context, roundID, roundPlayerID, callerID uuid.UUID, callerRole string, handicap int) error {
+	if err := validateCourseHandicap(handicap); err != nil {
+		return err
+	}
 	ok, err := s.canModifyScores(ctx, roundID, roundPlayerID, callerID, callerRole)
 	if err != nil {
 		return err

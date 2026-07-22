@@ -48,7 +48,13 @@ import type { LocalScores, LocalStats, LocalHandicaps, HoleStatEntry, NumericSta
 import type { Scorecard, ScorecardGroup, ScorecardHoleStat, ScorecardSettings, TeeShotClub } from "@/types/scorecard";
 import { DEFAULT_SCORECARD_SETTINGS, TEE_SHOT_CLUBS } from "@/types/scorecard";
 import { buildLiveVegasMatch, type VegasBasis } from "@/utils/vegas";
-import { holeHandicapStrokes } from "@/utils/handicap";
+import {
+  holeHandicapStrokes,
+  parseCourseHandicapInput,
+  formatCourseHandicap,
+  formatCourseHandicapWithAllowance,
+  formatHoleStrokeAdjustment,
+} from "@/utils/handicap";
 import { formatToPar } from "@/utils/scoringFormats";
 import VegasBasicScorecard from "@/components/VegasBasicScorecard";
 import { buildLiveBestBallMatch, type BestBallBasis } from "@/utils/bestBall";
@@ -113,10 +119,11 @@ const NUMERIC_STAT_META: Record<NumericStatField, { label: string; unit: string 
 // Stroke allocation and to-par formatting come from utils/ — this screen used to re-implement
 // BOTH, despite already importing twenty other things from the same modules.
 //
-// The handicapStrokes copy was not merely redundant, it was WRONG: it lacked the
-// `effHandicap <= 0` guard, so for a plus-handicap player (a negative handicap) it returned
-// NEGATIVE strokes where holeHandicapStrokes returns 0 — silently mis-scoring their net.
-// That is exactly the divergence a duplicated derivation invites.
+// The handicapStrokes copy was not merely redundant, it was WRONG: it diverged from
+// holeHandicapStrokes on plus-handicap players (a negative handicap). holeHandicapStrokes
+// now returns NEGATIVE strokes for a plus handicap (a stroke ADDED on the easiest holes,
+// per USGA) and must stay identical to the backend HandicapStrokes — exactly the kind of
+// divergence a duplicated derivation invites.
 
 // emptyHoleStat is the default state for a hole with no stats entered yet.
 const emptyHoleStat: HoleStatEntry = {
@@ -727,8 +734,9 @@ export default function ScorecardScreen() {
       await Promise.all(
         group.players.map((player) => {
           const hStr = handicaps[player.round_player_id] ?? "";
-          const hNum = parseInt(hStr, 10);
-          if (isNaN(hNum)) return Promise.resolve();
+          // Golf notation: "+2" → plus handicap (stored -2); "12" → 12; blank/invalid → skip.
+          const hNum = parseCourseHandicapInput(hStr);
+          if (hNum === null) return Promise.resolve();
           return savePut({
             url:   `${API_URL}/api/v1/rounds/${roundId}/players/${player.round_player_id}/handicap`,
             token: token ?? "",
@@ -756,9 +764,10 @@ export default function ScorecardScreen() {
   const handleSaveHandicap = async () => {
     const targetId = editingHandicapFor;
     if (!targetId || !group) return;
-    const hNum = Number.parseInt(handicapDraft, 10);
-    if (Number.isNaN(hNum) || hNum < 0) {
-      showAlert("Invalid", "Enter a valid course handicap (0 or more).");
+    // Golf notation: "+2" → plus handicap (stored -2); "12" → 12; "0" → scratch.
+    const hNum = parseCourseHandicapInput(handicapDraft);
+    if (hNum === null) {
+      showAlert("Invalid", "Enter a course handicap — e.g. 12, or +2 for a plus handicap.");
       return;
     }
     setSavingHandicap(true);
@@ -879,6 +888,16 @@ export default function ScorecardScreen() {
 
   // Show Net column when the selected player has a handicap set.
   const showNetCol = selectedPlayer?.course_handicap != null;
+
+  // C.H. label for the selected player, in golf notation ("+2" for a plus handicap),
+  // with the allowance-adjusted effective handicap appended when an allowance changes it
+  // (e.g. "+2 → +1"). This is the header home for the raw→effective conversion that used
+  // to clutter every per-hole stroke box.
+  const chLabel = formatCourseHandicapWithAllowance(
+    selectedPlayer?.course_handicap,
+    selectedPlayer?.effective_course_handicap,
+    scorecard.handicap_allowance != null,
+  );
 
   // Column widths for Basic view.
   const leftColW       = 38;
@@ -1085,8 +1104,10 @@ export default function ScorecardScreen() {
                     className={`w-16 border rounded-lg px-2 py-1.5 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                     placeholder="0"
                     placeholderTextColor={t.colors.tabBarInactive}
-                    keyboardType="number-pad"
-                    maxLength={2}
+                    // numbers-and-punctuation exposes "+" (for a plus handicap, e.g. "+2");
+                    // maxLength 3 fits "+9" and a two-digit handicap (max 54).
+                    keyboardType="numbers-and-punctuation"
+                    maxLength={3}
                     value={handicaps[player.round_player_id] ?? ""}
                     onChangeText={(v) =>
                       setHandicaps((prev) => ({ ...prev, [player.round_player_id]: v }))
@@ -1162,15 +1183,19 @@ export default function ScorecardScreen() {
                 <TouchableOpacity
                   className={`flex-row items-center gap-1 px-3 py-1.5 rounded-full border ${t.border} ${t.surface}`}
                   onPress={() => {
-                    setHandicapDraft(String(selectedPlayer?.course_handicap ?? ""));
+                    setHandicapDraft(
+                      selectedPlayer?.course_handicap != null
+                        ? formatCourseHandicap(selectedPlayer.course_handicap)
+                        : ""
+                    );
                     setEditingHandicapFor(selectedPlayerId);
                   }}
                   activeOpacity={0.7}
                 >
                   <Text className={`text-sm font-semibold ${t.textSecondary}`}>
                     {scorecard.is_organizer && selectedPlayerId !== myPlayer?.round_player_id
-                      ? `${selectedPlayer?.display_name.split(" ")[0]} C.H. ${selectedPlayer?.course_handicap}`
-                      : `C.H. ${selectedPlayer?.course_handicap}`}
+                      ? `${selectedPlayer?.display_name.split(" ")[0]} C.H. ${chLabel}`
+                      : `C.H. ${chLabel}`}
                   </Text>
                   <Ionicons name="pencil-outline" size={10} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
@@ -1189,8 +1214,9 @@ export default function ScorecardScreen() {
                   className={`w-14 border rounded-lg px-2 py-1 text-center text-sm ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
                   placeholder="0"
                   placeholderTextColor={t.colors.tabBarInactive}
-                  keyboardType="number-pad"
-                  maxLength={2}
+                  // numbers-and-punctuation exposes "+" for a plus handicap (e.g. "+2").
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={3}
                   value={handicapDraft}
                   onChangeText={setHandicapDraft}
                   editable={!savingHandicap}
@@ -1697,17 +1723,14 @@ export default function ScorecardScreen() {
                       </View>
                     </View>
                   )}
-                  {hcp != null && strokes > 0 && (
+                  {hcp != null && strokes !== 0 && (
                     <View className="items-center gap-1">
-                      {/* Show gross/effective handicaps when an allowance is active */}
-                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>
-                        {scorecard.handicap_allowance != null &&
-                         selectedPlayer.course_handicap !== hcp
-                          ? `HCP ${selectedPlayer.course_handicap}→${hcp}`
-                          : "HCP"}
-                      </Text>
+                      {/* Strokes shown as the signed change to gross: "−1" received (lowers
+                          net), "+1" given by a plus handicap (raises net). The raw→effective
+                          handicap conversion now lives in the C.H. header, not here. */}
+                      <Text className={`text-xs font-semibold uppercase tracking-wide ${t.textTertiary}`}>Strokes</Text>
                       <View className={`w-16 h-14 border-2 rounded-xl items-center justify-center ${t.border} ${t.surfaceSunken}`}>
-                        <Text className={`text-2xl font-bold ${t.textTertiary}`}>+{strokes}</Text>
+                        <Text className={`text-2xl font-bold ${t.textTertiary}`}>{formatHoleStrokeAdjustment(strokes)}</Text>
                       </View>
                     </View>
                   )}
@@ -2003,7 +2026,11 @@ export default function ScorecardScreen() {
                 <TouchableOpacity
                   className={`flex-row items-center gap-2 px-3 py-2 rounded-xl border ${t.border} ${t.surface}`}
                   onPress={() => {
-                    setHandicapDraft(String(selectedPlayer?.course_handicap ?? ""));
+                    setHandicapDraft(
+                      selectedPlayer?.course_handicap != null
+                        ? formatCourseHandicap(selectedPlayer.course_handicap)
+                        : ""
+                    );
                     setEditingHandicapFor(selectedPlayerId);
                   }}
                   activeOpacity={0.7}
@@ -2014,7 +2041,7 @@ export default function ScorecardScreen() {
                       ? `${selectedPlayer?.display_name.split(" ")[0]} C.H.`
                       : "C.H."}
                   </Text>
-                  <Text className={`text-sm font-bold ${t.textPrimary}`}>{selectedPlayer?.course_handicap}</Text>
+                  <Text className={`text-sm font-bold ${t.textPrimary}`}>{chLabel}</Text>
                   <Ionicons name="pencil-outline" size={13} color={t.colors.tabBarInactive} />
                 </TouchableOpacity>
               )

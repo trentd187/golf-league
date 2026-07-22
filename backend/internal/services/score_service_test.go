@@ -306,6 +306,69 @@ func TestScoreService_SetHandicap_RecalculatesNetScores(t *testing.T) {
 	assert.Equal(t, 4, after[1].NetScore, "hole 9 net after handicap change — must update")
 }
 
+// TestScoreService_SetHandicap_PlusHandicapAddsStroke verifies that a plus handicap
+// (a negative course_handicap) ADDS a stroke on the easiest hole — net = gross + 1 —
+// and adds nothing on the hardest, mirroring the client allocation.
+func TestScoreService_SetHandicap_PlusHandicapAddsStroke(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "Plus HCP Course")
+	seedHoles(t, db, tee.ID) // SI=hole_number (hole 1 = hardest, hole 18 = easiest)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	_, err := svc.UpsertScores(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", []services.ScoreInput{
+		{HoleNumber: 1, GrossScore: 4},  // hardest — plus handicap adds nothing
+		{HoleNumber: 18, GrossScore: 4}, // easiest — plus handicap adds one
+	})
+	require.NoError(t, err)
+
+	// A +1 handicap is stored as -1. hole 1 (SI 1) net = 4; hole 18 (SI 18) net = 4 - (-1) = 5.
+	require.NoError(t, svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", -1))
+
+	var scores []models.Score
+	require.NoError(t, db.Where("round_player_id = ?", rp.ID).Order("hole_number").Find(&scores).Error)
+	require.Len(t, scores, 2)
+	assert.Equal(t, 4, scores[0].NetScore, "hardest hole: plus handicap adds no stroke")
+	assert.Equal(t, 5, scores[1].NetScore, "easiest hole: plus handicap adds a stroke (net = gross + 1)")
+}
+
+// TestScoreService_SetHandicap_OutOfRangeRejected verifies a fat-fingered handicap
+// outside the WHS bounds is a 400-mapped ValidationError, on both the positive and
+// the plus (negative) side.
+func TestScoreService_SetHandicap_OutOfRangeRejected(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "org")
+	course, tee := seedCourseWithTee(t, db, "Range Course")
+	seedHoles(t, db, tee.ID)
+	event := seedEvent(t, eventSvc, organizer.ID)
+	result := scheduleRound(t, roundSvc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	var organizerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, organizer.ID).First(&organizerEP).Error)
+	rp := addRoundPlayer(t, db, result.Round.ID, organizerEP.ID)
+	addGroupWithPlayer(t, db, result.Round.ID, 1, rp.ID)
+
+	var ve *services.ValidationError
+	err := svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", 99)
+	assert.ErrorAs(t, err, &ve, "handicap 99 should be a ValidationError")
+	err = svc.SetHandicap(context.Background(), result.Round.ID, rp.ID, organizer.ID, "user", -99)
+	assert.ErrorAs(t, err, &ve, "plus handicap -99 should be a ValidationError")
+}
+
 // ─── UpsertScores ─────────────────────────────────────────────────────────────
 
 // TestScoreService_UpsertScores_Success verifies that scores are written with

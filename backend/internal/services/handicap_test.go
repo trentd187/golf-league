@@ -55,6 +55,42 @@ func TestHandicapStrokes_TwentyHandicap(t *testing.T) {
 	assert.Equal(t, 1, services.HandicapStrokes(20, 18, 18))
 }
 
+// ─── HandicapStrokes (plus handicaps — strokes GIVEN back) ────────────────────
+
+// TestHandicapStrokes_PlusOneHandicap verifies a +1 (stored -1) gives one stroke
+// back on the EASIEST hole only (normalized SI 18) and none elsewhere. Net is
+// gross - strokes, so -1 raises the player's net by one on that hole.
+func TestHandicapStrokes_PlusOneHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-1, 18, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 17, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 1, 18))
+}
+
+// TestHandicapStrokes_PlusTwoHandicap verifies a +2 (stored -2) gives strokes back
+// on the two easiest holes (SI 17–18) and none on SI ≤ 16.
+func TestHandicapStrokes_PlusTwoHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-2, 18, 18))
+	assert.Equal(t, -1, services.HandicapStrokes(-2, 17, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-2, 16, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-2, 1, 18))
+}
+
+// TestHandicapStrokes_PlusFullPass verifies a +18 (stored -18) gives exactly one
+// stroke back on every hole (a complete pass, no remainder).
+func TestHandicapStrokes_PlusFullPass(t *testing.T) {
+	for si := 1; si <= 18; si++ {
+		assert.Equal(t, -1, services.HandicapStrokes(-18, si, 18),
+			"expected -1 stroke on hole SI=%d", si)
+	}
+}
+
+// TestHandicapStrokes_NineHole_PlusHandicap verifies plus allocation on a 9-hole
+// round: +1 gives back on the easiest of the 9 (normalized SI 9) only.
+func TestHandicapStrokes_NineHole_PlusHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-1, 9, 9))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 8, 9))
+}
+
 // ─── HandicapStrokes (9-hole) ─────────────────────────────────────────────────
 
 // TestHandicapStrokes_NineHole_NineHandicap verifies that a 9-hole course handicap

@@ -1065,6 +1065,13 @@ func (s *RoundService) AddGuestToGroup(ctx context.Context, roundID, groupID, ca
 	if len(name) > 80 {
 		return GroupMutationResult{}, &ValidationError{Field: "name", Message: "name must be 80 characters or fewer"}
 	}
+	// A guest handicap is optional, but if present it must be in the sane WHS range
+	// (a plus handicap is a negative value; see validateCourseHandicap).
+	if courseHandicap != nil {
+		if err := validateCourseHandicap(*courseHandicap); err != nil {
+			return GroupMutationResult{}, err
+		}
+	}
 
 	var group models.Group
 	if err := s.DB.WithContext(ctx).First(&group, "id = ? AND round_id = ?", groupID, roundID).Error; err != nil {

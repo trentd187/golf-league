@@ -118,10 +118,11 @@ export default function AddGuestModal({ visible, onClose, roundId, groupId }: Ad
               </Text>
               <TextInput
                 className={`border rounded-xl px-4 py-3 text-base ${t.borderInput} ${t.surfaceSunken} ${t.textPrimary}`}
-                placeholder="Leave blank to play gross"
+                placeholder="e.g. 12, or +2 for a plus handicap"
                 placeholderTextColor={t.colors.tabBarInactive}
                 value={handicap}
                 onChangeText={setHandicap}
+                // numbers-and-punctuation exposes "+" for a plus handicap (e.g. "+2").
                 keyboardType="numbers-and-punctuation"
                 editable={!addGuestMutation.isPending}
                 returnKeyType="done"

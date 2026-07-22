@@ -3,6 +3,8 @@
 // Kept React-free so the AddGuestModal stays logic-free and these can be
 // unit-tested in isolation (the screen file is excluded from coverage).
 
+import { parseCourseHandicapInput } from "@/utils/handicap";
+
 // Max guest display-name length — mirrors the backend AddGuestToGroup validation.
 export const GUEST_NAME_MAX_LENGTH = 80;
 
@@ -24,15 +26,12 @@ export function validateGuestName(raw: string): GuestNameResult {
   return { ok: true, value };
 }
 
-// parseGuestHandicap converts a raw handicap input to the value the API expects.
-// Empty/whitespace → null (no handicap, plays gross). A valid integer (positive or
-// negative for plus-handicaps) → that number. Anything else → null so a typo never
-// blocks adding the guest; the organizer can edit the handicap afterward.
+// parseGuestHandicap converts a raw handicap input to the value the API expects,
+// using the same golf notation as registered players: "+2" → a plus handicap
+// (stored -2), "12" → 12, "0" → scratch. Empty/whitespace or anything invalid →
+// null (guest plays gross / a typo never blocks adding them; the organizer can edit
+// the handicap afterward). Delegates to the shared parser so the two entry paths
+// can never diverge on the sign convention.
 export function parseGuestHandicap(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (trimmed === "") return null;
-  // Integer only (optional leading minus); reject decimals and stray characters.
-  if (!/^-?\d+$/.test(trimmed)) return null;
-  const n = Number(trimmed);
-  return Number.isInteger(n) ? n : null;
+  return parseCourseHandicapInput(raw);
 }

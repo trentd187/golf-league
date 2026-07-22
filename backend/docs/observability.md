@@ -59,6 +59,12 @@ slog.InfoContext(c.UserContext(), "Round scheduled",
 
 The `event_type_label` attr is a convention left over from the Loki era — it gives Sentry's "All Logs" view a stable search facet per business event.
 
+### The fasthttp zero-copy string trap — clone at the fanout boundary
+
+Fiber's `c.Method()`, `c.Path()`, and `c.Get(header)` return **zero-copy strings that alias fasthttp's reused request buffers** — the string header points straight into a buffer fasthttp recycles for the *next* request. The stdout JSON handler serializes each record synchronously, so it always sees the correct bytes. The `sentry-go/slog` handler does **not**: it batches records and serializes them **asynchronously**, after the buffer has been recycled. Under burst traffic the logged values mutate into garbage — observed in Sentry Logs as methods `GETT`/`DELE`/`POS` and paths like `/api/v1/meunds/…` (`/api/v1/me` overlapping the next request's `/rounds/…`). Because `RequestLogger`, `ErrorLogger`, and the idempotency middleware all log `c.Method()`/`c.Path()`, this also corrupts the **method/path tags on the 5xx→Issue path** — exactly when they matter most.
+
+The fix lives once, at the fan-out boundary: `fanout.Handle` in [`internal/observability/sentry.go`](../internal/observability/sentry.go) deep-clones every string attr value (`strings.Clone`, recursing into groups) *before* dispatching to the handlers, so no downstream handler can alias a caller-owned buffer. This covers every current and future log producer and both sinks — do **not** re-add per-call-site cloning; that's the whack-a-mole version that misses the next producer. Whitebox-tested in `fanout_internal_test.go` (an `unsafe.String` over a byte slice, mutated after `Handle` returns, must not change the captured value).
+
 ## 5xx error logging (`middleware.ErrorLogger`)
 
 Every handler records a server fault's root cause in `c.Locals("error_detail")` via its `write<Domain>Error` helper. [`internal/middleware/errorlog.go`](../internal/middleware/errorlog.go) is the **single consumer** of that value: registered right after `sentryfiber`, it inspects the final status after `c.Next()` and, for any 5xx, emits `slog.ErrorContext(..., "event_type_label", "http.error", ...)` — which lands as both a Sentry Issue and a searchable `level:error` / `event_type_label:http.error` log. Before it existed the legacy metrics middleware that read `error_detail` had been removed in the Sentry migration and not replaced, so non-panic 5xx faults produced **no** Issue and **no** log (only uncaught *panics* reached Sentry, via `fiberrecover`/`sentryfiber`). 4xx are expected client errors and are deliberately not logged. Keep `error_detail` populated for every 5xx in the `write*Error` helpers.
@@ -96,6 +102,7 @@ were the *only* ones with no Sentry signal at all.
 | `server.panic` | `cmd/server/main.go` | the listener goroutine panicked (it had no `recover`, so a panic there died silently) |
 | `auth.jwks_refresh_failed` | `middleware.LoadJWKS` | a background JWKS refresh failed. The cached keys still work, so it isn't fatal — but if it keeps failing through a key rotation, every token stops verifying. |
 | `auth.user_sync_failed` | `middleware.MakeAuthHandler` (**warn**) | the JWT→DB user sync write failed. Not worth a 500 (the caller is authenticated, their data is merely stale) but it fails *forever, silently* if left unreported. |
+| `auth.create_user_race_resolved` | `middleware.findOrCreateUser` (**info**) | a new user's parallel first-load requests raced to INSERT the same `auth_id`; a loser hit `gorm.ErrDuplicatedKey` and was **absorbed** by re-reading the winner's row instead of 500ing. This is the *success* signal of the fix for GOLF-LEAGUE-BACKEND-4 (2026-07-20). A rise here is benign; a `auth.create_user` 5xx returning means the refetch itself failed (a genuine fault, e.g. an email collision with a different `auth_id`). |
 | `health.db_unreachable` | `handlers.HealthCheck` | the DB ping failed → 503 |
 | `health.jwks_empty` | `handlers.HealthCheck` | **zero verifying keys** → 503 |
 

@@ -22,7 +22,8 @@
 //
 // Permission model (enforced by middleware on the route, not in this file):
 //   - GET routes: any authenticated user
-//   - All mutations: "admin" role only
+//   - search-external / import-external (download a NEW course): any authenticated user
+//   - create/edit/delete/refresh (mutate stored course data): "admin" role only
 package handlers
 
 import (

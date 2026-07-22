@@ -48,6 +48,13 @@ export interface RetryOptions extends BackoffOptions {
   // number, and the delay before the next attempt (null on the final attempt, when there is
   // no next try). Used to emit per-attempt breadcrumbs without coupling this module to Sentry.
   onAttemptError?: (err: unknown, attempt: number, nextDelayMs: number | null) => void;
+  // shouldRetry decides whether a given error is worth retrying. Returning false stops
+  // immediately — the error is rethrown with no further attempts and no backoff sleep. This
+  // keeps HTTP semantics out of this generic helper: the save core supplies the policy (a
+  // 400/403/409 is a definitive server rejection and must not burn the retry budget, whereas
+  // transport errors, 401, 408, 429, and 5xx are retryable). Omitted → retry every error, the
+  // historical behaviour.
+  shouldRetry?: (err: unknown) => boolean;
 }
 
 // defaultSleep waits ms milliseconds. Replaced in tests so no real time passes.
@@ -71,6 +78,12 @@ export async function withRetry<T>(
       return await fn(attempt);
     } catch (err) {
       lastErr = err;
+      // A non-retryable error (e.g. a definitive 4xx) stops now — treat it like the final
+      // attempt: report with no next delay and rethrow without any further backoff.
+      if (opts.shouldRetry && !opts.shouldRetry(err)) {
+        opts.onAttemptError?.(err, attempt, null);
+        break;
+      }
       // Final attempt: no next delay, report and stop.
       if (attempt >= maxAttempts) {
         opts.onAttemptError?.(err, attempt, null);

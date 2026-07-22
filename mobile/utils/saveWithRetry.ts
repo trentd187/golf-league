@@ -25,7 +25,32 @@ import {
   defaultNetInfoFetch,
   type NetInfoStateLike,
 } from "@/utils/connectionSnapshot";
-import { type SaveBreadcrumbContext } from "@/utils/sentry";
+import { type SaveBreadcrumbContext, type AuthRefreshContext } from "@/utils/sentry";
+
+// defaultGetFreshToken lazily resolves the current access token via utils/freshToken. It uses
+// an inline require ON PURPOSE: freshToken pulls in utils/supabase (and native AsyncStorage),
+// and a static import here would drag that whole graph into every module that touches a save —
+// breaking dozens of util tests that never wanted Supabase. The lazy require keeps this core
+// pure and only evaluates on a real 401 with no injected token. (Metro supports inline require;
+// a dynamic `import()` is unsupported by the Jest VM, so require is the portable choice.)
+function defaultGetFreshToken(): Promise<string | null> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const freshToken = require("@/utils/freshToken") as typeof import("@/utils/freshToken");
+  return freshToken.getFreshAccessToken();
+}
+
+// isRetryableStatus decides whether an HTTP response status is worth another attempt.
+// Transport failures (no response at all) are handled separately and are always retried.
+// Among HTTP responses: 401 is retryable because the bearer may have expired while the save
+// sat in its backoff loop — the next attempt refreshes it first (see runSaveWithRetry); 408
+// (Request Timeout) and 429 (Too Many Requests) are transient by definition; every 5xx is a
+// server fault that may clear on retry. All other 4xx (400 validation, 403 forbidden, 404
+// gone, 409 conflict) are definitive client-side rejections and must fail fast rather than
+// burn the whole backoff budget before the user sees the error.
+export function isRetryableStatus(status: number): boolean {
+  if (status === 401 || status === 408 || status === 429) return true;
+  return status >= 500;
+}
 
 // RetryProfile bundles the backoff knobs with the per-attempt timeout. Presets live in
 // the adapters (BACKGROUND_SAVE / FOREGROUND_SAVE in saveRequest.ts, CREATE_SAVE in
@@ -99,8 +124,15 @@ export interface RunSaveOptions<T> {
   report: (error: unknown, ctx: SaveFailureReport) => void;
   reportReconciled: (ctx: SaveReconciledReport) => void;
   breadcrumb: (ctx: SaveBreadcrumbContext) => void;
+  // reportAuthRefresh records a mid-retry token refresh after a 401 (a successful self-heal,
+  // not a failure). Optional so a caller that doesn't wire it simply omits the breadcrumb.
+  reportAuthRefresh?: (ctx: AuthRefreshContext) => void;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
+  // getFreshToken re-resolves the access token between attempts. Defaults to
+  // getFreshAccessToken (utils/freshToken.ts); injected in tests. Called only after a 401, to
+  // replace a bearer that expired while the save waited in its backoff loop.
+  getFreshToken?: () => Promise<string | null>;
   genKey?: () => string;
   netInfoFetch?: () => Promise<NetInfoStateLike>;
   sleep?: (ms: number) => Promise<void>;
@@ -116,6 +148,7 @@ export interface RunSaveOptions<T> {
 export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const netInfoFetch = opts.netInfoFetch ?? defaultNetInfoFetch;
+  const getFreshToken = opts.getFreshToken ?? defaultGetFreshToken;
   const now = opts.now ?? Date.now;
 
   // One Idempotency-Key per logical write, minted up front and reused on every retry so
@@ -127,6 +160,9 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
   // The final attempt's HTTP status (undefined when it was a transport reject / abort).
   // Reset each attempt so it reflects the LAST failure, matching the error withRetry rethrows.
   let httpStatus: number | undefined;
+  // The bearer used for the current attempt. Starts as the caller-captured token and is
+  // re-minted after a 401 (see below) so a token that expired mid-loop can't strand the save.
+  let currentToken = opts.token;
 
   const retryOpts: RetryOptions = {
     maxAttempts: opts.profile.maxAttempts,
@@ -134,6 +170,10 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
     capMs: opts.profile.capMs,
     sleep: opts.sleep,
     rng: opts.rng,
+    // A definitive 4xx (validation/forbidden/conflict) is a real server rejection: fail fast
+    // instead of burning the backoff budget before the user sees the banner. Transport
+    // failures (no httpStatus) and retryable statuses (401/408/429/5xx) keep retrying.
+    shouldRetry: () => httpStatus === undefined || isRetryableStatus(httpStatus),
     onAttemptError: (err, attempt, nextDelayMs) => {
       opts.breadcrumb({
         label: opts.label,
@@ -147,6 +187,15 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
   try {
     return await withRetry<T>(async () => {
       attempts += 1;
+      // If the previous attempt returned 401, the bearer likely expired while this save sat
+      // in its backoff loop — a backgrounded save can wait minutes, because Android suspends
+      // the JS timers so wall-clock far exceeds the nominal budget. Re-mint before retrying;
+      // keep the previous token if the refresh yields nothing so we still send a bearer.
+      if (httpStatus === 401) {
+        const refreshed = await getFreshToken();
+        if (refreshed) currentToken = refreshed;
+        opts.reportAuthRefresh?.({ label: opts.label, attempt: attempts });
+      }
       httpStatus = undefined;
       // Fresh controller per attempt; abort a hung request so the next retry opens a new
       // connection. The timer is always cleared so a fast response never aborts.
@@ -157,7 +206,7 @@ export async function runSaveWithRetry<T>(opts: RunSaveOptions<T>): Promise<T> {
           method: opts.method,
           signal: controller.signal,
           headers: {
-            Authorization: `Bearer ${opts.token}`,
+            Authorization: `Bearer ${currentToken}`,
             "Content-Type": "application/json",
             "Idempotency-Key": idempotencyKey,
           },

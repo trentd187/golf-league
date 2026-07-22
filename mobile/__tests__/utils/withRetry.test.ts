@@ -81,6 +81,38 @@ describe("withRetry", () => {
     expect(noSleep).toHaveBeenCalledTimes(2); // no sleep after attempt 3
   });
 
+  it("stops immediately when shouldRetry returns false, with no backoff sleep", async () => {
+    const err = new Error("HTTP 403");
+    const fn = jest.fn().mockRejectedValue(err);
+    const shouldRetry = jest.fn().mockReturnValue(false);
+    await expect(withRetry(fn, { ...base, shouldRetry })).rejects.toThrow("HTTP 403");
+    expect(fn).toHaveBeenCalledTimes(1); // no retry after a non-retryable error
+    expect(noSleep).not.toHaveBeenCalled();
+    expect(shouldRetry).toHaveBeenCalledWith(err);
+  });
+
+  it("keeps retrying while shouldRetry returns true", async () => {
+    const fn = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 500"))
+      .mockResolvedValue("ok");
+    const shouldRetry = jest.fn().mockReturnValue(true);
+    await expect(withRetry(fn, { ...base, shouldRetry })).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(noSleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the non-retryable error via onAttemptError with a null next delay", async () => {
+    const onAttemptError = jest.fn();
+    const fn = jest.fn().mockRejectedValue(new Error("HTTP 400"));
+    const shouldRetry = () => false;
+    await expect(
+      withRetry(fn, { ...base, onAttemptError, shouldRetry }),
+    ).rejects.toThrow("HTTP 400");
+    expect(onAttemptError).toHaveBeenCalledTimes(1);
+    expect(onAttemptError).toHaveBeenNthCalledWith(1, expect.any(Error), 1, null);
+  });
+
   it("calls onAttemptError after each failure with attempt# and the next delay (null on the last)", async () => {
     const onAttemptError = jest.fn();
     const fn = jest.fn().mockRejectedValue(new Error("boom"));

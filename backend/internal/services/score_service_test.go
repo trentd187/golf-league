@@ -802,6 +802,52 @@ func TestScoreService_GetUserScorecards_ReturnsCompletedRounds(t *testing.T) {
 	assert.Equal(t, result.Round.ID.String(), cards[0].RoundID)
 }
 
+// TestScoreService_GetUserScorecards_IncludesEventlessRound verifies the regression fix:
+// a completed EVENTLESS round (round_players.event_player_id IS NULL) must appear in the
+// batched scorecards. The query used to INNER JOIN event_players, which structurally dropped
+// eventless rounds — so their score/stats/scorecard never showed in the stats tab. Seeding
+// both an event-linked and an eventless completed round asserts both come back, newest first.
+func TestScoreService_GetUserScorecards_IncludesEventlessRound(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	svc := newScoreSvc(db)
+	eventSvc := services.NewEventService(db)
+	roundSvc := services.NewRoundService(db, eventSvc)
+
+	player := seedUser(t, db, "eventlessStatsUser")
+	course, tee := seedCourseWithTee(t, db, "Eventless Stats Course")
+	seedHoles(t, db, tee.ID)
+
+	// Older event-linked completed round.
+	event := seedEvent(t, eventSvc, player.ID)
+	linked := scheduleRound(t, roundSvc, event.ID, player.ID, course.ID.String(), tee.ID.String())
+	var playerEP models.EventPlayer
+	require.NoError(t, db.Where("event_id = ? AND user_id = ?", event.ID, player.ID).First(&playerEP).Error)
+	linkedRP := addRoundPlayer(t, db, linked.Round.ID, playerEP.ID)
+	addGroupWithPlayer(t, db, linked.Round.ID, 1, linkedRP.ID)
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", linked.Round.ID).
+		Updates(map[string]any{
+			"status":         models.RoundStatusCompleted,
+			"scheduled_date": time.Now().UTC().Add(-48 * time.Hour),
+		}).Error)
+
+	// Newer eventless (casual) completed round — the case the bug hid.
+	eventless := seedEventlessRound(t, db, player.ID, course.ID, tee.ID)
+	eventlessRP := addEventlessRoundPlayer(t, db, eventless.ID, player.ID)
+	addGroupWithPlayer(t, db, eventless.ID, 1, eventlessRP.ID)
+	require.NoError(t, db.Model(&models.Round{}).Where("id = ?", eventless.ID).
+		Updates(map[string]any{
+			"status":         models.RoundStatusCompleted,
+			"scheduled_date": time.Now().UTC(),
+		}).Error)
+
+	cards, err := svc.GetUserScorecards(context.Background(), player.ID, player.ID, "user", 20)
+	require.NoError(t, err)
+	require.Len(t, cards, 2, "both the event-linked and the eventless round must be returned")
+	// Ordered by scheduled_date DESC: the eventless round is newest.
+	assert.Equal(t, eventless.ID.String(), cards[0].RoundID)
+	assert.Equal(t, linked.Round.ID.String(), cards[1].RoundID)
+}
+
 // TestScoreService_GetUserScorecards_EmptyForUserWithNoRounds returns an empty slice (and
 // clamps last<1 to 1) for a user who has played no completed rounds.
 func TestScoreService_GetUserScorecards_EmptyForUserWithNoRounds(t *testing.T) {

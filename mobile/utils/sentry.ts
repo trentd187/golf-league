@@ -386,6 +386,28 @@ export function addCreateBreadcrumb(ctx: SaveBreadcrumbContext): void {
   });
 }
 
+// AuthRefreshContext describes a save that re-minted its bearer token mid-retry after a
+// 401. label is the endpoint, attempt is the (1-based) attempt about to run with the fresh
+// token.
+export interface AuthRefreshContext {
+  label: string;
+  attempt: number;
+}
+
+// addSaveAuthRefreshBreadcrumb records that a save refreshed its access token after a 401 and
+// is retrying with the new one. Info level: this is a successful self-heal, not a failure —
+// the token expired while the save sat in its backoff loop (a backgrounded save can wait
+// minutes because Android suspends JS timers). The breadcrumb lands on any event the session
+// later produces, so a save that ultimately fails still shows the refresh was attempted.
+export function addSaveAuthRefreshBreadcrumb(ctx: AuthRefreshContext): void {
+  Sentry.addBreadcrumb({
+    category: "save",
+    level: "info",
+    message: `${ctx.label} refreshed auth token after 401 (attempt ${ctx.attempt})`,
+    data: { event: "save.auth_refresh", label: ctx.label, attempt: ctx.attempt },
+  });
+}
+
 // ─── Scorecard re-sync reporting ────────────────────────────────────────────────
 
 // ScorecardMergeSkipContext describes a scorecard re-sync where the incoming server

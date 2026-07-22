@@ -249,7 +249,8 @@ func main() {
 	api.Put("/rounds/:roundId/players/:roundPlayerId/scores", replayLog, handlers.UpsertPlayerScores(scoreService))
 	api.Put("/rounds/:roundId/players/:roundPlayerId/hole-stats", replayLog, handlers.UpsertHoleStats(scoreService))
 
-	// Course routes — GET open to any authenticated user; mutations restricted to admin only
+	// Course routes — GET and external search/import open to any authenticated user;
+	// create/edit/delete/refresh (mutations to stored course data) restricted to admin only
 	api.Get("/courses", handlers.GetCourses(courseService))
 	// Course create is a non-idempotent insert; durableIdempotency (after the admin gate)
 	// lets savePost retry a cellular phantom without creating a duplicate course.
@@ -265,9 +266,11 @@ func main() {
 	api.Put("/courses/:courseId/tees/:teeId/holes", middleware.RequireRole("admin"), handlers.UpsertHoles(courseService))
 	api.Patch("/courses/:courseId/tees/:teeId/holes/:holeNumber", middleware.RequireRole("admin"), handlers.UpdateHole(courseService))
 
-	// External course import — search returns results without writing; import/refresh write to DB
-	api.Post("/courses/search-external", middleware.RequireRole("admin"), handlers.SearchExternalCourse(courseService))
-	api.Post("/courses/import-external", middleware.RequireRole("admin"), durableIdempotency, handlers.ImportExternalCourse(courseService))
+	// External course import — search returns results without writing; import/refresh write to DB.
+	// Search + import (downloading a NEW course) are open to any authenticated user; refresh
+	// overwrites an already-downloaded course's data, so it stays an admin-only edit.
+	api.Post("/courses/search-external", handlers.SearchExternalCourse(courseService))
+	api.Post("/courses/import-external", durableIdempotency, handlers.ImportExternalCourse(courseService))
 	api.Post("/courses/:courseId/refresh", middleware.RequireRole("admin"), handlers.RefreshCourse(courseService))
 
 	// User routes — static paths must be registered before parameterised ones so Fiber

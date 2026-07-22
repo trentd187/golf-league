@@ -3,6 +3,14 @@
 // (fetch, NetInfo, the Sentry reporters, sleep, rng, clock) is injected so the tests
 // run deterministically with no network, no real timers, and no real randomness.
 
+// Mock the token resolver so the core's DEFAULT getFreshToken (a lazy dynamic import of
+// utils/freshToken → utils/supabase → native AsyncStorage) resolves to a stub instead of
+// loading native modules. Only the "default getFreshToken" test relies on this; every other
+// 401 test injects its own getFreshToken and is unaffected.
+jest.mock("@/utils/freshToken", () => ({
+  getFreshAccessToken: jest.fn().mockResolvedValue("default-refreshed-token"),
+}));
+
 import {
   savePut,
   readApiErrorMessage,
@@ -338,6 +346,94 @@ describe("savePut — HTTP non-2xx", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(FOREGROUND_SAVE.maxAttempts);
     const [, ctx] = (opts.report as jest.Mock).mock.calls[0];
     expect(ctx).toMatchObject({ label: "handicap", httpStatus: 500, attempts: 3 });
+  });
+});
+
+describe("savePut — 401 token refresh (expired mid-loop)", () => {
+  it("refreshes the bearer after a 401 and retries with the new token, then succeeds silently", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValue(okResponse);
+    const getFreshToken = jest.fn().mockResolvedValue("new-token");
+    const reportAuthRefresh = jest.fn();
+    const opts = baseOpts({
+      fetchImpl,
+      retry: BACKGROUND_SAVE,
+      getFreshToken,
+      reportAuthRefresh,
+    });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Attempt 1 used the captured token; attempt 2 used the refreshed one.
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Bearer jwt-123");
+    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe("Bearer new-token");
+    expect(getFreshToken).toHaveBeenCalledTimes(1);
+    expect(reportAuthRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "scores", attempt: 2 }),
+    );
+    expect(opts.report).not.toHaveBeenCalled(); // self-healed → no Issue
+  });
+
+  it("uses the default token resolver (freshToken util) + default breadcrumb when neither is injected", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValue(okResponse);
+    // No getFreshToken and no reportAuthRefresh injected → the core falls back to
+    // defaultGetFreshToken (dynamic import, mocked above) and addSaveAuthRefreshBreadcrumb.
+    const opts = baseOpts({ fetchImpl, retry: BACKGROUND_SAVE });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe(
+      "Bearer default-refreshed-token",
+    );
+  });
+
+  it("exhausts and reports httpStatus 401 when the refresh yields nothing (still signed out)", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 401 });
+    const getFreshToken = jest.fn().mockResolvedValue(null);
+    const opts = baseOpts({
+      fetchImpl,
+      retry: FOREGROUND_SAVE,
+      getFreshToken,
+    });
+
+    await expect(savePut(opts)).rejects.toThrow("HTTP 401");
+    expect(fetchImpl).toHaveBeenCalledTimes(FOREGROUND_SAVE.maxAttempts); // 401 is retryable
+    // A null refresh keeps the previous token rather than sending an empty bearer.
+    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe("Bearer jwt-123");
+    const [, ctx] = (opts.report as jest.Mock).mock.calls[0];
+    expect(ctx).toMatchObject({ httpStatus: 401, attempts: 3 });
+  });
+});
+
+describe("savePut — fail-fast on definitive 4xx", () => {
+  it.each([400, 403, 409])(
+    "fails immediately on %i with exactly one attempt and no backoff sleep",
+    async (status) => {
+      const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status });
+      const opts = baseOpts({ fetchImpl, retry: BACKGROUND_SAVE });
+
+      await expect(savePut(opts)).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchImpl).toHaveBeenCalledTimes(1); // no wasted retries
+      expect(noSleep).not.toHaveBeenCalled();
+      const [, ctx] = (opts.report as jest.Mock).mock.calls[0];
+      expect(ctx).toMatchObject({ httpStatus: status, attempts: 1 });
+    },
+  );
+
+  it("still retries a 429 (rate-limited, transient)", async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValue(okResponse);
+    const opts = baseOpts({ fetchImpl, retry: BACKGROUND_SAVE });
+
+    await expect(savePut(opts)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
 

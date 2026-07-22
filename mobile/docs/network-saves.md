@@ -109,6 +109,36 @@ button, so a shorter budget avoids a minute-long spinner; the user can re-tap. T
 per-attempt timeout is deliberately generous** — real saves complete <1 s (Railway edge
 p99 ≤731 ms), so it never cuts off a working-but-slow request; it only bounds a *hung* socket.
 
+## Auth token freshness on retry — the 401 self-heal
+
+The bearer token is captured **once** at the call site (`await getToken()`) and passed into
+`savePut`/`savePost`. That token can expire *during* the retry loop, and the loop can run far
+longer than its nominal budget: **Android suspends the JS runtime's timers when the app is
+backgrounded**, so a save started mid-round and then backgrounded sits with its backoff sleeps
+and `AbortController` timers frozen. On 7/15 a real save logged `attempts:5, elapsedMs:591360`
+(~9.9 min) against a `BACKGROUND_SAVE` budget whose theoretical max is ~107 s — only one of the
+five attempts ever reached the Railway edge, and by the time the app foregrounded the captured
+token was dead. Every remaining attempt sent the stale bearer and 401'd (Sentry
+`GOLF-LEAGUE-FRONTEND-N`); the user saw "score/stats didn't save," and a manual retry — which
+re-ran `getToken()` — succeeded.
+
+The shared core ([`saveWithRetry.ts`](../utils/saveWithRetry.ts)) fixes this centrally, so every
+`savePut`/`savePost` caller inherits it with **no call-site change**:
+
+- **Token per attempt.** After an attempt returns **401**, the core calls `getFreshToken`
+  (default [`getFreshAccessToken`](../utils/freshToken.ts), which re-runs `supabase.auth.getSession()`
+  and refreshes over the network) and retries with the new token. If the refresh yields null
+  (genuinely signed out) it keeps the previous token rather than sending an empty bearer. Each
+  refresh drops an info breadcrumb (`event:save.auth_refresh`) so the self-heal is visible on any
+  event the session later produces. `getFreshAccessToken` is the same logic behind
+  `useAuth().getToken` — one implementation, two entry points (the util exists so this non-React
+  core can resolve a token).
+- **Fail-fast on definitive 4xx.** `withRetry` now takes an optional `shouldRetry`
+  ([`withRetry.ts`](../utils/withRetry.ts)); the core supplies a policy via `isRetryableStatus`:
+  **401/408/429 and all 5xx (and transport errors) retry; every other 4xx (400/403/404/409)
+  fails immediately.** Previously a definitive rejection burned the whole backoff budget before
+  the banner showed. (401 is retryable *because* we refresh the token first.)
+
 ## Observability
 
 On exhaustion `savePut` calls `reportSaveFailure` (in [`utils/sentry.ts`](../utils/sentry.ts)),

@@ -54,6 +54,58 @@ func authDBError(c *fiber.Ctx, tag string, err error, msg string) error {
 	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": msg})
 }
 
+// findOrCreateUser looks up the app's users row for a Supabase auth_id, creating it on the
+// user's first authenticated request (just-in-time provisioning).
+//
+// It is race-safe. On first load after sign-in the client fires several authenticated
+// requests in PARALLEL (events, profile, …); each reaches this middleware, each SELECTs and
+// misses (no row yet), then each tries to INSERT the same auth_id/email. Postgres lets the
+// first commit win and rejects the losers with a unique-constraint violation — surfaced as
+// gorm.ErrDuplicatedKey because database.GormConfig sets TranslateError. A lost race is NOT a
+// failure: the row now exists, so we re-read the winner's row and return it. Without this the
+// loser 500'd with "failed to create user record" on the very first screen after signup
+// (GOLF-LEAGUE-BACKEND-4 / -FRONTEND-P, 2026-07-20).
+//
+// Returns created=true when this call inserted the row OR absorbed a lost race — in both
+// cases the row already reflects the current JWT-derived fields, so the caller skips the
+// field-sync step. On error, tag names the failed operation ("auth.lookup_user" /
+// "auth.create_user") for authDBError and ErrorLogger. Only a genuine DB fault returns err.
+func findOrCreateUser(ctx context.Context, db *gorm.DB, authID, email, displayName string, avatarURL *string) (user models.User, created bool, tag string, err error) {
+	if e := db.WithContext(ctx).Where("auth_id = ?", authID).First(&user).Error; e != nil {
+		// errors.Is, not !=: a wrapped ErrRecordNotFound would otherwise be treated as a hard
+		// DB failure and 500 on every first-time sign-in.
+		if !errors.Is(e, gorm.ErrRecordNotFound) {
+			return user, false, "auth.lookup_user", e
+		}
+
+		// Truly new user — create the record. Role defaults to "user".
+		user = models.User{
+			AuthID:      &authID,
+			DisplayName: displayName,
+			Email:       email,
+			AvatarURL:   avatarURL,
+			Role:        models.UserRoleUser,
+		}
+		if e := db.WithContext(ctx).Create(&user).Error; e != nil {
+			if !errors.Is(e, gorm.ErrDuplicatedKey) {
+				return models.User{}, false, "auth.create_user", e
+			}
+			// Lost a concurrent first-load race: the winning request already inserted this
+			// user. Re-read its row instead of 500ing. If even this misses, something is
+			// genuinely wrong (e.g. an email collision with a different auth_id) — surface it.
+			if e := db.WithContext(ctx).Where("auth_id = ?", authID).First(&user).Error; e != nil {
+				return models.User{}, false, "auth.create_user", e
+			}
+			slog.InfoContext(ctx, "resolved concurrent first-sign-in create race",
+				"event_type_label", "auth.create_user_race_resolved",
+				"user_id", user.ID.String(),
+			)
+		}
+		return user, true, "", nil
+	}
+	return user, false, "", nil
+}
+
 // jwksHTTPTimeout bounds the JWKS fetch. The library's default is a full MINUTE, which would
 // stall startup (and every background refresh) far longer than is useful.
 const jwksHTTPTimeout = 10 * time.Second
@@ -223,44 +275,35 @@ func MakeAuthHandler(keyfn jwt.Keyfunc, db *gorm.DB) fiber.Handler {
 		// prevent. Every other DB call in the codebase already passes the context.
 		ctx := c.UserContext()
 
-		var user models.User
-		result := db.WithContext(ctx).Where("auth_id = ?", authID).First(&user)
-
-		if result.Error != nil {
-			// errors.Is, not !=: a wrapped ErrRecordNotFound would otherwise be treated as a
-			// hard DB failure and 500 on every first-time sign-in.
-			if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				return authDBError(c, "auth.lookup_user", result.Error, "database error")
+		// Resolve the display name + avatar from the JWT before provisioning. Kept in the
+		// handler (it reads claims); findOrCreateUser stays claims-free and unit-testable.
+		displayName := "User"
+		if name, ok := claims.UserMetadata["full_name"].(string); ok && name != "" {
+			displayName = name
+		} else if email != "" {
+			if idx := strings.Index(email, "@"); idx > 0 {
+				displayName = email[:idx]
 			}
+		}
+		var avatarURLPtr *string
+		if avatarURL != "" {
+			avatarURLPtr = &avatarURL
+		}
 
-			// Truly new user — create the record. Role defaults to "user".
-			// Try to get the display name from OAuth user_metadata (e.g. Google sets full_name).
-			{
-				displayName := "User"
-				if name, ok := claims.UserMetadata["full_name"].(string); ok && name != "" {
-					displayName = name
-				} else if email != "" {
-					if idx := strings.Index(email, "@"); idx > 0 {
-						displayName = email[:idx]
-					}
-				}
-				var avatarURLPtr *string
-				if avatarURL != "" {
-					avatarURLPtr = &avatarURL
-				}
-				user = models.User{
-					AuthID:      &authID,
-					DisplayName: displayName,
-					Email:       email,
-					AvatarURL:   avatarURLPtr,
-					Role:        models.UserRoleUser,
-				}
-				if err := db.WithContext(ctx).Create(&user).Error; err != nil {
-					return authDBError(c, "auth.create_user", err, "failed to create user record")
-				}
+		user, created, tag, err := findOrCreateUser(ctx, db, authID, email, displayName, avatarURLPtr)
+		if err != nil {
+			// tag distinguishes a lookup fault ("database error") from a create fault
+			// ("failed to create user record"); both are genuine 5xx-worthy DB failures.
+			msg := "database error"
+			if tag == "auth.create_user" {
+				msg = "failed to create user record"
 			}
-		} else {
-			// User found by auth_id — sync fields that may have changed.
+			return authDBError(c, tag, err, msg)
+		}
+
+		if !created {
+			// User found by auth_id — sync fields that may have changed. Skipped for a row we
+			// just created (or absorbed via a lost race): it already reflects this JWT.
 			updates := map[string]interface{}{}
 			if email != "" && user.Email != email {
 				updates["email"] = email

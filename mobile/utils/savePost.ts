@@ -24,6 +24,7 @@ import {
   reportCreateFailure,
   reportCreateReconciled,
   addCreateBreadcrumb,
+  addSaveAuthRefreshBreadcrumb,
   type CreateFailureContext,
   type CreateReconciledContext,
 } from "@/utils/sentry";
@@ -61,11 +62,15 @@ export interface SavePostOptions<T> {
   recoverUrl?: (idempotencyKey: string) => string;
   // Injectables (production defaults applied below):
   fetchImpl?: typeof fetch;
+  // getFreshToken re-resolves the bearer between attempts after a 401 (default:
+  // getFreshAccessToken, applied in the core). Injected in tests.
+  getFreshToken?: () => Promise<string | null>;
   genKey?: () => string; // mints the Idempotency-Key; default is a v4 UUID
   netInfoFetch?: () => Promise<NetInfoStateLike>;
   report?: (error: unknown, ctx: CreateFailureContext) => void;
   reportReconciled?: (ctx: CreateReconciledContext) => void;
   breadcrumb?: typeof addCreateBreadcrumb;
+  reportAuthRefresh?: typeof addSaveAuthRefreshBreadcrumb;
   sleep?: (ms: number) => Promise<void>;
   rng?: () => number;
   now?: () => number;
@@ -147,7 +152,9 @@ export async function savePost<T = unknown>(opts: SavePostOptions<T>): Promise<T
     report: opts.report ?? reportCreateFailure,
     reportReconciled: opts.reportReconciled ?? reportCreateReconciled,
     breadcrumb: opts.breadcrumb ?? addCreateBreadcrumb,
+    reportAuthRefresh: opts.reportAuthRefresh ?? addSaveAuthRefreshBreadcrumb,
     fetchImpl: opts.fetchImpl,
+    getFreshToken: opts.getFreshToken,
     genKey: opts.genKey,
     netInfoFetch: opts.netInfoFetch,
     sleep: opts.sleep,

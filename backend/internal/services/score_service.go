@@ -299,19 +299,21 @@ func (s *ScoreService) GetScorecardsForRounds(ctx context.Context, roundIDs []uu
 // GetUserScorecards returns the scorecards for a user's last-`last` completed rounds in one
 // call — the batched reader behind GET /users/:userId/scorecards that lets the stats screen
 // avoid fanning out one /rounds/:id/scorecard request per round (the FRONTEND-2 N+1). It
-// selects the same event-linked completed rounds as UserService.GetUserRounds (newest first),
-// then assembles each scorecard via GetScorecardsForRounds. last is clamped to ≥1; the caller
+// selects the user's completed rounds (newest first), both event-linked and eventless, then
+// assembles each scorecard via GetScorecardsForRounds. last is clamped to ≥1; the caller
 // bounds the upper end.
 func (s *ScoreService) GetUserScorecards(ctx context.Context, targetID, callerID uuid.UUID, callerRole string, last int) ([]*ScorecardData, error) {
 	if last < 1 {
 		last = 1
 	}
+	// Filter by round_players.user_id directly (NOT NULL for all rounds since migration
+	// 000020). Joining event_players would drop eventless rounds, whose event_player_id is
+	// NULL — the same pattern RoundService.GetMyRounds uses.
 	var roundIDs []uuid.UUID
 	if err := s.DB.WithContext(ctx).Model(&models.RoundPlayer{}).
 		Select("rounds.id").
-		Joins("JOIN event_players ep ON ep.id = round_players.event_player_id").
 		Joins("JOIN rounds ON rounds.id = round_players.round_id").
-		Where("ep.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
+		Where("round_players.user_id = ? AND rounds.status = ?", targetID, models.RoundStatusCompleted).
 		Order("rounds.scheduled_date DESC").
 		Limit(last).
 		Scan(&roundIDs).Error; err != nil {

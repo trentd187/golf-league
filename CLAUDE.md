@@ -384,6 +384,10 @@ Net is always `gross - strokes`, so a given stroke *raises* net by one on that h
 shows this as a signed adjustment (`−1` received, `+1` given) via `formatHoleStrokeAdjustment`; the
 raw→effective allowance conversion lives in the C.H. header, not the per-hole box.
 
+`EffectiveCourseHandicap` applies the event's handicap allowance and **rounds to the nearest whole
+number, 0.5 up** (`math.Floor(x + 0.5)`, WHS convention — not plain `floor`), for regular and plus
+handicaps alike. It is backend-only; the client consumes the server's `effective_course_handicap`.
+
 ### Finish Position
 
 `round_players.finish_position` (within a round) and `event_players.finish_position` (across the event). Both `nullable INT`, set programmatically when status flips to `completed`.

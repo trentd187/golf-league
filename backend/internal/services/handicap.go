@@ -122,14 +122,19 @@ func filterPlayedHoles(holes []models.Hole, sel *string) []models.Hole {
 // a player's raw course handicap.
 //
 //	allowance = nil  → no allowance set; full handicap.
-//	allowance = 90.0 → effective = floor(raw * 0.90).
+//	allowance = 90.0 → effective = round(raw * 0.90).
 //
-// floor() is USGA convention so the result is always an integer.
+// WHS rounds an allowance-adjusted handicap to the NEAREST whole number with 0.5
+// rounding UP (toward +∞) — e.g. 15 @ 90% = 13.5 → 14, and a plus handicap
+// -5 @ 90% = -4.5 → -4. math.Floor(x + 0.5) is that round-half-up rule across the
+// whole number line. (The previous plain math.Floor biased every fractional result
+// down, handing a regular player one extra stroke and a plus player one extra
+// stroke to give — a systematic, if small, divergence from GHIN/WHS nets.)
 func EffectiveCourseHandicap(courseHandicap int, allowance *float64) int {
 	if allowance == nil {
 		return courseHandicap
 	}
-	return int(math.Floor(float64(courseHandicap) * (*allowance) / 100.0))
+	return int(math.Floor(float64(courseHandicap)*(*allowance)/100.0 + 0.5))
 }
 
 // RecalculateEventScores recomputes net_score for every scored hole across all

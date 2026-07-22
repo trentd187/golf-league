@@ -183,14 +183,30 @@ func TestEffectiveCourseHandicap_100Percent(t *testing.T) {
 	assert.Equal(t, 18, services.EffectiveCourseHandicap(18, ptrFloat(100)))
 }
 
-// TestEffectiveCourseHandicap_90Percent verifies that 90% allowance floors correctly.
-// 18 * 0.90 = 16.2 → floor = 16.
+// TestEffectiveCourseHandicap_90Percent verifies 90% allowance. 18 * 0.90 = 16.2
+// → nearest = 16.
 func TestEffectiveCourseHandicap_90Percent(t *testing.T) {
 	assert.Equal(t, 16, services.EffectiveCourseHandicap(18, ptrFloat(90)))
 }
 
 // TestEffectiveCourseHandicap_75Percent verifies a common tournament allowance.
-// 20 * 0.75 = 15.0 → floor = 15.
+// 20 * 0.75 = 15.0 → nearest = 15.
 func TestEffectiveCourseHandicap_75Percent(t *testing.T) {
 	assert.Equal(t, 15, services.EffectiveCourseHandicap(20, ptrFloat(75)))
+}
+
+// TestEffectiveCourseHandicap_RoundsHalfUp verifies the WHS "round to nearest, 0.5
+// up" rule (not floor) at fractional results — the GHIN/WHS-conformance fix.
+// 15 @ 90% = 13.5 → 14 (floor would have given 13); 17 @ 90% = 15.3 → 15.
+func TestEffectiveCourseHandicap_RoundsHalfUp(t *testing.T) {
+	assert.Equal(t, 14, services.EffectiveCourseHandicap(15, ptrFloat(90)))
+	assert.Equal(t, 15, services.EffectiveCourseHandicap(17, ptrFloat(90)))
+}
+
+// TestEffectiveCourseHandicap_PlusRoundsHalfUp verifies the same round-half-up rule
+// for a plus (negative) handicap: -5 @ 90% = -4.5 → -4 (floor would have given -5,
+// making the plus player give one extra stroke). -3 @ 90% = -2.7 → -3.
+func TestEffectiveCourseHandicap_PlusRoundsHalfUp(t *testing.T) {
+	assert.Equal(t, -4, services.EffectiveCourseHandicap(-5, ptrFloat(90)))
+	assert.Equal(t, -3, services.EffectiveCourseHandicap(-3, ptrFloat(90)))
 }

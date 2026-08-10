@@ -46,15 +46,18 @@ describe("parseGuestHandicap", () => {
     expect(parseGuestHandicap("  8 ")).toBe(8);
   });
 
-  it("parses a plus-handicap (negative)", () => {
-    expect(parseGuestHandicap("-2")).toBe(-2);
+  it("parses a plus-handicap in golf notation (+N → stored negative)", () => {
+    expect(parseGuestHandicap("+2")).toBe(-2);
+    expect(parseGuestHandicap("+1")).toBe(-1);
   });
 
   it("parses zero", () => {
     expect(parseGuestHandicap("0")).toBe(0);
   });
 
-  it("returns null for decimals and non-numeric input", () => {
+  it("returns null for a bare minus, decimals, and non-numeric input", () => {
+    // "-2" is not golf notation for a plus handicap ("+2" is) — rejected.
+    expect(parseGuestHandicap("-2")).toBeNull();
     expect(parseGuestHandicap("10.5")).toBeNull();
     expect(parseGuestHandicap("abc")).toBeNull();
     expect(parseGuestHandicap("1a")).toBeNull();

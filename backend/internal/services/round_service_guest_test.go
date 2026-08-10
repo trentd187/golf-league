@@ -75,6 +75,49 @@ func TestRoundService_AddGuestToGroup_BlankNameRejected(t *testing.T) {
 	assert.Equal(t, "name is required", ve.Message)
 }
 
+func TestRoundService_AddGuestToGroup_PlusHandicapAccepted(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	eventSvc := services.NewEventService(db)
+	svc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "orgGuestPlus")
+	event := seedEvent(t, eventSvc, organizer.ID)
+	course, tee := seedCourseWithTee(t, db, "Guest Plus Course")
+	scheduled := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	var group models.Group
+	require.NoError(t, db.Where("round_id = ?", scheduled.Round.ID).First(&group).Error)
+
+	// A guest who is a +2 handicap is stored as -2 and preserved.
+	plus := -2
+	result, err := svc.AddGuestToGroup(context.Background(), scheduled.Round.ID, group.ID, organizer.ID, "user", "Plus Pete", &plus)
+	require.NoError(t, err)
+
+	var rp models.RoundPlayer
+	require.NoError(t, db.First(&rp, "id = ?", result.Players[0].RoundPlayerID).Error)
+	require.NotNil(t, rp.CourseHandicap)
+	assert.Equal(t, -2, *rp.CourseHandicap)
+}
+
+func TestRoundService_AddGuestToGroup_OutOfRangeHandicapRejected(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	eventSvc := services.NewEventService(db)
+	svc := services.NewRoundService(db, eventSvc)
+
+	organizer := seedUser(t, db, "orgGuestRange")
+	event := seedEvent(t, eventSvc, organizer.ID)
+	course, tee := seedCourseWithTee(t, db, "Guest Range Course")
+	scheduled := scheduleRound(t, svc, event.ID, organizer.ID, course.ID.String(), tee.ID.String())
+
+	var group models.Group
+	require.NoError(t, db.Where("round_id = ?", scheduled.Round.ID).First(&group).Error)
+
+	tooHigh := 99
+	_, err := svc.AddGuestToGroup(context.Background(), scheduled.Round.ID, group.ID, organizer.ID, "user", "Fat Finger", &tooHigh)
+	var ve *services.ValidationError
+	require.ErrorAs(t, err, &ve)
+}
+
 func TestRoundService_AddGuestToGroup_NameTooLongRejected(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	eventSvc := services.NewEventService(db)

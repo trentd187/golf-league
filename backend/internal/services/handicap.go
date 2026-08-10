@@ -23,8 +23,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// HandicapStrokes returns the number of strokes a player with the given course
-// handicap receives on a hole identified by its normalized stroke_index rank.
+// HandicapStrokes returns the strokes a player with the given course handicap
+// receives (positive) or gives back (negative) on a hole identified by its
+// normalized stroke_index rank. Net is always gross - strokes, so a negative
+// return (a plus handicap) raises the player's net on that hole.
 //
 // strokeIndex must be a rank within the played set (1 = hardest hole, holeCount =
 // easiest). holeCount is the number of holes being played (9 or 18).
@@ -32,18 +34,53 @@ import (
 // USGA allocation rule generalized: a player with handicap 5 on a 9-hole round
 // gets one stroke on the 5 hardest holes (normalized SI 1–5). A player with
 // handicap 20 on an 18-hole round gets two strokes on the two hardest holes and
-// one stroke on the remaining 16.
+// one stroke on the remaining 16. A PLUS handicap (negative, better than scratch)
+// gives strokes back starting at the EASIEST hole (highest SI) and working down —
+// the mirror of receiving. This must stay identical to the client
+// holeHandicapStrokes so client-computed net matches the server.
 func HandicapStrokes(courseHandicap, strokeIndex, holeCount int) int {
-	if courseHandicap <= 0 || strokeIndex <= 0 || holeCount <= 0 {
+	if courseHandicap == 0 || strokeIndex <= 0 || holeCount <= 0 {
 		return 0
 	}
-	full := courseHandicap / holeCount      // complete passes over all holes
-	remainder := courseHandicap % holeCount // extra strokes from SI 1 upward
+	if courseHandicap > 0 {
+		full := courseHandicap / holeCount      // complete passes over all holes
+		remainder := courseHandicap % holeCount // extra strokes from SI 1 upward
+		strokes := full
+		if strokeIndex <= remainder {
+			strokes++
+		}
+		return strokes
+	}
+	// Plus handicap: give `give` strokes back, allocated from the easiest hole down.
+	give := -courseHandicap
+	full := give / holeCount
+	remainder := give % holeCount // extra given strokes from the easiest hole down
 	strokes := full
-	if strokeIndex <= remainder {
+	if strokeIndex > holeCount-remainder {
 		strokes++
 	}
-	return strokes
+	return -strokes
+}
+
+// Course-handicap sanity bounds. WHS caps a Course Handicap at 54; a plus handicap
+// (negative, better than scratch) rarely exceeds +10. These reject fat-fingered
+// entries (e.g. "+99") that would otherwise allocate dozens of phantom strokes.
+const (
+	MinCourseHandicap = -10
+	MaxCourseHandicap = 54
+)
+
+// validateCourseHandicap returns a *ValidationError when a course handicap is
+// outside the sane WHS range. Whether an unset (nil) handicap is allowed is the
+// caller's concern — this only bounds a value that is present.
+func validateCourseHandicap(h int) error {
+	if h < MinCourseHandicap || h > MaxCourseHandicap {
+		return &ValidationError{
+			Field:   "course_handicap",
+			Message: fmt.Sprintf("course_handicap must be between %d and %d", MinCourseHandicap, MaxCourseHandicap),
+		}
+	}
+	return nil
 }
 
 // NormalizeStrokeIndexes returns a map from hole_number → normalized rank (1 = hardest).
@@ -85,14 +122,19 @@ func filterPlayedHoles(holes []models.Hole, sel *string) []models.Hole {
 // a player's raw course handicap.
 //
 //	allowance = nil  → no allowance set; full handicap.
-//	allowance = 90.0 → effective = floor(raw * 0.90).
+//	allowance = 90.0 → effective = round(raw * 0.90).
 //
-// floor() is USGA convention so the result is always an integer.
+// WHS rounds an allowance-adjusted handicap to the NEAREST whole number with 0.5
+// rounding UP (toward +∞) — e.g. 15 @ 90% = 13.5 → 14, and a plus handicap
+// -5 @ 90% = -4.5 → -4. math.Floor(x + 0.5) is that round-half-up rule across the
+// whole number line. (The previous plain math.Floor biased every fractional result
+// down, handing a regular player one extra stroke and a plus player one extra
+// stroke to give — a systematic, if small, divergence from GHIN/WHS nets.)
 func EffectiveCourseHandicap(courseHandicap int, allowance *float64) int {
 	if allowance == nil {
 		return courseHandicap
 	}
-	return int(math.Floor(float64(courseHandicap) * (*allowance) / 100.0))
+	return int(math.Floor(float64(courseHandicap)*(*allowance)/100.0 + 0.5))
 }
 
 // RecalculateEventScores recomputes net_score for every scored hole across all

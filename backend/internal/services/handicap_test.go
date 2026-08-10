@@ -55,6 +55,42 @@ func TestHandicapStrokes_TwentyHandicap(t *testing.T) {
 	assert.Equal(t, 1, services.HandicapStrokes(20, 18, 18))
 }
 
+// ─── HandicapStrokes (plus handicaps — strokes GIVEN back) ────────────────────
+
+// TestHandicapStrokes_PlusOneHandicap verifies a +1 (stored -1) gives one stroke
+// back on the EASIEST hole only (normalized SI 18) and none elsewhere. Net is
+// gross - strokes, so -1 raises the player's net by one on that hole.
+func TestHandicapStrokes_PlusOneHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-1, 18, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 17, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 1, 18))
+}
+
+// TestHandicapStrokes_PlusTwoHandicap verifies a +2 (stored -2) gives strokes back
+// on the two easiest holes (SI 17–18) and none on SI ≤ 16.
+func TestHandicapStrokes_PlusTwoHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-2, 18, 18))
+	assert.Equal(t, -1, services.HandicapStrokes(-2, 17, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-2, 16, 18))
+	assert.Equal(t, 0, services.HandicapStrokes(-2, 1, 18))
+}
+
+// TestHandicapStrokes_PlusFullPass verifies a +18 (stored -18) gives exactly one
+// stroke back on every hole (a complete pass, no remainder).
+func TestHandicapStrokes_PlusFullPass(t *testing.T) {
+	for si := 1; si <= 18; si++ {
+		assert.Equal(t, -1, services.HandicapStrokes(-18, si, 18),
+			"expected -1 stroke on hole SI=%d", si)
+	}
+}
+
+// TestHandicapStrokes_NineHole_PlusHandicap verifies plus allocation on a 9-hole
+// round: +1 gives back on the easiest of the 9 (normalized SI 9) only.
+func TestHandicapStrokes_NineHole_PlusHandicap(t *testing.T) {
+	assert.Equal(t, -1, services.HandicapStrokes(-1, 9, 9))
+	assert.Equal(t, 0, services.HandicapStrokes(-1, 8, 9))
+}
+
 // ─── HandicapStrokes (9-hole) ─────────────────────────────────────────────────
 
 // TestHandicapStrokes_NineHole_NineHandicap verifies that a 9-hole course handicap
@@ -147,14 +183,30 @@ func TestEffectiveCourseHandicap_100Percent(t *testing.T) {
 	assert.Equal(t, 18, services.EffectiveCourseHandicap(18, ptrFloat(100)))
 }
 
-// TestEffectiveCourseHandicap_90Percent verifies that 90% allowance floors correctly.
-// 18 * 0.90 = 16.2 → floor = 16.
+// TestEffectiveCourseHandicap_90Percent verifies 90% allowance. 18 * 0.90 = 16.2
+// → nearest = 16.
 func TestEffectiveCourseHandicap_90Percent(t *testing.T) {
 	assert.Equal(t, 16, services.EffectiveCourseHandicap(18, ptrFloat(90)))
 }
 
 // TestEffectiveCourseHandicap_75Percent verifies a common tournament allowance.
-// 20 * 0.75 = 15.0 → floor = 15.
+// 20 * 0.75 = 15.0 → nearest = 15.
 func TestEffectiveCourseHandicap_75Percent(t *testing.T) {
 	assert.Equal(t, 15, services.EffectiveCourseHandicap(20, ptrFloat(75)))
+}
+
+// TestEffectiveCourseHandicap_RoundsHalfUp verifies the WHS "round to nearest, 0.5
+// up" rule (not floor) at fractional results — the GHIN/WHS-conformance fix.
+// 15 @ 90% = 13.5 → 14 (floor would have given 13); 17 @ 90% = 15.3 → 15.
+func TestEffectiveCourseHandicap_RoundsHalfUp(t *testing.T) {
+	assert.Equal(t, 14, services.EffectiveCourseHandicap(15, ptrFloat(90)))
+	assert.Equal(t, 15, services.EffectiveCourseHandicap(17, ptrFloat(90)))
+}
+
+// TestEffectiveCourseHandicap_PlusRoundsHalfUp verifies the same round-half-up rule
+// for a plus (negative) handicap: -5 @ 90% = -4.5 → -4 (floor would have given -5,
+// making the plus player give one extra stroke). -3 @ 90% = -2.7 → -3.
+func TestEffectiveCourseHandicap_PlusRoundsHalfUp(t *testing.T) {
+	assert.Equal(t, -4, services.EffectiveCourseHandicap(-5, ptrFloat(90)))
+	assert.Equal(t, -3, services.EffectiveCourseHandicap(-3, ptrFloat(90)))
 }
